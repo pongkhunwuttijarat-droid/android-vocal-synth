@@ -1,0 +1,29 @@
+# === Build artifacts ===
+native/target/
+native/build/
+native/build-debug/
+
+# === Generated output (WAV, FRQ) ===
+native/test-data/output/
+
+# === .NET / golden-renderer build ===
+test/golden/golden-renderer/bin/
+test/golden/golden-renderer/obj/
+
+# === Large zip (voicebank archive) ===
+test/golden/teto-english-150401.zip
+
+# === Android build ===
+app/android/.gradle/
+app/android/app/build/
+
+# === IDE / OS ===
+.idea/
+.vscode/
+*.iml
+.DS_Store
+*.swp
+*~
+
+# === Hermes ===
+.hermes/
