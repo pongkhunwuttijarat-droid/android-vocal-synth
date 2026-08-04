@@ -1,0 +1,12 @@
+[package]
+name = "dict-check"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+phonemizer = { path = "../../crates/phonemizer" }
+domain = { path = "../../crates/domain" }
+voicebank = { path = "../../crates/voicebank" }
+phrase = { path = "../../crates/phrase" }
+synth-cli = { path = "../synth-cli" }
+worldline-plugin = { path = "../../crates/worldline-plugin" }

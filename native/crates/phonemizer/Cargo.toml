@@ -1,0 +1,11 @@
+[package]
+name = "phonemizer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+domain = { path = "../domain" }
+voicebank = { path = "../voicebank" }
+
+[dev-dependencies]
+encoding_rs = "0.8"

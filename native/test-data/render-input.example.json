@@ -1,0 +1,52 @@
+{
+  "comment": "Mock RenderInput example — superset schema per feed-data-flow.md. Feed pipeline (Sprint 1.4) produces this; plugins read fields per their capability. Values are illustrative, not from a real render.",
+  "phrase": {
+    "position_ms": 500.0,
+    "duration_ms": 1500.0,
+    "leading_ms": 250.0,
+    "time_axis_hint": "120bpm 4/4"
+  },
+  "notes": [
+    { "lyric": "read[r iy d]", "tone": 60, "position_ms": 500.0, "duration_ms": 500.0 },
+    { "lyric": "red[r eh d]", "tone": 62, "position_ms": 1000.0, "duration_ms": 500.0 },
+    { "lyric": "a", "tone": 64, "position_ms": 1500.0, "duration_ms": 500.0 }
+  ],
+  "phonemes": [
+    { "phoneme": "r",  "position_ms": 500.0,  "duration_ms": 100.0, "leading_ms": 50.0,  "overlap_ms": 20.0, "tone": 60, "tone_shift": 0 },
+    { "phoneme": "iy", "position_ms": 600.0,  "duration_ms": 400.0, "leading_ms": 50.0,  "overlap_ms": 20.0, "tone": 60, "tone_shift": 0 },
+    { "phoneme": "r",  "position_ms": 1000.0, "duration_ms": 100.0, "leading_ms": 50.0,  "overlap_ms": 20.0, "tone": 62, "tone_shift": 0 },
+    { "phoneme": "eh", "position_ms": 1100.0, "duration_ms": 400.0, "leading_ms": 50.0,  "overlap_ms": 20.0, "tone": 62, "tone_shift": 0 },
+    { "phoneme": "a",  "position_ms": 1500.0, "duration_ms": 500.0, "leading_ms": 50.0,  "overlap_ms": 20.0, "tone": 64, "tone_shift": 0 }
+  ],
+  "pitches_cents": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "curves": {
+    "dynamics":     [1.0, 1.0, 1.0, 1.0],
+    "gender":       [0.0, 0.0, 0.0, 0.0],
+    "breathiness":  [0.0, 0.0, 0.0, 0.0],
+    "tension":      [0.0, 0.0, 0.0, 0.0],
+    "voicing":      [100.0, 100.0, 100.0, 100.0]
+  },
+  "sample_based": {
+    "oto": [
+      { "alias": "r",  "file": "_3_h3_3-.wav", "offset": 442.3, "consonant": 375.0, "cutoff": -583.333, "preutter": 250.0, "overlap": 83.333 },
+      { "alias": "iy", "file": "_3_h3_3-.wav", "offset": 943.992, "consonant": 50.0, "cutoff": -1227.369, "preutter": 20.0, "overlap": 40.0 }
+    ],
+    "wav_path": "test-data/mock-voicebank/voice/_3_h3_3-.wav",
+    "envelope": [[0.0, 0.0], [100.0, 1.0], [500.0, 1.0], [800.0, 0.8], [1000.0, 0.0]],
+    "flags": "g0B0H0P86"
+  },
+  "neural": {
+    "tokens": [1, 5, 2, 8, 3, 1],
+    "durations_frames": [9, 34, 9, 34, 43, 9],
+    "f0_hz": [261.6, 261.6, 293.7, 293.7, 329.6, 329.6],
+    "shifted_f0_hz": [261.6, 261.6, 293.7, 293.7, 329.6, 329.6]
+  },
+  "expected_output": {
+    "comment": "Fill after golden reference exists (OpenUtau desktop render, P.4)",
+    "sample_rate": 44100,
+    "channels": 1,
+    "duration_ms": 1500,
+    "rms": null,
+    "reference_wav": null
+  }
+}

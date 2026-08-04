@@ -1,0 +1,3 @@
+/home/seal/project/android-voice-synth/native/build/build-linux-mixerfx/CMakeFiles/mixer_fx.dir
+/home/seal/project/android-voice-synth/native/build/build-linux-mixerfx/CMakeFiles/edit_cache.dir
+/home/seal/project/android-voice-synth/native/build/build-linux-mixerfx/CMakeFiles/rebuild_cache.dir

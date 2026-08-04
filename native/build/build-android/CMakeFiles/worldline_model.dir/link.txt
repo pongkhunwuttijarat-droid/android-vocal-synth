@@ -1,0 +1,2 @@
+/home/seal/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar qc libworldline_model.a CMakeFiles/worldline_model.dir/plugins/worldline/src/model/effects.cpp.o CMakeFiles/worldline_model.dir/plugins/worldline/src/model/model.cpp.o
+/home/seal/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib libworldline_model.a

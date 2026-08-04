@@ -1,0 +1,11 @@
+/home/seal/project/android-voice-synth/native/build/build-linux/CMakeFiles/world.dir
+/home/seal/project/android-voice-synth/native/build/build-linux/CMakeFiles/world_audioio.dir
+/home/seal/project/android-voice-synth/native/build/build-linux/CMakeFiles/gvps.dir
+/home/seal/project/android-voice-synth/native/build/build-linux/CMakeFiles/pyin.dir
+/home/seal/project/android-voice-synth/native/build/build-linux/CMakeFiles/worldline_classic.dir
+/home/seal/project/android-voice-synth/native/build/build-linux/CMakeFiles/worldline_f0.dir
+/home/seal/project/android-voice-synth/native/build/build-linux/CMakeFiles/worldline_model.dir
+/home/seal/project/android-voice-synth/native/build/build-linux/CMakeFiles/worldline_common.dir
+/home/seal/project/android-voice-synth/native/build/build-linux/CMakeFiles/worldline.dir
+/home/seal/project/android-voice-synth/native/build/build-linux/CMakeFiles/edit_cache.dir
+/home/seal/project/android-voice-synth/native/build/build-linux/CMakeFiles/rebuild_cache.dir

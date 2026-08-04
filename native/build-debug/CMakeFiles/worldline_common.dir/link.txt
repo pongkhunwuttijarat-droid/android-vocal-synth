@@ -1,0 +1,2 @@
+/usr/bin/ar qc libworldline_common.a CMakeFiles/worldline_common.dir/plugins/worldline/src/common/timer.cpp.o CMakeFiles/worldline_common.dir/plugins/worldline/src/common/vec_utils.cpp.o
+/usr/bin/ranlib libworldline_common.a

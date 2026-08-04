@@ -1,0 +1,2 @@
+/usr/bin/ar qc libworldline_f0.a CMakeFiles/worldline_f0.dir/plugins/worldline/src/f0/dio_estimator.cpp.o CMakeFiles/worldline_f0.dir/plugins/worldline/src/f0/dio_ss_estimator.cpp.o CMakeFiles/worldline_f0.dir/plugins/worldline/src/f0/frq_estimator.cpp.o CMakeFiles/worldline_f0.dir/plugins/worldline/src/f0/harvest_estimator.cpp.o CMakeFiles/worldline_f0.dir/plugins/worldline/src/f0/pyin_estimator.cpp.o
+/usr/bin/ranlib libworldline_f0.a

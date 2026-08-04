@@ -1,0 +1,2 @@
+/usr/bin/ar qc libworldline_classic.a CMakeFiles/worldline_classic.dir/plugins/worldline/src/classic/classic_args.cpp.o CMakeFiles/worldline_classic.dir/plugins/worldline/src/classic/frq.cpp.o CMakeFiles/worldline_classic.dir/plugins/worldline/src/classic/timing.cpp.o CMakeFiles/worldline_classic.dir/plugins/worldline/src/classic/resampler.cpp.o
+/usr/bin/ranlib libworldline_classic.a

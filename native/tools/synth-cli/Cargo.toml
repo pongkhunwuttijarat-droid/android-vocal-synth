@@ -1,0 +1,18 @@
+[package]
+name = "synth-cli"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+domain = { path = "../../crates/domain" }
+voicebank = { path = "../../crates/voicebank" }
+phonemizer = { path = "../../crates/phonemizer" }
+feed = { path = "../../crates/feed" }
+phrase = { path = "../../crates/phrase" }
+runtime = { path = "../../crates/runtime", features = ["feed-integration"] }
+worldline-plugin = { path = "../../crates/worldline-plugin" }
+mixer-fx = { path = "../../crates/mixer-fx" }
+wavwriter = { path = "../../crates/wavwriter" }
+storage = { path = "../../crates/storage" }
+serde_yaml = "0.9"

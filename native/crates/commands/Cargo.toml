@@ -1,0 +1,7 @@
+[package]
+name = "commands"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+domain = { path = "../domain" }

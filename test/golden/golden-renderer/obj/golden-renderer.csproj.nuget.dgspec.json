@@ -1,0 +1,244 @@
+{
+  "format": 1,
+  "restore": {
+    "/home/seal/project/android-voice-synth/test/golden/golden-renderer/golden-renderer.csproj": {}
+  },
+  "projects": {
+    "/home/seal/openutau-ref/core/OpenUtau.Core/OpenUtau.Core.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "/home/seal/openutau-ref/core/OpenUtau.Core/OpenUtau.Core.csproj",
+        "projectName": "OpenUtau.Core",
+        "projectPath": "/home/seal/openutau-ref/core/OpenUtau.Core/OpenUtau.Core.csproj",
+        "packagesPath": "/home/seal/.nuget/packages/",
+        "outputPath": "/home/seal/openutau-ref/core/OpenUtau.Core/obj/",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "/home/seal/.nuget/NuGet/NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "targetAlias": "net8.0",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0": {
+          "targetAlias": "net8.0",
+          "dependencies": {
+            "BunLabs.NAudio.Flac": {
+              "target": "Package",
+              "version": "[2.0.1, )"
+            },
+            "Concentus.OggFile": {
+              "target": "Package",
+              "version": "[1.0.6, )"
+            },
+            "Ignore": {
+              "target": "Package",
+              "version": "[0.1.50, )"
+            },
+            "K4os.Hash.xxHash": {
+              "target": "Package",
+              "version": "[1.0.8, )"
+            },
+            "Melanchall.DryWetMidi": {
+              "target": "Package",
+              "version": "[7.2.0, )"
+            },
+            "Microsoft.ML.OnnxRuntime": {
+              "target": "Package",
+              "version": "[1.23.2, )"
+            },
+            "NAudio.Core": {
+              "target": "Package",
+              "version": "[2.2.1, )"
+            },
+            "NAudio.Vorbis": {
+              "target": "Package",
+              "version": "[1.5.0, )"
+            },
+            "NLayer.NAudioSupport": {
+              "target": "Package",
+              "version": "[1.4.0, )"
+            },
+            "NWaves": {
+              "target": "Package",
+              "version": "[0.9.6, )"
+            },
+            "NeoLua": {
+              "target": "Package",
+              "version": "[1.3.19, )"
+            },
+            "NetMQ": {
+              "target": "Package",
+              "version": "[4.0.1.13, )"
+            },
+            "Newtonsoft.Json": {
+              "target": "Package",
+              "version": "[13.0.3, )"
+            },
+            "NumSharp": {
+              "target": "Package",
+              "version": "[0.30.0, )"
+            },
+            "Serilog": {
+              "target": "Package",
+              "version": "[4.1.0, )"
+            },
+            "SharpCompress": {
+              "target": "Package",
+              "version": "[0.48.1, )"
+            },
+            "System.Buffers": {
+              "target": "Package",
+              "version": "[4.6.0, )"
+            },
+            "System.ComponentModel.Annotations": {
+              "target": "Package",
+              "version": "[5.0.0, )"
+            },
+            "System.IO.Packaging": {
+              "target": "Package",
+              "version": "[9.0.2, )"
+            },
+            "System.Resources.Extensions": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            },
+            "System.Text.Json": {
+              "target": "Package",
+              "version": "[9.0.2, )"
+            },
+            "TextCopy": {
+              "target": "Package",
+              "version": "[6.2.1, )"
+            },
+            "UTF.Unknown": {
+              "target": "Package",
+              "version": "[2.5.1, )"
+            },
+            "WanaKana-net": {
+              "target": "Package",
+              "version": "[1.0.0, )"
+            },
+            "YamlDotNet": {
+              "target": "Package",
+              "version": "[15.1.2, )"
+            },
+            "csharp-kana": {
+              "target": "Package",
+              "version": "[1.0.2, )"
+            },
+            "csharp-pinyin": {
+              "target": "Package",
+              "version": "[1.0.0, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "/home/seal/dotnet/sdk/8.0.423/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "/home/seal/project/android-voice-synth/test/golden/golden-renderer/golden-renderer.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "/home/seal/project/android-voice-synth/test/golden/golden-renderer/golden-renderer.csproj",
+        "projectName": "OpenUtau.Test",
+        "projectPath": "/home/seal/project/android-voice-synth/test/golden/golden-renderer/golden-renderer.csproj",
+        "packagesPath": "/home/seal/.nuget/packages/",
+        "outputPath": "/home/seal/project/android-voice-synth/test/golden/golden-renderer/obj/",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "/home/seal/.nuget/NuGet/NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "targetAlias": "net8.0",
+            "projectReferences": {
+              "/home/seal/openutau-ref/core/OpenUtau.Core/OpenUtau.Core.csproj": {
+                "projectPath": "/home/seal/openutau-ref/core/OpenUtau.Core/OpenUtau.Core.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0": {
+          "targetAlias": "net8.0",
+          "dependencies": {
+            "System.Resources.Extensions": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "/home/seal/dotnet/sdk/8.0.423/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}

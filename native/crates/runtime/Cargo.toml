@@ -1,0 +1,23 @@
+[package]
+name = "runtime"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Storage trait + FsStorage: the Cache's backing directory.
+storage = { path = "../storage" }
+# XXH64 for render-cache keys (task contract: xxhash-rust or twox-hash).
+xxhash-rust = { version = "0.8", default-features = false, features = ["xxh64"] }
+
+# Optional integrations. Both are OFF by default so this crate builds and
+# tests standalone — the `feed` crate is being written by a parallel agent
+# and may not compile yet. Everything here is generic over its input type;
+# enable `feed-integration` once `feed` exposes `RenderInput` to get the
+# ready-made type aliases (see src/lib.rs).
+domain = { path = "../domain", optional = true }
+feed = { path = "../feed", optional = true }
+
+[features]
+default = []
+domain = ["dep:domain"]
+feed-integration = ["dep:feed"]

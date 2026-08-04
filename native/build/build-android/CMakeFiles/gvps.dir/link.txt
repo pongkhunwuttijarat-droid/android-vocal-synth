@@ -1,0 +1,2 @@
+/home/seal/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar qc libgvps.a CMakeFiles/gvps.dir/third_party/libgvps/gvps_full.c.o CMakeFiles/gvps.dir/third_party/libgvps/gvps_obsrv.c.o CMakeFiles/gvps.dir/third_party/libgvps/gvps_sampled.c.o CMakeFiles/gvps.dir/third_party/libgvps/gvps_variable.c.o
+/home/seal/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib libgvps.a

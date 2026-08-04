@@ -1,0 +1,5 @@
+Name=Teto Mock
+Image=
+Author=test
+Web=
+Version=0.1

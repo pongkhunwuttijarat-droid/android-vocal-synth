@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "tools/dict-check",
+    "crates/domain",
+    "crates/voicebank",
+    "crates/worldline-sys",
+    "crates/commands",
+    "crates/phonemizer",
+    "crates/storage",
+    "crates/feed",
+    "crates/runtime",
+    "crates/worldline-plugin",
+    "crates/phrase",
+    "crates/wavwriter",
+    "tools/audiocompare",
+    "tools/synth-cli",
+    "tools/synth-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+lto = true

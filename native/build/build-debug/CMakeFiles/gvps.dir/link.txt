@@ -1,0 +1,2 @@
+/usr/bin/ar qc libgvps.a CMakeFiles/gvps.dir/third_party/libgvps/gvps_full.c.o CMakeFiles/gvps.dir/third_party/libgvps/gvps_obsrv.c.o CMakeFiles/gvps.dir/third_party/libgvps/gvps_sampled.c.o CMakeFiles/gvps.dir/third_party/libgvps/gvps_variable.c.o
+/usr/bin/ranlib libgvps.a

@@ -1,0 +1,2 @@
+/usr/bin/ar qc libworldline_model.a CMakeFiles/worldline_model.dir/plugins/worldline/src/model/effects.cpp.o CMakeFiles/worldline_model.dir/plugins/worldline/src/model/model.cpp.o
+/usr/bin/ranlib libworldline_model.a

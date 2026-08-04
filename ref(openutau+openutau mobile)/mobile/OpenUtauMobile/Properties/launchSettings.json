@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "Windows Machine": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "UseAndroidKeyStore": "true"
+      },
+      "nativeDebugging": false
+    }
+  }
+}

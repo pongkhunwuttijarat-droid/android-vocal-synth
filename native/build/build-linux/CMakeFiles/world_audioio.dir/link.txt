@@ -1,0 +1,2 @@
+/usr/bin/ar qc libworld_audioio.a CMakeFiles/world_audioio.dir/third_party/world/tools/audioio.cpp.o
+/usr/bin/ranlib libworld_audioio.a

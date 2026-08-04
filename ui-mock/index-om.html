@@ -1,0 +1,882 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>OpenUtau Mobile flow — Lilt review</title>
+<style>
+:root{
+  --bg:#1f1f1f; --bar:#262626; --strip:#2C2C2C; --row-w:#3C3C3C; --row-b:#303030;
+  --timeline-bg:#101010; --line:#4a4a4a; --muted:#9a9a9a; --text:#e8e8e8;
+  --primary:#fe71a3; --key-pink:#CC2A63; --danger:#e5484d;
+  --lead:#fe71a3; --harm:#7cc7ff; --guide:#ffcf6b;
+  --sel:#ffffff; --card:#2e2e2e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#111;color:var(--text);font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;overflow:hidden;user-select:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+.view{display:none;height:100vh;flex-direction:column}
+.view.show{display:flex}
+input[type=range]{accent-color:var(--primary)}
+
+/* ── shared page title bar (OM custom title bar, 60px) ── */
+.pbar{height:60px;flex:0 0 60px;background:var(--bar);display:flex;align-items:center;padding:0 10px;border-bottom:1px solid #333;gap:8px}
+.pbar .pb-back{width:40px;height:40px;border-radius:8px;font-size:22px;color:#cfcfcf;display:grid;place-items:center}
+.pbar .pb-back:hover{background:#3a3a3a}
+.pbar .pb-title{flex:1;text-align:center;font-size:16px}
+.pbar .pb-right{display:flex;gap:4px}
+.pbar .pb-btn{width:38px;height:38px;border-radius:8px;font-size:17px;color:#cfcfcf;display:grid;place-items:center}
+.pbar .pb-btn:hover{background:#3a3a3a}
+
+/* ── home ── */
+#view-home{background:#1b1b1b}
+.home{flex:1;display:grid;grid-template-rows:120px 1fr 90px;min-height:0}
+.home-actions{display:flex;justify-content:center;align-items:center;gap:44px;padding:10px}
+.home-btn{display:flex;flex-direction:column;align-items:center;gap:7px;width:76px}
+.home-btn .hb{width:64px;height:64px;border-radius:22px;background:#333;display:grid;place-items:center;font-size:26px;color:#eee;border:1px solid #454545;transition:all .12s}
+.home-btn:hover .hb{background:var(--primary);border-color:var(--primary);transform:translateY(-2px)}
+.home-btn label{font-size:12px;color:#ccc}
+.home-recent{padding:0 30px;min-height:0;display:flex;flex-direction:column}
+.home-recent h3{font-size:15px;margin-bottom:10px;color:#ddd}
+.recent-box{flex:1;min-height:0;border:1px solid #3d3d3d;border-radius:10px;background:#202020;overflow:auto}
+.recent-row{display:flex;align-items:center;padding:13px 16px;border-bottom:1px solid #2f2f2f;font-size:13px;color:#d9d9d9;cursor:pointer;gap:10px}
+.recent-row:hover{background:#2a2a2a}
+.recent-row .ico{color:var(--primary)}
+.recent-row .sub{margin-left:auto;color:var(--muted);font-size:11px}
+.recent-empty{padding:34px;text-align:center;color:var(--muted)}
+.home-foot{display:flex;align-items:center;justify-content:center;gap:14px}
+.logo-mark{width:34px;height:34px;border-radius:11px;background:linear-gradient(135deg,var(--primary),#8d3b63);display:grid;place-items:center;font-weight:900;font-size:17px;color:#fff}
+.logo-name{font-size:15px;font-weight:700;letter-spacing:.04em}
+.logo-name small{display:block;font-size:10px;color:var(--muted);font-weight:400}
+
+/* ── singers list ── */
+.page-body{flex:1;min-height:0;overflow:auto;padding:12px;position:relative}
+.singer-card{position:relative;display:flex;align-items:center;height:84px;background:var(--card);border-radius:25px;margin:3px 6px 8px 3px;overflow:hidden;cursor:pointer;border:1px solid #3a3a3a}
+.singer-card:hover{border-color:var(--primary)}
+.singer-card .stag{width:14px;align-self:stretch;background:#ff7f9e}
+.singer-card.vogen .stag{background:#7cc7ff}
+.singer-card .savatar{width:72px;display:grid;place-items:center}
+.singer-card .savatar .av{width:56px;height:56px;border-radius:50%;background:linear-gradient(145deg,#ff9cbe,#8d3b63);display:grid;place-items:center;font-size:22px;font-weight:800;color:#fff}
+.singer-card .sinfo{flex:1;min-width:0;padding:0 6px}
+.singer-card .sinfo b{font-size:18px;font-weight:600}
+.singer-card .sinfo .sid{font-size:12px;color:var(--muted);margin-top:2px}
+.singer-card .fwd{width:44px;color:#888;font-size:18px;text-align:center}
+.fab{position:fixed;right:26px;bottom:26px;width:66px;height:66px;border-radius:50%;background:rgba(254,113,163,.85);font-size:30px;color:#fff;display:grid;place-items:center;box-shadow:0 6px 18px rgba(0,0,0,.5);z-index:40}
+.fab:hover{background:var(--primary)}
+.no-singers{padding:60px 20px;text-align:center;color:var(--muted)}
+
+/* ── singer detail ── */
+.detail-card{border:1px solid #3d3d3d;border-radius:14px;background:#242424;margin:12px;overflow:hidden}
+.detail-hero{display:flex;align-items:center;gap:16px;padding:20px}
+.detail-hero .av{width:72px;height:72px;border-radius:50%;background:linear-gradient(145deg,#ff9cbe,#8d3b63);display:grid;place-items:center;font-size:28px;font-weight:800;color:#fff}
+.detail-hero b{font-size:26px;font-weight:700}
+.detail-rows{border-top:1px solid #343434}
+.detail-row{display:flex;padding:12px 20px;border-bottom:1px solid #2e2e2e;font-size:14px}
+.detail-row span{width:150px;color:var(--muted)}
+.detail-row b{font-weight:500;color:#eee;word-break:break-all}
+.btn-danger{display:block;width:calc(100% - 24px);margin:8px 12px 18px;background:var(--danger);color:#fff;border-radius:10px;padding:13px;font-size:14px;font-weight:600}
+.btn-danger:hover{filter:brightness(1.1)}
+
+/* ── install ── */
+.install-hint{padding:10px 18px;color:var(--muted);font-size:12px}
+.file-list{background:#202020;border:1px solid #3a3a3a;border-radius:10px;margin:0 12px;overflow:hidden}
+.file-row{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid #2e2e2e;cursor:pointer;font-size:13px}
+.file-row:hover{background:#2a2a2a}
+.file-row.sel{background:#33212b;box-shadow:inset 3px 0 0 var(--primary)}
+.file-row .fname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-row .fsize{color:var(--muted);font-size:11px}
+.file-row .fdir{color:#ffcf6b}
+.install-panel{margin:14px 12px;background:#242424;border:1px solid #3a3a3a;border-radius:12px;padding:16px}
+.install-panel .ip-row{display:flex;align-items:center;gap:12px;margin-bottom:6px}
+.install-panel b{font-size:14px}
+.install-panel .ip-meta{color:var(--muted);font-size:12px;margin-bottom:12px}
+.progress{height:8px;background:#333;border-radius:10px;overflow:hidden;margin-top:10px}
+.progress i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--primary),#ffb3cd);transition:width .15s}
+.btn-primary{background:var(--primary);color:#fff;border-radius:9px;padding:11px 22px;font-weight:600;font-size:14px}
+.btn-primary:hover{filter:brightness(1.1)}
+.btn-primary:disabled{opacity:.45;cursor:default}
+.btn-ghost{background:#333;color:#ddd;border-radius:9px;padding:11px 18px;font-weight:600}
+
+/* ── options / settings rows ── */
+.opt-card{border:1px solid #3d3d3d;border-radius:12px;background:#242424;margin:12px;overflow:hidden}
+.opt-row{position:relative;display:flex;align-items:center;padding:0 18px;height:52px;border-bottom:1px solid #2e2e2e;font-size:14px;cursor:pointer}
+.opt-row:last-child{border-bottom:0}
+.opt-row:hover{background:#2b2b2b}
+.opt-row .val{margin-left:auto;color:var(--muted);font-size:12px;display:flex;align-items:center;gap:6px}
+.opt-row select{background:#2c2c2c;border:1px solid #454545;color:#eee;border-radius:6px;padding:5px 8px;font:inherit;font-size:12px}
+.opt-row input[type=range]{width:110px}
+.opt-row .grp{font-size:11px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;padding:14px 18px 6px}
+.opt-row .chev{color:#666}
+
+/* ── about ── */
+.about-hero{display:flex;flex-direction:column;align-items:center;padding:26px 20px 16px;gap:8px}
+.about-hero .logo-mark{width:64px;height:64px;border-radius:20px;font-size:30px}
+.about-hero .rel{font-style:italic;color:var(--muted);font-size:12px;text-align:center;max-width:420px;line-height:1.7}
+
+/* ── editor (unchanged structure) ── */
+.titlebar{height:40px;flex:0 0 40px;background:var(--bar);display:flex;align-items:center;padding:0 6px;border-bottom:1px solid #333}
+.tb-btn{width:34px;height:34px;border-radius:6px;font-size:15px;color:#cfcfcf;display:grid;place-items:center}
+.tb-btn:hover{background:#3a3a3a}
+.path{flex:1;text-align:center;color:var(--text);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.path span{color:var(--muted)}
+.tb-actions{display:flex;gap:2px}
+.trackstrip{height:128px;flex:0 0 128px;display:flex;background:var(--strip);border-bottom:1px solid #3a3a3a;position:relative}
+.hdr-col{width:236px;flex:0 0 236px;border-right:1px solid #3a3a3a;display:flex;flex-direction:column;background:#242424}
+.hdr-top{height:22px;flex:0 0 22px;display:flex;align-items:center;gap:2px;padding:0 4px;background:#202020;border-bottom:1px solid #343434}
+.hdr-top .toggle{font-size:10px;color:#bbb;padding:2px 6px;border-radius:4px;background:#303030;letter-spacing:1px}
+.hdr-top .toggle:hover{background:#3d3d3d}
+.chips{display:none;gap:4px}
+.detailed .chips{display:flex}
+.chip{background:#343434;border-radius:4px;padding:2px 7px;font-size:11px;color:#ddd;cursor:pointer;white-space:nowrap}
+.chip:hover{background:#414141}
+.track-headers{flex:1;overflow-y:auto}
+.track-headers::-webkit-scrollbar{width:5px}
+.track-headers::-webkit-scrollbar-thumb{background:#444;border-radius:3px}
+.trk{display:flex;height:44px;border-bottom:1px solid #333;cursor:pointer;position:relative}
+.trk:hover{background:#2f2f2f}
+.trk.active{background:#333}
+.trk-tag{width:22px;flex:0 0 22px;color:#fff;font-size:10px;display:grid;place-items:center;position:relative;cursor:pointer}
+.trk-tag .mute-layer{position:absolute;inset:0;background:#888;opacity:0;pointer-events:none}
+.trk.muted .trk-tag .mute-layer{opacity:1}
+.trk-info{flex:1;display:flex;align-items:center;gap:8px;padding:0 6px;min-width:0}
+.avatar{width:30px;height:30px;flex:0 0 30px;border-radius:50%;border:1px dashed rgba(255,255,255,.35);display:grid;place-items:center;font-size:11px;font-weight:700;color:#fff;overflow:hidden;cursor:pointer}
+.trk-name{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trk-singer{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trk .row2{line-height:1.25}
+.trk-detail{display:none;flex:1;min-width:0;align-items:center;gap:6px;padding:2px 6px}
+.detailed .trk-detail{display:flex}
+.detailed .trk-compact{display:none}
+.trk-detail .dcol{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0}
+.drow{display:flex;align-items:center;gap:6px;font-size:10px;color:#ccc}
+.drow b{color:#eee;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.drow input[type=range]{flex:1;min-width:40px;height:14px}
+.dbtn{width:20px;height:20px;flex:0 0 20px;border-radius:4px;display:grid;place-items:center;font-size:11px;color:#ccc;background:#333}
+.dbtn:hover{background:#444}
+.color-dot{width:14px;height:14px;border-radius:50%;flex:0 0 14px;border:1px solid #00000066;cursor:pointer}
+.add-track{height:26px;font-size:18px;color:#999;background:#202020;border-top:1px solid #333}
+.add-track:hover{color:#fff;background:#2a2a2a}
+.tick-area{flex:1;position:relative;overflow:hidden;background:var(--strip)}
+.timeline{height:22px;background:var(--timeline-bg);border-bottom:1px solid #3a3a3a;position:relative;overflow:hidden}
+.timeline .bar{position:absolute;top:0;bottom:0;width:1px;background:#555}
+.timeline .bar b{position:absolute;left:4px;top:2px;font-size:10px;color:#bbb;font-weight:600}
+.parts-area{position:absolute;top:22px;left:0;right:0;bottom:0}
+.part{position:absolute;top:6px;height:26px;border-radius:5px;display:flex;align-items:center;padding:0 10px;font-size:11px;color:#fff;cursor:pointer}
+.part.muted{opacity:.35}
+.part .pl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+.part .pn{color:rgba(255,255,255,.75);font-weight:400;margin-left:6px}
+.float-tools{position:absolute;z-index:30}
+.track-tools{top:26px;right:10px;display:flex;flex-direction:column;gap:6px;align-items:flex-end}
+.roll-tools{top:10px;right:10px;display:flex;flex-direction:column;gap:6px;align-items:flex-end}
+.circ{width:34px;height:34px;border-radius:50%;background:rgba(0,0,0,.55);color:#e0e0e0;font-size:14px;display:grid;place-items:center;backdrop-filter:blur(3px)}
+.circ:hover{background:rgba(0,0,0,.8)}
+.circ.on{background:var(--primary);color:#fff}
+.circ-bar{display:flex;border-radius:20px;background:rgba(0,0,0,.55);padding:3px;backdrop-filter:blur(3px)}
+.circ-bar .circ{background:transparent;backdrop-filter:none;width:30px;height:30px;border-radius:50%}
+.circ-bar .circ:hover{background:rgba(255,255,255,.18)}
+.circ-bar .circ.on{background:var(--primary)}
+.circ-bar .hidden-tools{display:none}
+.circ-bar.multi .hidden-tools{display:flex}
+.roll-area{flex:1;min-height:0;display:flex;position:relative;background:var(--row-b)}
+.keys-col{width:60px;flex:0 0 60px;background:#2b2b2b;border-right:1px solid #3a3a3a;overflow:hidden;position:relative;box-shadow:2px 0 9px rgba(0,0,0,.4);z-index:5}
+.key{position:absolute;left:0;right:0;display:grid;place-items:center;font-size:9px;color:#fff;border-bottom:1px solid rgba(0,0,0,.35)}
+.key.white{background:var(--key-pink)}
+.key.black{background:transparent;color:transparent}
+.roll-wrap{flex:1;min-width:0;overflow:auto;position:relative;background:var(--row-w)}
+.roll{position:relative;background:
+  repeating-linear-gradient(to right,transparent 0,transparent 39px,rgba(255,255,255,.05) 39px,rgba(255,255,255,.05) 40px),
+  repeating-linear-gradient(to bottom,transparent 0,transparent 31px,rgba(255,255,255,.06) 31px,rgba(255,255,255,.06) 32px)}
+.roll .row-b{position:absolute;left:0;right:0;background:var(--row-b)}
+.barline{position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,.18);z-index:1}
+.roll-timeline{position:absolute;top:0;left:0;right:0;height:22px;background:var(--timeline-bg);border-bottom:1px solid #3a3a3a;z-index:6;overflow:hidden}
+.roll-timeline b{position:absolute;top:3px;font-size:10px;color:#ccc;font-weight:600}
+.note{position:absolute;height:26px;border-radius:3px;z-index:3;display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:600;cursor:pointer;box-shadow:0 2px 4px rgba(0,0,0,.4);touch-action:none}
+.note .lbl{pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 4px;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+.note.selected{outline:2px solid var(--sel);outline-offset:0;z-index:4}
+.note.error{opacity:.4}
+.note .handle{position:absolute;right:-1px;top:50%;transform:translateY(-50%);width:14px;height:14px;background:#f4d03f;border-radius:2px;display:none;pointer-events:auto}
+.note.selected .handle{display:block}
+.note .handle:after{content:'';position:absolute;left:3px;top:3px;border-left:5px solid #fff;border-top:4px solid transparent;border-bottom:4px solid transparent}
+.pitch{position:absolute;inset:0;z-index:2;pointer-events:none}
+.pitch path.line{stroke:rgba(255,255,255,.5);stroke-width:1.6;fill:none}
+.portrait{position:absolute;right:14px;bottom:10px;z-index:7;pointer-events:none;opacity:.5}
+.roll-playhead{position:absolute;top:0;bottom:0;width:2px;background:#fff;z-index:8;display:none;box-shadow:0 0 6px rgba(255,255,255,.7)}
+.roll-playhead:before{content:'';position:absolute;top:0;left:-5px;border-left:6px solid transparent;border-right:6px solid transparent;border-top:7px solid #fff}
+
+/* ── popups ── */
+.overlay{position:fixed;inset:0;z-index:100;display:none}
+.overlay.show{display:block}
+.popup{position:fixed;z-index:101;background:#2e2e2e;border:1px solid #4a4a4a;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.6);min-width:170px;overflow:hidden;display:none}
+.popup.show{display:block}
+.popup .p-title{font-size:11px;color:var(--muted);padding:10px 14px 4px;text-transform:uppercase;letter-spacing:.06em}
+.popup button{display:block;width:100%;text-align:left;padding:9px 14px;font-size:13px;color:#e6e6e6}
+.popup button:hover{background:#3d3d3d}
+.popup .sep{height:1px;background:#444;margin:4px 0}
+.popup .danger{color:#ff8a8a}
+.popup .p-grid{display:flex;gap:6px;padding:10px 14px 14px;flex-wrap:wrap}
+.popup .p-grid .chip{flex:1;text-align:center;min-width:52px}
+.popup .p-grid .chip.on{background:var(--primary);color:#fff}
+.popup .p-row{padding:8px 14px 12px;display:flex;gap:8px;align-items:center}
+.popup input[type=number],.popup input[type=text]{background:#222;border:1px solid #4a4a4a;border-radius:6px;color:#fff;padding:7px 9px;font:inherit}
+.popup .ok{background:var(--primary);color:#fff;border-radius:6px;padding:7px 14px;font-weight:600}
+.popup .ok:hover{filter:brightness(1.1)}
+.popup .singer-opt{display:flex;align-items:center;gap:10px}
+.popup .singer-opt .av{width:30px;height:30px;border-radius:50%;background:linear-gradient(145deg,#ff9cbe,#8d3b63);display:grid;place-items:center;font-size:12px;font-weight:800;color:#fff}
+.attr{position:fixed;left:8px;bottom:5px;z-index:99;font-size:9px;color:#666;pointer-events:none}
+</style>
+</head>
+<body>
+
+<!-- ══ HOME (OM HomePage: 4 actions / recent / logo) ══ -->
+<div class="view show" id="view-home">
+  <div class="home">
+    <div class="home-actions">
+      <div class="home-btn" id="homeNew"><div class="hb">＋</div><label>New</label></div>
+      <div class="home-btn" id="homeOpen"><div class="hb">📂</div><label>Open</label></div>
+      <div class="home-btn" id="homeSingers"><div class="hb">🎤</div><label>Singers</label></div>
+      <div class="home-btn" id="homeOptions"><div class="hb">⚙</div><label>Options</label></div>
+    </div>
+    <div class="home-recent">
+      <h3>Recent projects</h3>
+      <div class="recent-box" id="recentBox"></div>
+    </div>
+    <div class="home-foot">
+      <div class="logo-mark">L</div>
+      <div class="logo-name">Lilt<small>OpenUtau-compatible voice synth · UI trace of OpenUtau Mobile (MIT)</small></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ EDITOR (OM EditPage) ══ -->
+<div class="view" id="view-editor">
+  <header class="titlebar">
+    <button class="tb-btn" id="btnBack" title="Back to home">‹</button>
+    <div class="path">midnight_demo<span>&nbsp;/ Verse 01</span></div>
+    <div class="tb-actions">
+      <button class="tb-btn" id="btnSave" title="Save">💾</button>
+      <button class="tb-btn" id="btnUndo" title="Undo">↶</button>
+      <button class="tb-btn" id="btnRedo" title="Redo">↷</button>
+      <button class="tb-btn" id="btnMore" title="More">⋯</button>
+    </div>
+  </header>
+  <section class="trackstrip" id="trackstrip">
+    <div class="hdr-col">
+      <div class="hdr-top">
+        <button class="toggle" id="btnDetail">&gt;&gt;&gt;</button>
+        <div class="chips" id="chips">
+          <div class="chip" id="chipBpm" title="Edit BPM">128 BPM</div>
+          <div class="chip" id="chipBeat" title="Edit beat">4/4</div>
+          <div class="chip" id="chipKey" title="Edit key">C major</div>
+        </div>
+      </div>
+      <div class="track-headers" id="trackHeaders"></div>
+      <button class="add-track" id="btnAddTrack">＋</button>
+    </div>
+    <div class="tick-area">
+      <div class="timeline" id="stripTimeline"></div>
+      <div class="parts-area" id="partsArea"></div>
+    </div>
+    <div class="float-tools track-tools">
+      <div class="circ-bar multi" id="partBar">
+        <button class="circ" id="btnEditMode" title="Edit mode toggle">✎</button>
+        <div class="hidden-tools">
+          <button class="circ" title="Remove part">🗑</button>
+          <button class="circ" title="Rename part">✏️</button>
+        </div>
+      </div>
+      <button class="circ" id="btnSnap" title="Snap to grid (long-press: division)">🧲</button>
+    </div>
+  </section>
+  <section class="roll-area">
+    <div class="keys-col" id="keysCol"></div>
+    <div class="roll-wrap" id="rollWrap">
+      <div class="roll" id="roll">
+        <div class="roll-timeline" id="rollTimeline"></div>
+        <svg class="pitch" id="pitchSvg" preserveAspectRatio="none"></svg>
+        <div class="notes-layer" id="notesLayer" style="position:absolute;inset:0"></div>
+        <div class="portrait" id="portrait"></div>
+        <div class="roll-playhead" id="rollPlayhead"></div>
+      </div>
+    </div>
+    <div class="float-tools roll-tools">
+      <div class="circ-bar" id="selBar">
+        <button class="circ" id="btnSelMode" title="Selection mode">⛶</button>
+        <div class="hidden-tools">
+          <button class="circ" title="Select all">☑</button>
+          <button class="circ" title="Copy">📋</button>
+          <button class="circ" title="Paste">📄</button>
+        </div>
+      </div>
+      <button class="circ on" id="btnPlay" title="Play">▶</button>
+    </div>
+  </section>
+</div>
+
+<!-- ══ SINGERS (OM SingerManagePage) ══ -->
+<div class="view" id="view-singers">
+  <div class="pbar">
+    <button class="pb-back" data-back="home">‹</button>
+    <div class="pb-title">Singers</div>
+    <div class="pb-right"><button class="pb-btn" id="btnDeps" title="Dependency manage">🧩</button></div>
+  </div>
+  <div class="page-body" id="singersBody"></div>
+  <button class="fab" id="fabInstall" title="Install singer">＋</button>
+</div>
+
+<!-- ══ SINGER DETAIL (OM SingerDetailPage) ══ -->
+<div class="view" id="view-detail">
+  <div class="pbar">
+    <button class="pb-back" data-back="singers">‹</button>
+    <div class="pb-title">Singer</div>
+  </div>
+  <div class="page-body">
+    <div class="detail-card">
+      <div class="detail-hero">
+        <div class="av" id="dAvatar">T</div>
+        <b id="dName">—</b>
+      </div>
+      <div class="detail-rows" id="dRows"></div>
+    </div>
+    <button class="btn-danger" id="btnRemoveSinger">🗑&nbsp; Remove singer</button>
+  </div>
+</div>
+
+<!-- ══ INSTALL (OM InstallSingerPage: file picker + progress) ══ -->
+<div class="view" id="view-install">
+  <div class="pbar">
+    <button class="pb-back" data-back="singers">‹</button>
+    <div class="pb-title">Install singer</div>
+  </div>
+  <div class="page-body">
+    <div class="install-hint">Pick a voicebank archive (.zip / .uar) — the mock browser only shows sample files.</div>
+    <div class="file-list" id="fileList"></div>
+    <div class="install-panel" id="installPanel" style="display:none">
+      <div class="ip-row"><b id="ipName">—</b></div>
+      <div class="ip-meta" id="ipMeta">—</div>
+      <div class="progress"><i id="progressBar"></i></div>
+      <div style="display:flex;gap:10px;margin-top:14px">
+        <button class="btn-primary" id="btnInstall">Install</button>
+        <button class="btn-ghost" id="btnCancelInstall">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ OPTIONS (OM OptionsPage) ══ -->
+<div class="view" id="view-options">
+  <div class="pbar">
+    <button class="pb-back" data-back="home">‹</button>
+    <div class="pb-title">Options</div>
+  </div>
+  <div class="page-body">
+    <div class="opt-card">
+      <div class="opt-row" id="optSettings">Settings <span class="val chev">›</span></div>
+      <div class="opt-row" id="optAbout">About <span class="val chev">›</span></div>
+      <div class="opt-row" id="optHelp">Help and tutorial <span class="val">soon</span></div>
+      <div class="opt-row" id="optExportLog">Export log <span class="val">mock</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ SETTINGS (our interpretation of OM SettingsPage) ══ -->
+<div class="view" id="view-settings">
+  <div class="pbar">
+    <button class="pb-back" data-back="options">‹</button>
+    <div class="pb-title">Settings</div>
+  </div>
+  <div class="page-body">
+    <div class="opt-card">
+      <div class="grp">General</div>
+      <div class="opt-row">Language <span class="val"><select id="setLang"><option>English (US)</option><option>简体中文</option><option>日本語</option><option>System</option></select></span></div>
+      <div class="opt-row">Theme <span class="val"><select id="setTheme"><option>Dark</option><option>Light</option></select></span></div>
+      <div class="grp">Audio</div>
+      <div class="opt-row">Sample rate <span class="val">44100 Hz</span></div>
+      <div class="opt-row">Output device <span class="val">Default</span></div>
+      <div class="grp">Engine</div>
+      <div class="opt-row">Renderer <span class="val">WORLD</span></div>
+      <div class="opt-row">Phonemizer <span class="val">English CVVC</span></div>
+      <div class="grp">Paths</div>
+      <div class="opt-row">Voicebank dir <span class="val" style="font-size:11px">…/lilt/teto-english</span></div>
+      <div class="opt-row">Projects dir <span class="val" style="font-size:11px">Documents/Lilt</span></div>
+      <div class="grp">Data</div>
+      <div class="opt-row" id="optClearCache">Clear render cache <span class="val chev">›</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ ABOUT (OM AboutPage) ══ -->
+<div class="view" id="view-about">
+  <div class="pbar">
+    <button class="pb-back" data-back="options">‹</button>
+    <div class="pb-title">About</div>
+  </div>
+  <div class="page-body">
+    <div class="about-hero">
+      <div class="logo-mark">L</div>
+      <div class="logo-name">Lilt<small>OpenUtau-compatible voice synth</small></div>
+      <div class="rel">"so can we wander for a spell<br>and live in parallel…"</div>
+    </div>
+    <div class="opt-card">
+      <div class="opt-row">Lilt version <span class="val">0.1.0 (mock)</span></div>
+      <div class="opt-row">OpenUtau core <span class="val">0.9.x compatible</span></div>
+      <div class="opt-row" id="optGitHub">GitHub · suggestions <span class="val chev">↗</span></div>
+    </div>
+    <div class="install-hint">UI design traced from OpenUtau Mobile (MIT) — stakira/OpenUtau</div>
+  </div>
+</div>
+
+<!-- ══ popups ══ -->
+<div class="overlay" id="overlay"></div>
+<div class="popup" id="popEditMenu"></div>
+<div class="popup" id="popSnap"><div class="p-title">Snap division</div><div class="p-grid" id="snapGrid"></div></div>
+<div class="popup" id="popBpm"><div class="p-title">Tempo (BPM)</div><div class="p-row"><input type="number" id="bpmInput" min="40" max="300" /><button class="ok" id="bpmOk">OK</button></div></div>
+<div class="popup" id="popBeat"><div class="p-title">Time signature</div><div class="p-grid" id="beatGrid"></div></div>
+<div class="popup" id="popKey"><div class="p-title">Key</div><div class="p-grid" id="keyGrid"></div></div>
+<div class="popup" id="popMore"><div class="p-title">Project</div><button id="mPlay">▶&nbsp; Play</button><button id="mExport">⬇&nbsp; Export audio</button><div class="sep"></div><button id="mAddTrack">＋&nbsp; Add track</button><button id="mSettings">⚙&nbsp; Settings</button></div>
+<div class="popup" id="popLyric"><div class="p-title">Edit lyrics</div><div class="p-row"><input type="text" id="lyricInput" style="width:140px" /><button class="ok" id="lyricOk">OK</button></div></div>
+<div class="popup" id="popOpen"><div class="p-title">Open project (.ustx)</div><div id="openList"></div></div>
+<div class="popup" id="popSinger"><div class="p-title">Choose singer</div><div id="singerList"></div></div>
+<div class="popup" id="popExport"><div class="p-title">Export audio</div><div class="p-row" style="flex-direction:column;align-items:stretch;gap:10px;min-width:220px">
+  <div id="exportMsg" style="font-size:12px;color:#ccc">Rendering through WORLD…</div>
+  <div class="progress"><i id="exportBar"></i></div>
+</div></div>
+<div class="attr">UI trace: OpenUtau Mobile (MIT) — review mock for Lilt</div>
+
+<script>
+/* ═══════ data ═══════ */
+const BPM=128, PPB=40, KEY_W=60, ROW_H=32, TOP_MIDI=84, BOT_MIDI=48;
+const TRACKS=[
+ {name:'Lead Vocal',singer:'Teto English',color:'#fe71a3',part:'Verse 01',
+  notes:[[0,1,7,'so'],[1,.5,7,'can'],[1.5,.5,7,'we'],[2,2,10,'wander'],[4,.5,7,'for'],[4.5,.5,10,'a'],[5,1,10,'spell'],[6,.5,7,'and'],[6.5,.5,7,'live'],[7,.5,10,'in'],[7.5,2,10,'parallel'],[9.5,.5,4,'i'],[10,.5,6,'want'],[10.5,.5,3,'it'],[11,.5,5,'to'],[11.5,.5,3,'be'],[12,.5,4,'true'],[12.5,.5,5,'to'],[13,.5,7,'be'],[13.5,1,7,'like'],[14.5,1,8,'you'],[15.5,.5,10,'my'],[16,.5,10,'heart'],[16.5,1,7,'sings'],[17.5,.5,10,'a'],[18,1.5,5,'chorus'],[19.5,.5,3,'out'],[20,.5,5,'of'],[20.5,1,5,'tune'],[21.5,.5,5,'and'],[22,.5,7,'i'],[22.5,.5,4,'could'],[23,.5,3,'leave'],[23.5,.5,4,'it'],[24,.5,5,'on'],[24.5,.5,5,'a'],[25,1,5,'shelf']]},
+ {name:'Harmony',singer:'Teto English',color:'#7cc7ff',part:'Verse 01',
+  notes:[[1,1,4,'ooh'],[3,1,4,'ah'],[5,1,7,'ooh'],[7,1,7,'ah'],[9,1,1,'ooh'],[13.5,1,4,'ah'],[16.5,1,4,'ooh'],[20.5,1,2,'ah'],[25,1,2,'ooh']]},
+ {name:'Guide melody',singer:'Piano',color:'#ffcf6b',part:'Guide',
+  notes:[[0,.5,7,'ding'],[4,.5,7,'ding'],[8,.5,7,'ding'],[12,.5,7,'ding'],[16,.5,7,'ding'],[20,.5,7,'ding'],[24,.5,7,'ding']]},
+];
+const SNAP_OPTS=['1/1','1/2','1/4','1/8','1/16','1/32','Off'];
+const BEATS=[['4/4','4','4'],['3/4','3','4'],['2/4','2','4'],['6/8','6','8']];
+const KEYS=['C major','G major','D major','A major','E major','F major','B♭ major','A minor','E minor'];
+const SONG_LEN=26;
+const FILES=[
+ {n:'Download/',dir:1},{n:'teto_english_cvvc.zip',size:'93 MB'},{n:'lilt-demo-song.ustx',size:'4 KB'},
+ {n:'Documents/',dir:1},{n:'lilt-project.ustx',size:'6 KB'},{n:'midnight_demo.ustx',size:'6 KB'},
+];
+let SINGERS=[
+ {id:'teto.english',name:'Teto English',local:'Teto English',author:'TWINDRILL',version:'1.0',path:'voice/lilt/teto-english',web:'—',type:'UTAU',initial:'T'},
+];
+const RECENTS=[
+ {n:'lilt-project.ustx',t:'edited just now',p:'Documents/Lilt'},
+ {n:'midnight_demo.ustx',t:'yesterday',p:'Documents/Lilt'},
+];
+
+let selTrack=0, snapOn=true, snapIdx=3, detailed=false, playing=false, playT=0, playingTimer=null;
+let selNote=null, editMode=true, clip=null, installing=false;
+
+const $=s=>document.querySelector(s);
+const rowY=midi=>(TOP_MIDI-midi)*ROW_H;
+const noteX=beat=>KEY_W+beat*PPB;
+
+/* ═══════ view routing ═══════ */
+const VIEWS=['home','editor','singers','detail','install','options','settings','about'];
+function showView(name){
+  VIEWS.forEach(v=>$('#view-'+v).classList.toggle('show',v===name));
+  if(name==='editor'&&playing)$('#btnPlay').click();
+  if(name==='singers')renderSingers();
+}
+document.querySelectorAll('[data-back]').forEach(b=>b.onclick=()=>showView(b.dataset.back));
+
+/* ═══════ home ═══════ */
+function renderRecent(){
+  const box=$('#recentBox');
+  if(!RECENTS.length){box.innerHTML='<div class="recent-empty">No projects opened yet</div>';return;}
+  box.innerHTML=RECENTS.map(r=>'<div class="recent-row"><span class="ico">▤</span><span>'+r.n+'</span><span class="sub">'+r.t+' · '+r.p+'</span></div>').join('');
+}
+$('#homeNew').onclick=()=>{showView('editor');toast('New project: midnight_demo');};
+$('#homeOpen').onclick=()=>openProjectPopup();
+$('#homeSingers').onclick=()=>showView('singers');
+$('#homeOptions').onclick=()=>showView('options');
+$('#btnBack').onclick=()=>showView('home');
+
+/* ═══════ open project popup (OM FilePickerPopup) ═══════ */
+function openProjectPopup(){
+  const list=$('#openList'); list.innerHTML='';
+  FILES.filter(f=>!f.dir).forEach(f=>{
+    const b=document.createElement('button');
+    b.innerHTML='<span style="color:var(--primary)">▤</span>&nbsp; '+f.n;
+    b.onclick=()=>{hidePopups();showView('editor');toast('Opened '+f.n);};
+    list.appendChild(b);
+  });
+  showPopup($('#popOpen'),innerWidth/2-160,240);
+}
+
+/* ═══════ singers ═══════ */
+function renderSingers(){
+  const body=$('#singersBody');
+  if(!SINGERS.length){body.innerHTML='<div class="no-singers">No singers installed yet — tap ＋ to install one.</div>';return;}
+  body.innerHTML='';
+  SINGERS.forEach((s,i)=>{
+    const c=document.createElement('div');
+    c.className='singer-card'+(s.type==='Vogen'?' vogen':'');
+    c.innerHTML='<div class="stag"></div><div class="savatar"><div class="av">'+s.initial+'</div></div>'+
+      '<div class="sinfo"><b>'+s.local+'</b><div class="sid">ID: '+s.id+' · '+s.type+'</div></div><div class="fwd">›</div>';
+    c.onclick=()=>{showDetail(i);};
+    body.appendChild(c);
+  });
+}
+function showDetail(i){
+  const s=SINGERS[i];
+  $('#dAvatar').textContent=s.initial;
+  $('#dName').textContent=s.local;
+  $('#dRows').innerHTML=
+    '<div class="detail-row"><span>Name</span><b>'+s.name+'</b></div>'+
+    '<div class="detail-row"><span>ID</span><b>'+s.id+'</b></div>'+
+    '<div class="detail-row"><span>Author</span><b>'+s.author+'</b></div>'+
+    '<div class="detail-row"><span>Version</span><b>'+s.version+'</b></div>'+
+    '<div class="detail-row"><span>Installation path</span><b>'+s.path+'</b></div>'+
+    '<div class="detail-row"><span>Website</span><b>'+s.web+'</b></div>';
+  $('#btnRemoveSinger').onclick=()=>{
+    if(!confirm('Remove '+s.local+'?'))return;
+    SINGERS.splice(i,1); showView('singers'); toast(s.local+' removed');
+  };
+  showView('detail');
+}
+$('#btnDeps').onclick=()=>toast('Mock: dependency manage (resamplers / wavtools)');
+$('#fabInstall').onclick=()=>{showView('install');renderFiles();};
+
+/* ═══════ install (mock file picker + progress) ═══════ */
+let selFile=null;
+function renderFiles(){
+  const list=$('#fileList'); list.innerHTML='';
+  FILES.forEach(f=>{
+    const r=document.createElement('div');
+    r.className='file-row'+(selFile===f?' sel':'');
+    r.innerHTML='<span class="'+(f.dir?'fdir':'')+'" style="width:18px;text-align:center">'+(f.dir?'📁':'🗎')+'</span>'+
+      '<span class="fname">'+f.n+'</span>'+(f.size?'<span class="fsize">'+f.size+'</span>':'');
+    r.onclick=()=>{selFile=f;renderFiles();
+      const panel=$('#installPanel');
+      if(f.dir){panel.style.display='none';return;}
+      panel.style.display='block';
+      $('#ipName').textContent=f.n;
+      $('#ipMeta').textContent=(f.n.endsWith('.zip')||f.n.endsWith('.uar'))?'UTAU voicebank archive · '+f.size:'Not a voicebank archive';
+      $('#btnInstall').disabled=!f.n.endsWith('.zip')&&!f.n.endsWith('.uar');
+    };
+    list.appendChild(r);
+  });
+}
+$('#btnInstall').onclick=()=>{
+  if(installing)return; installing=true;
+  const bar=$('#progressBar'); bar.style.width='0';
+  const ip=$('#ipName'); const orig=ip.textContent;
+  ip.textContent='Installing '+orig+'…';
+  $('#btnInstall').disabled=true;
+  let p=0;
+  const t=setInterval(()=>{p+=7;bar.style.width=p+'%';
+    if(p>=100){clearInterval(t);installing=false;
+      SINGERS.push({id:'momo.english',name:'Momo English',local:'Momo English',author:'Momo project',version:'1.2',path:'voice/lilt/momo-english',web:'—',type:'UTAU',initial:'M'});
+      showView('singers'); toast('Installed Momo English ✓');}
+  },60);
+};
+$('#btnCancelInstall').onclick=()=>{selFile=null;$('#installPanel').style.display='none';renderFiles();toast('Install cancelled');};
+
+/* ═══════ options / settings / about ═══════ */
+$('#optSettings').onclick=()=>showView('settings');
+$('#optAbout').onclick=()=>showView('about');
+$('#optHelp').onclick=()=>toast('Mock: tutorial page');
+$('#optExportLog').onclick=()=>toast('Mock: log exported');
+$('#optClearCache').onclick=()=>toast('Mock: render cache cleared');
+$('#optGitHub').onclick=()=>toast('Mock: open github.com/stakira/OpenUtau');
+
+/* ═══════ editor: track headers ═══════ */
+function buildTrackHeaders(){
+  const c=$('#trackHeaders'); c.innerHTML='';
+  TRACKS.forEach((t,i)=>{
+    const el=document.createElement('div'); el.className='trk'+(i===selTrack?' active':''); el.dataset.i=i;
+    el.innerHTML=`
+      <div class="trk-tag" style="background:${t.color}" title="Mute">
+        <span>${i+1}</span><span class="mute-layer"></span>
+      </div>
+      <div class="trk-info trk-compact">
+        <div class="avatar" style="background:linear-gradient(145deg,${t.color},#7a4a8a)" title="Choose singer">${(t.singer||'?')[0]}</div>
+        <div class="row2"><div class="trk-name">${t.name}</div><div class="trk-singer">${t.singer||''}</div></div>
+      </div>
+      <div class="trk-detail">
+        <div class="color-dot" style="background:${t.color}" title="Track color"></div>
+        <div class="dcol">
+          <div class="drow"><b class="dname">${t.name}</b><span class="dph" style="margin-left:auto">CVVC</span></div>
+          <div class="drow"><span style="color:var(--muted)">Vol</span><input type="range" min="-24" max="12" value="0" class="vol"><b class="volv">0</b></div>
+          <div class="drow"><span style="color:var(--muted)">Pan</span><input type="range" min="-100" max="100" value="0" class="pan"><b class="panv">0</b></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <button class="dbtn" title="Move up">↑</button><button class="dbtn" title="Delete track">🗑</button><button class="dbtn" title="Move down">↓</button>
+        </div>
+      </div>`;
+    el.querySelector('.trk-tag').onclick=e=>{e.stopPropagation();el.classList.toggle('muted');paintParts();};
+    el.querySelector('.avatar').onclick=e=>{e.stopPropagation();chooseSingerPopup(i);};
+    el.onclick=()=>{selTrack=i;selNote=null;
+      document.querySelectorAll('.trk').forEach(x=>x.classList.toggle('active',x.dataset.i==i));
+      renderRoll();paintParts();};
+    el.querySelectorAll('input[type=range]').forEach(r=>{
+      r.oninput=()=>{const v=+r.value;r.parentElement.querySelector('.volv,.panv').textContent=v;};
+      r.ondblclick=()=>{r.value=0;r.parentElement.querySelector('.volv,.panv').textContent=0;};
+    });
+    c.appendChild(el);
+  });
+}
+function buildStripTimeline(){
+  const t=$('#stripTimeline'); t.innerHTML='';
+  for(let b=0;b<=SONG_LEN;b+=4){const d=document.createElement('div');d.className='bar';d.style.left=(b*PPB+40)+'px';
+    if(b%4===0)d.innerHTML='<b>'+(b/4+1)+'</b>';t.appendChild(d);}
+  const rt=$('#rollTimeline'); rt.innerHTML='';
+  for(let b=0;b<=SONG_LEN;b+=4){const d=document.createElement('div');d.className='barline';d.style.left=(KEY_W+b*PPB)+'px';
+    const lb=document.createElement('b');lb.style.left=(KEY_W+b*PPB+4)+'px';lb.textContent=b/4+1;rt.appendChild(lb);rt.appendChild(d);}
+}
+function paintParts(){
+  const c=$('#partsArea'); c.innerHTML='';
+  TRACKS.forEach((t,i)=>{
+    const p=document.createElement('div'); p.className='part'; p.style.left=noteX(0)+'px';
+    p.style.width=(SONG_LEN*PPB-4)+'px';
+    p.style.background=t.color+'66'; p.style.border='1.5px solid '+t.color;
+    p.innerHTML=`<span class="pl">${t.name}</span><span class="pn">${t.part}</span>`;
+    if(document.querySelectorAll('.trk')[i].classList.contains('muted'))p.classList.add('muted');
+    p.onclick=()=>{document.querySelectorAll('.trk')[i].click();};
+    c.appendChild(p);
+  });
+}
+
+/* ═══════ piano roll ═══════ */
+function buildKeys(){
+  const c=$('#keysCol'); c.innerHTML='';
+  for(let midi=TOP_MIDI;midi>=BOT_MIDI;midi--){
+    const black=[1,3,6,8,10].includes(midi%12);
+    const k=document.createElement('div');
+    k.className='key '+(black?'black':'white');
+    k.style.top=rowY(midi)+'px'; k.style.height=ROW_H+'px';
+    if(midi%12===0)k.textContent='C'+(midi/12-1);
+    c.appendChild(k);
+  }
+  const roll=$('#roll');
+  for(let midi=TOP_MIDI;midi>=BOT_MIDI;midi--){
+    if([1,3,6,8,10].includes(midi%12)){
+      const r=document.createElement('div'); r.className='row-b';
+      r.style.top=rowY(midi)+'px'; r.style.height=ROW_H+'px'; roll.appendChild(r);
+    }
+  }
+  roll.style.height=(TOP_MIDI-BOT_MIDI+1)*ROW_H+'px';
+  roll.style.width=noteX(SONG_LEN)+'px';
+}
+function renderRoll(){
+  const layer=$('#notesLayer'); layer.innerHTML='';
+  const t=TRACKS[selTrack];
+  t.notes.forEach(n=>{
+    const [pos,dur,pitch,lyric]=n;
+    const el=document.createElement('div'); el.className='note';
+    el.style.left=noteX(pos)+'px'; el.style.top=rowY(pitch+60)+4+'px';
+    el.style.width=(dur*PPB-3)+'px'; el.style.height=ROW_H-8+'px';
+    el.style.background='linear-gradient(180deg,'+t.color+',#00000055),'+t.color;
+    el.dataset.pos=pos; el.dataset.dur=dur; el.dataset.pitch=pitch;
+    el.innerHTML='<span class="lbl">'+lyric+'</span><div class="handle" title="Resize"></div>';
+    el.addEventListener('pointerdown',e=>noteDown(e,el));
+    el.addEventListener('dblclick',e=>{e.stopPropagation();openLyric(n);});
+    layer.appendChild(el);
+  });
+  drawPitch();
+}
+function drawPitch(){
+  const svg=$('#pitchSvg'), t=TRACKS[selTrack];
+  const W=noteX(SONG_LEN), H=(TOP_MIDI-BOT_MIDI+1)*ROW_H;
+  svg.setAttribute('viewBox','0 0 '+W+' '+H);
+  if(!t.notes.length){svg.innerHTML='';return;}
+  const pts=t.notes.map(n=>[noteX(n[0])+n[1]*PPB/2,rowY(n[2]+60)+ROW_H/2]);
+  let d='M'+pts[0][0]+' '+pts[0][1];
+  for(let i=1;i<pts.length;i++){const a=pts[i-1],b=pts[i],mx=(a[0]+b[0])/2;
+    d+=' C'+mx+' '+a[1]+','+mx+' '+b[1]+','+b[0]+' '+b[1];}
+  svg.innerHTML='<path class="line" d="'+d+'"/>';
+}
+const rollWrap=$('#rollWrap');
+rollWrap.onscroll=()=>{$('#keysCol').scrollTop=rollWrap.scrollTop;
+  const ph=$('#rollPlayhead'); if(ph.style.display!=='none')ph.style.left=noteX(playT)+'px';};
+
+/* ═══════ note interactions ═══════ */
+let drag=null, lpT=null;
+function noteDown(e,el){
+  e.stopPropagation();
+  select(el);
+  if(!editMode)return;
+  if(e.target.classList.contains('handle')){drag={type:'resize',el,startX:e.clientX,dur:el.dataset.dur};}
+  else{drag={type:'move',el,startX:e.clientX,startY:e.clientY,pos:+el.dataset.pos,pitch:+el.dataset.pitch};}
+  try{el.setPointerCapture(e.pointerId);}catch(_){}
+  lpT=setTimeout(()=>{if(drag&&drag.type==='move'&&!drag.moved)openEditMenu(e.clientX,e.clientY);},550);
+}
+function noteMove(e){
+  if(!drag)return;
+  const t=TRACKS[selTrack], idx=[...document.querySelectorAll('.note')].indexOf(drag.el);
+  if(idx<0)return;
+  const n=t.notes[idx];
+  if(drag.type==='resize'){
+    const d=(e.clientX-drag.startX)/PPB; const dur=Math.max(.25,drag.dur+d);
+    n[1]=Math.round(dur*8)/8; drag.el.dataset.dur=n[1];
+    drag.el.style.width=(n[1]*PPB-3)+'px'; drawPitch();
+  }else{
+    const dx=e.clientX-drag.startX, dy=e.clientY-drag.startY;
+    if(Math.abs(dx)+Math.abs(dy)>6)drag.moved=true;
+    if(!drag.moved)return;
+    let pos=drag.pos+dx/PPB; if(snapOn)pos=Math.round(pos*8)/8;
+    const pitch=Math.round(drag.pitch-dy/ROW_H);
+    n[0]=Math.max(0,pos); n[2]=Math.min(24,Math.max(-36,pitch));
+    drag.el.dataset.pos=n[0]; drag.el.dataset.pitch=n[2];
+    drag.el.style.left=noteX(n[0])+'px';
+    drag.el.style.top=rowY(n[2]+60)+4+'px';
+    drawPitch();
+  }
+}
+function noteUp(){clearTimeout(lpT);drag=null;}
+document.addEventListener('pointerup',noteUp);
+document.addEventListener('pointermove',noteMove);
+$('#notesLayer').addEventListener('pointerdown',e=>{clearTimeout(lpT);});
+function select(el){
+  document.querySelectorAll('.note').forEach(x=>x.classList.remove('selected'));
+  el.classList.add('selected');
+}
+/* double-click empty roll → create note (our app's tap-add) */
+$('#notesLayer').addEventListener('dblclick',e=>{
+  if(e.target.closest('.note'))return;
+  const r=$('#roll').getBoundingClientRect();
+  const pos=Math.max(0,Math.round(((e.clientX-r.left)-KEY_W)/PPB*8)/8);
+  const midi=TOP_MIDI-Math.floor((e.clientY-r.top-20)/ROW_H);
+  if(midi<BOT_MIDI||midi>TOP_MIDI)return;
+  TRACKS[selTrack].notes.push([pos,.5,midi-60,'la']);
+  TRACKS[selTrack].notes.sort((a,b)=>a[0]-b[0]);
+  renderRoll();
+});
+
+/* ═══════ popups ═══════ */
+const overlay=$('#overlay');
+function showPopup(p,x,y){document.querySelectorAll('.popup').forEach(q=>q.classList.remove('show'));
+  overlay.classList.add('show'); p.classList.add('show');
+  const r=p.getBoundingClientRect();
+  p.style.left=Math.min(x,innerWidth-r.width-8)+'px';
+  p.style.top=Math.min(y,innerHeight-r.height-8)+'px';}
+function hidePopups(){document.querySelectorAll('.popup').forEach(q=>q.classList.remove('show'));overlay.classList.remove('show');}
+overlay.onclick=hidePopups;
+function openEditMenu(x,y){
+  const p=$('#popEditMenu');
+  p.innerHTML='<div class="p-title">Note</div>'+
+    '<button data-a="cut">✂&nbsp; Cut</button><button data-a="copy">📋&nbsp; Copy</button><button data-a="paste">📄&nbsp; Paste</button>'+
+    '<div class="sep"></div><button data-a="up">↑&nbsp; Move up</button><button data-a="down">↓&nbsp; Move down</button>'+
+    '<div class="sep"></div><button data-a="lyric">✏️&nbsp; Edit lyrics…</button>'+
+    '<div class="sep"></div><button class="danger" data-a="del">🗑&nbsp; Delete</button>';
+  p.onclick=e=>{const a=e.target.dataset&&e.target.dataset.a; if(!a)return; hidePopups();
+    const t=TRACKS[selTrack];
+    const selEl=document.querySelector('.note.selected');
+    if(!selEl)return;
+    const idx=[...document.querySelectorAll('.note')].indexOf(selEl);
+    const n=t.notes[idx];
+    if(a==='lyric')openLyric(n);
+    if(a==='del'){t.notes.splice(idx,1);renderRoll();}
+    if(a==='up'||a==='down'){n[2]+=a==='up'?1:-1;renderRoll();}
+    if(a==='copy')clip=[...n];
+    if(a==='paste'&&clip){t.notes.push([n[0]+1,clip[1],clip[2],clip[3]]);t.notes.sort((a,b)=>a[0]-b[0]);renderRoll();}
+  };
+  showPopup(p,x,y);
+}
+function openLyric(n){
+  const p=$('#popLyric'); $('#lyricInput').value=n[3];
+  showPopup(p,innerWidth/2-90,innerHeight/2-70);
+  $('#lyricOk').onclick=()=>{n[3]=$('#lyricInput').value||n[3];hidePopups();renderRoll();};
+}
+function chooseSingerPopup(trackIdx){
+  const list=$('#singerList'); list.innerHTML='';
+  if(!SINGERS.length){const b=document.createElement('button');b.textContent='No singers installed';list.appendChild(b);}
+  SINGERS.forEach(s=>{
+    const b=document.createElement('button');
+    b.className='singer-opt';
+    b.innerHTML='<span class="av">'+s.initial+'</span>'+s.local;
+    b.onclick=()=>{TRACKS[trackIdx].singer=s.local;hidePopups();buildTrackHeaders();paintParts();toast(s.local+' → '+TRACKS[trackIdx].name);};
+    list.appendChild(b);
+  });
+  showPopup($('#popSinger'),innerWidth/2-140,300);
+}
+
+/* snap / bpm / beat / key */
+function buildSnap(){
+  const g=$('#snapGrid'); g.innerHTML='';
+  SNAP_OPTS.forEach((s,i)=>{const b=document.createElement('button');b.className='chip'+(i===snapIdx?' on':'');b.textContent=s;
+    b.onclick=()=>{snapIdx=i;snapOn=i<6;$('#btnSnap').classList.toggle('on',snapOn);hidePopups();buildSnap();};g.appendChild(b);});
+}
+$('#btnSnap').onclick=()=>showPopup($('#popSnap'),innerWidth-190,190);
+$('#btnSnap').addEventListener('pointerdown',()=>setTimeout(()=>{if(!overlay.classList.contains('show'))showPopup($('#popSnap'),innerWidth-190,190);},650));
+$('#chipBpm').onclick=()=>{const p=$('#popBpm');$('#bpmInput').value=BPM;showPopup(p,180,150);
+  $('#bpmOk').onclick=()=>{const v=+$('#bpmInput').value;if(v>=40&&v<=300)$('#chipBpm').textContent=v+' BPM';hidePopups();};};
+$('#chipBeat').onclick=()=>showPopup($('#popBeat'),320,150);
+$('#chipKey').onclick=()=>showPopup($('#popKey'),460,150);
+function buildChips(cont,items,onPick){const g=$(cont);g.innerHTML='';
+  items.forEach(s=>{const b=document.createElement('button');b.className='chip';b.textContent=s;
+    b.onclick=()=>{onPick(s);hidePopups();};g.appendChild(b);});}
+buildChips('#beatGrid',BEATS.map(b=>b[0]),s=>$('#chipBeat').textContent=s);
+buildChips('#keyGrid',KEYS,s=>$('#chipKey').textContent=s);
+buildSnap();
+
+/* title bar / more menu / editor toolbar */
+$('#btnMore').onclick=e=>{showPopup($('#popMore'),innerWidth-200,44);
+  $('#mPlay').onclick=()=>{$('#btnPlay').click();hidePopups();};
+  $('#mExport').onclick=()=>{hidePopups();exportAudio();};
+  $('#mAddTrack').onclick=()=>{hidePopups();toast('Mock: add track');};
+  $('#mSettings').onclick=()=>{hidePopups();showView('settings');};};
+$('#btnDetail').onclick=()=>{detailed=!detailed;
+  $('#trackstrip').classList.toggle('detailed',detailed);
+  $('#btnDetail').textContent=detailed?'&lt;&lt;&lt;':'&gt;&gt;&gt;';};
+$('#btnEditMode').onclick=()=>{editMode=!editMode;$('#btnEditMode').classList.toggle('on',editMode);
+  document.querySelectorAll('.note .handle').forEach(h=>h.style.display=editMode?'':'none');};
+$('#btnSelMode').onclick=()=>{$('#selBar').classList.toggle('multi');$('#btnSelMode').classList.toggle('on');};
+$('#btnSave').onclick=()=>{toast('Project saved → Documents/Lilt/lilt-project.ustx');
+  RECENTS[0]={n:'lilt-project.ustx',t:'edited just now',p:'Documents/Lilt'};renderRecent();};
+$('#btnUndo').onclick=()=>toast('Mock: undo');
+$('#btnRedo').onclick=()=>toast('Mock: redo');
+$('#btnAddTrack').onclick=()=>toast('Mock: add track');
+
+/* export (OM ExportAudioPopup) */
+function exportAudio(){
+  showPopup($('#popExport'),innerWidth/2-150,innerHeight/2-90);
+  const bar=$('#exportBar'); bar.style.width='0';
+  $('#exportMsg').textContent='Rendering through WORLD…';
+  let p=0;
+  const t=setInterval(()=>{p+=9;bar.style.width=p+'%';
+    if(p>=100){clearInterval(t);
+      $('#exportMsg').textContent='✓ Saved: Downloads/Lilt/lilt-'+Date.now().toString().slice(-6)+'.wav (3.1 MB)';
+      setTimeout(hidePopups,1400);}
+  },70);
+}
+
+/* play */
+$('#btnPlay').onclick=()=>{
+  playing=!playing; $('#btnPlay').classList.toggle('on',playing);
+  $('#btnPlay').textContent=playing?'Ⅱ':'▶';
+  const ph=$('#rollPlayhead');
+  if(playing){ph.style.display='block';playT=0;
+    playingTimer=setInterval(()=>{playT+=0.1;if(playT>SONG_LEN)playT=0;
+      ph.style.left=noteX(playT)+'px';rollWrap.scrollLeft=Math.max(0,noteX(playT)-200);},100);}
+  else{clearInterval(playingTimer);ph.style.display='none';}
+};
+
+/* toast */
+let toastEl=null;
+function toast(msg){if(!toastEl){toastEl=document.createElement('div');
+  toastEl.style.cssText='position:fixed;left:50%;bottom:34px;transform:translateX(-50%);background:#3a3a3a;border:1px solid #555;border-radius:8px;padding:8px 14px;z-index:200;font-size:12px;color:#eee;transition:opacity .3s';
+  document.body.appendChild(toastEl);}
+  toastEl.textContent=msg;toastEl.style.opacity=1;clearTimeout(toastEl._t);
+  toastEl._t=setTimeout(()=>toastEl.style.opacity=0,1600);}
+
+/* portrait placeholder (立绘) */
+$('#portrait').innerHTML='<svg width="150" height="210" viewBox="0 0 150 210">'+
+ '<defs><linearGradient id="pg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fe71a3"/><stop offset="1" stop-color="#8d3b63"/></linearGradient></defs>'+
+ '<ellipse cx="75" cy="58" rx="34" ry="40" fill="url(#pg)"/>'+
+ '<path d="M28 210 C30 168 52 148 75 148 C98 148 120 168 122 210 Z" fill="url(#pg)"/>'+
+ '<ellipse cx="62" cy="52" rx="6" ry="9" fill="#fff" opacity=".7"/><ellipse cx="88" cy="52" rx="6" ry="9" fill="#fff" opacity=".7"/>'+
+ '<path d="M66 66 Q75 72 84 66" stroke="#fff" stroke-width="2.5" fill="none" stroke-linecap="round" opacity=".8"/></svg>';
+
+/* ═══════ init ═══════ */
+renderRecent();
+buildTrackHeaders();buildStripTimeline();paintParts();buildKeys();renderRoll();
+showView('home');
+</script>
+</body>
+</html>

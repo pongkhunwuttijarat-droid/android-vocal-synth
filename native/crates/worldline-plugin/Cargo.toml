@@ -1,0 +1,13 @@
+[package]
+name = "worldline-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Worldline renderer plugin: feed::RenderInput → SynthRequest → PhraseSynth → PCM (Sprint 2.1)"
+
+[dependencies]
+domain = { path = "../domain" }
+voicebank = { path = "../voicebank" }
+feed = { path = "../feed" }
+worldline-sys = { path = "../worldline-sys" }
+thiserror = "2"

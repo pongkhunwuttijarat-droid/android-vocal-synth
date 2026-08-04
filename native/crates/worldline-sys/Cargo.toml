@@ -1,0 +1,13 @@
+[package]
+name = "worldline-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Raw FFI bindings + safe dlopen wrapper for the worldline synthesis library (libworldline.so)"
+
+[dependencies]
+# Runtime dlopen so the same bindings work on Linux x64 and Android arm64
+# (no link-time dependency on the .so).
+libloading = "0.8"
+# Used to free buffers allocated by the C++ side (`new float[]` -> malloc).
+libc = "0.2"

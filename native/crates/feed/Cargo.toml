@@ -1,0 +1,13 @@
+[package]
+name = "feed"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+domain = { path = "../domain" }
+voicebank = { path = "../voicebank" }
+phonemizer = { path = "../phonemizer" }
+storage = { path = "../storage" }
+
+[dev-dependencies]
+serde_yaml = "0.9"

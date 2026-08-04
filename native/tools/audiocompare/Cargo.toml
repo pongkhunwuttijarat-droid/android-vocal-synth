@@ -1,0 +1,8 @@
+[package]
+name = "audiocompare"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+voicebank = { path = "../../crates/voicebank" }
+clap = { version = "4", features = ["derive"] }

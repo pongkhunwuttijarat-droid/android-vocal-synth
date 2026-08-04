@@ -1,0 +1,2 @@
+/home/seal/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar qc libpyin.a CMakeFiles/pyin.dir/third_party/libpyin/pyin.c.o CMakeFiles/pyin.dir/third_party/libpyin/yin.c.o "CMakeFiles/pyin.dir/third_party/libpyin/math-funcs.c.o"
+/home/seal/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib libpyin.a
