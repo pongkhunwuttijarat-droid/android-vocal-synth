@@ -11,6 +11,7 @@ import '../api/engine_paths.dart';
 import '../editor_ustx.dart';
 import '../models.dart';
 import '../theme.dart';
+import '../widgets/mixer_panel.dart';
 import '../widgets/piano_roll.dart';
 
 /// v1 demo render target (CONTRACT-v1 §4/§5): export always renders the
@@ -83,18 +84,40 @@ class _EditorScreenState extends State<EditorScreen> {
 
   int _selectedTrack = 0;
 
+  /// Side panel (Project/Sections) collapsed — mirrors ui-mock's ◀ toggle.
+  bool _panelCollapsed = false;
+
+  /// Mixer bottom panel visibility — mirrors ui-mock's ⊞ Mixer toggle.
+  bool _mixerOpen = false;
+
   late final ApiClient _client = widget.client ?? ApiClient();
   // Lazy: only created when the user actually hits play — constructing it in
   // widget tests would hit the audioplayers platform channel and hang.
   AudioPlayer? _player;
   bool _exporting = false;
+  /// A render is in flight — the ⋯ menu shows Stop instead of Export.
+  bool _renderActive = false;
 
   /// Debounce timer for re-render-on-edit (fires 500ms after the last edit).
   Timer? _editDebounce;
 
-  /// Latest rendered audio (kept fresh by `_scheduleReRender` after every
-  /// edit) — Play uses this without re-rendering when available.
+  /// Latest RAW rendered audio (synth only — NO mixer FX). Re-rendered on
+  /// edit; the mixer FX is applied separately at playback time via
+  /// `/post-fx`, so fader/EQ drags never re-synthesize.
+  Uint8List? _rawAudio;
+
+  /// Latest FINAL audio (raw + current mixer FX). This is what Play uses.
   Uint8List? _latestAudio;
+
+  /// True while audio is actually playing — the menu shows ⏹ Stop so the
+  /// user can interrupt playback (previously the Stop item only appeared
+  /// during rendering, which is near-instant with the cache → there was
+  /// NO way to stop a playing track: "ยังขัดไม่ได้").
+  bool _isPlaying = false;
+
+  /// Current mixer FX params JSON (from the MixerPanel); null = no FX
+  /// (play the raw synth). Applied via `/post-fx` at playback time.
+  String? _mixerParams;
 
   /// Current project tracks (default demo, replaced by Open project).
   List<Track> _tracks = List.of(_defaultTracks);
@@ -114,14 +137,28 @@ class _EditorScreenState extends State<EditorScreen> {
 
   /// Tracks handed to the roll: originals with any per-track edits merged
   /// in, so a switch back to an edited track shows the edited notes.
+  /// Phonemes for the SynthV labels are derived from the lyric's
+  /// `word[ph ph]` hint when present (the editor's notes carry them, e.g.
+  /// 'la[l A]'), otherwise the lyric is shown without phoneme boxes.
   List<Track> get _editableTracks => [
     for (var i = 0; i < _tracks.length; i++)
       Track(
         name: _tracks[i].name,
         colorSeed: _tracks[i].colorSeed,
-        notes: _editedNotes[i] ?? _tracks[i].notes,
+        notes: [
+          for (final n in _editedNotes[i] ?? _tracks[i].notes)
+            n.copyWith(phoneme: _phonemeFromLyric(n.lyric)),
+        ],
       ),
   ];
+
+  /// Extract the phoneme hint from a lyric: `word[ph1 ph2]` → "ph1 ph2".
+  /// No hint → empty (no labels). This mirrors how the ustx writer
+  /// already embeds hints for the phonemizer.
+  static String _phonemeFromLyric(String lyric) {
+    final m = RegExp(r'\[([^\]]+)\]').firstMatch(lyric);
+    return m?.group(1)?.trim() ?? '';
+  }
 
   /// Resolve the render target for this platform: build a .ustx from the
   /// editor's CURRENT notes (all tracks) and persist it where the engine
@@ -250,50 +287,87 @@ class _EditorScreenState extends State<EditorScreen> {
 
   /// Re-render quietly 500ms after the last edit (debounced). Uses the
   /// engine render cache, so an unchanged edit round-trips fast; stores
-  /// the audio so Play is instant. Never interrupts editing.
+  /// the RAW audio so Play is instant. Never interrupts editing.
   void _scheduleReRender() {
     _editDebounce?.cancel();
     _editDebounce = Timer(const Duration(milliseconds: 500), () async {
       try {
-        final (project, voicebank) = await _renderTarget();
-        final wav = await _client.render(
-          project: project,
-          voicebank: voicebank,
-        );
-        _latestAudio = wav;
-        debugPrint('re-render after edit: ${wav.length} bytes');
+        await _renderRaw();
       } catch (e) {
         debugPrint('re-render failed: $e');
       }
     });
   }
 
-  /// Play button → render the demo project through the engine and play the
-  /// resulting wav (POC: fixed demo project, like export).
+  /// Render the current project through the engine (synth only — no mixer
+  /// FX), store the raw wav, then re-apply the current mixer FX so
+  /// [_latestAudio] stays fresh.
+  Future<void> _renderRaw() async {
+    final (project, voicebank) = await _renderTarget();
+    final wav = await _client.render(
+      project: project,
+      voicebank: voicebank,
+    );
+    _rawAudio = wav;
+    _latestAudio = await _applyMixerFx(wav);
+    debugPrint('rendered raw: ${wav.length} bytes');
+  }
+
+  /// Apply the current mixer FX to a raw wav via `/post-fx` (post-synth —
+  /// no re-synthesis). Returns the raw wav unchanged when no FX is set.
+  Future<Uint8List> _applyMixerFx(Uint8List raw) async {
+    final params = _mixerParams;
+    if (params == null || params.isEmpty) return raw;
+    try {
+      return await _client.postFx(rawWav: raw, paramsJson: params);
+    } catch (e) {
+      debugPrint('post-fx failed (playing raw): $e');
+      return raw;
+    }
+  }
+
+  /// Play button → ensure fresh audio (render if stale, re-FX if mixer
+  /// changed) and play it. ALWAYS renders fresh on first play; after an
+  /// edit, `_scheduleReRender` keeps the raw audio fresh — but a mixer
+  /// drag only re-FXes, never re-synthesizes.
   Future<void> _playDemo() async {
-    // First render on-device is slow (WORLD analysis ~1-2 min, then
-    // cached). Tell the user we're rendering, or the audio appears to
-    // "arrive after the song ended". After an edit, `_latestAudio` is
-    // already fresh (see `_scheduleReRender`) — play it directly.
+    // If we have fresh audio already, play it directly (no render).
     if (_latestAudio != null) {
       final player = _player ??= AudioPlayer();
+      setState(() => _isPlaying = true);
+      _trackPlaybackEnd(player);
       await player.play(BytesSource(_latestAudio!));
       _showSnack('Playing…');
       return;
     }
     _showSnack('Rendering… (first time takes a while)');
+    setState(() => _renderActive = true);
     try {
-      final (project, voicebank) = await _renderTarget();
-      final wav = await _client.render(project: project, voicebank: voicebank);
-      _latestAudio = wav;
+      await _renderRaw();
       final player = _player ??= AudioPlayer();
-      // audioplayers BytesSource plays the in-memory wav directly.
-      await player.play(BytesSource(wav));
+      setState(() => _isPlaying = true);
+      _trackPlaybackEnd(player);
+      await player.play(BytesSource(_latestAudio!));
       _showSnack('Playing…');
     } catch (e) {
-      debugPrint('play failed: $e');
-      _showSnack('Play failed: $e');
+      if (e.toString().contains('render cancelled')) {
+        _showSnack('Rendering cancelled');
+      } else {
+        debugPrint('play failed: $e');
+        _showSnack('Play failed: $e');
+      }
+    } finally {
+      if (mounted) setState(() => _renderActive = false);
     }
+  }
+
+  /// `await player.play()` returns as soon as playback STARTS, not when it
+  /// ends — so `_isPlaying` must be cleared by the player's completion
+  /// event (or the Stop button), never by the awaited play call.
+  void _trackPlaybackEnd(AudioPlayer player) {
+    player.onPlayerComplete.listen((_) {
+      if (mounted) setState(() => _isPlaying = false);
+    });
   }
 
   @override
@@ -321,10 +395,18 @@ class _EditorScreenState extends State<EditorScreen> {
           duration: Duration(seconds: 2),
         ),
       );
-    setState(() => _exporting = true);
+    setState(() {
+      _exporting = true;
+      _renderActive = true;
+    });
+    final epoch = _client.renderEpoch;
     try {
       final (project, voicebank) = await _renderTarget();
-      final wav = await _client.render(project: project, voicebank: voicebank);
+      final wav = await _client.render(
+        project: project,
+        voicebank: voicebank,
+        epoch: epoch,
+      );
       // 16-bit mono @ 44100 Hz (worldline SAMPLE_RATE).
       final durationMs = (wav.length / (2 * 44100) * 1000).round();
 
@@ -354,9 +436,15 @@ class _EditorScreenState extends State<EditorScreen> {
         ..hideCurrentSnackBar()
         ..showSnackBar(
           SnackBar(
-            content: Text('Render failed: ${e.message}'),
+            content: Text(
+              e.message == 'render cancelled'
+                  ? 'Rendering cancelled'
+                  : 'Render failed: ${e.message}',
+            ),
             behavior: SnackBarBehavior.floating,
-            backgroundColor: const Color(0xFF8A3B3B),
+            backgroundColor: e.message == 'render cancelled'
+                ? LiltColors.green.withValues(alpha: 0.85)
+                : const Color(0xFF8A3B3B),
             duration: const Duration(seconds: 6),
           ),
         );
@@ -373,8 +461,64 @@ class _EditorScreenState extends State<EditorScreen> {
           ),
         );
     } finally {
-      if (mounted) setState(() => _exporting = false);
+      if (mounted) {
+        setState(() {
+          _exporting = false;
+          _renderActive = false;
+        });
+      }
     }
+  }
+
+  /// Stop the audio player (called by the roll when playback is toggled
+  /// off or the playhead finishes). The roll's playhead animation is its
+  /// own; without this hook the sound kept playing after the graphic
+  /// stopped ("graphic หยุดแต่เสียงไม่").
+  void _stopPlayback() {
+    _player?.stop();
+    if (mounted && _isPlaying) setState(() => _isPlaying = false);
+  }
+
+  /// Cancel the in-flight render: hard-Stop on the server (the worker
+  /// bails between chunks) + epoch bump so any late result is discarded.
+  /// Also stops any audio currently playing ("ยังขัดไม่ได้" — the Stop
+  /// item previously only appeared while rendering, never during playback).
+  void _cancelRenderNow() {
+    _stopPlayback();
+    _client.cancel(); // async; server aborts between chunks
+    setState(() {
+      _renderActive = false;
+      _exporting = false;
+      _isPlaying = false;
+    });
+    final messenger = ScaffoldMessenger.of(context);
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(
+          content: Text('Stopping…'),
+          behavior: SnackBarBehavior.floating,
+          duration: Duration(seconds: 2),
+        ),
+      );
+  }
+
+  /// Mixer panel changes → store the params and re-apply the FX to the
+  /// RAW audio via `/post-fx` (post-synth — milliseconds, NO re-render).
+  /// Debounced: fader drags fire dozens of events per second.
+  Timer? _mixerDebounce;
+  void _onMixerParams(String paramsJson) {
+    _mixerParams = paramsJson;
+    _mixerDebounce?.cancel();
+    _mixerDebounce = Timer(const Duration(milliseconds: 250), () async {
+      try {
+        final raw = _rawAudio;
+        if (raw == null) return; // nothing rendered yet — Play will FX
+        _latestAudio = await _applyMixerFx(raw);
+      } catch (e) {
+        debugPrint('mixer fx failed: $e');
+      }
+    });
   }
 
   static String _formatBytes(int bytes) {
@@ -431,6 +575,7 @@ class _EditorScreenState extends State<EditorScreen> {
             onSelected: (v) {
               if (v == 'play') _playDemo();
               if (v == 'export') _exportAudio();
+              if (v == 'stop') _cancelRenderNow();
               if (v == 'open') _pickAndOpenProject();
             },
             itemBuilder: (context) => [
@@ -439,9 +584,11 @@ class _EditorScreenState extends State<EditorScreen> {
                 child: Text('▶  Play', style: TextStyle(fontSize: 13)),
               ),
               PopupMenuItem(
-                value: 'export',
+                value: (_renderActive || _isPlaying) ? 'stop' : 'export',
                 child: Text(
-                  _exporting ? '⬇  Rendering…' : '⬇  Export audio',
+                  (_renderActive || _isPlaying)
+                      ? '⏹  Stop'
+                      : (_exporting ? '⬇  Rendering…' : '⬇  Export audio'),
                   style: const TextStyle(fontSize: 13),
                 ),
               ),
@@ -461,6 +608,11 @@ class _EditorScreenState extends State<EditorScreen> {
             tracks: _editableTracks,
             selectedTrackIndex: _selectedTrack,
             onPlayRequested: _playDemo,
+            onPlayStopped: _stopPlayback,
+            onInitialSync: (notes, curve) {
+              _editedNotes[_selectedTrack] = List.of(notes);
+              _editedCurves[_selectedTrack] = List.of(curve);
+            },
             onNotesChanged: (notes) {
               _editedNotes[_selectedTrack] = List.of(notes);
               _scheduleReRender();
@@ -470,11 +622,47 @@ class _EditorScreenState extends State<EditorScreen> {
               _scheduleReRender();
             },
           );
-          if (c.maxWidth <= 720) return roll;
-          return Row(
+          // SingleChildScrollView: when the mixer is open the panel can
+          // exceed the viewport (tablet system bars) — scroll instead of
+          // clipping. The roll gets a bounded height so its own internal
+          // scrolling still works inside the outer scroll view.
+          final editor = SingleChildScrollView(
+            child: Column(
+              children: [
+                SizedBox(
+                  height: _mixerOpen
+                      ? (c.maxHeight * 0.55).clamp(240.0, 480.0)
+                      : (c.maxHeight - 30).clamp(200.0, double.infinity),
+                  child: c.maxWidth <= 720
+                      ? roll
+                      : Row(
+                          children: [
+                            if (!_panelCollapsed) _buildTrackPanel(),
+                            Expanded(child: roll),
+                          ],
+                        ),
+                ),
+                _buildMixerToggle(),
+                if (_mixerOpen)
+                  MixerPanel(
+                    tracks: _editableTracks,
+                    onParamsChanged: _onMixerParams,
+                  ),
+              ],
+            ),
+          );
+          return Stack(
             children: [
-              _buildTrackPanel(),
-              Expanded(child: roll),
+              // SafeArea: landscape tablets have system bars on the sides
+              // and bottom — without it the mixer panel can render off-
+              // screen ("mixer ตกจอ").
+              SafeArea(child: editor),
+              if (c.maxWidth > 720)
+                Positioned(
+                  left: _panelCollapsed ? 0 : 232,
+                  top: 14,
+                  child: _collapseButton(),
+                ),
             ],
           );
         },
@@ -526,6 +714,68 @@ class _EditorScreenState extends State<EditorScreen> {
       child: Text(
         label,
         style: const TextStyle(fontSize: 11, color: Color(0xFFDDDDDD)),
+      ),
+    );
+  }
+
+  /// Collapse/expand button at the track panel's right edge (ui-mock's ◀).
+  Widget _collapseButton() {
+    return Material(
+      color: const Color(0xFF17181F),
+      child: InkWell(
+        onTap: () => setState(() => _panelCollapsed = !_panelCollapsed),
+        child: Container(
+          width: 20,
+          height: 26,
+          alignment: Alignment.center,
+          decoration: const BoxDecoration(
+            border: Border(
+              right: BorderSide(color: LiltColors.line),
+              top: BorderSide(color: LiltColors.line),
+              bottom: BorderSide(color: LiltColors.line),
+            ),
+            borderRadius: BorderRadius.horizontal(right: Radius.circular(6)),
+          ),
+          child: Icon(
+            _panelCollapsed ? Icons.chevron_right_rounded : Icons.chevron_left_rounded,
+            size: 14,
+            color: LiltColors.muted,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Mixer toggle bar above the bottom of the editor (ui-mock's ⊞ Mixer).
+  Widget _buildMixerToggle() {
+    return InkWell(
+      onTap: () => setState(() => _mixerOpen = !_mixerOpen),
+      child: Container(
+        height: 30,
+        alignment: Alignment.center,
+        decoration: const BoxDecoration(
+          color: Color(0xFF17181F),
+          border: Border(top: BorderSide(color: LiltColors.line)),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              _mixerOpen ? Icons.keyboard_arrow_down_rounded : Icons.tune_rounded,
+              size: 14,
+              color: _mixerOpen ? LiltColors.purple : LiltColors.muted,
+            ),
+            const SizedBox(width: 5),
+            Text(
+              _mixerOpen ? 'Hide mixer' : 'Mixer',
+              style: TextStyle(
+                fontSize: 11,
+                color: _mixerOpen ? LiltColors.purple : LiltColors.muted,
+                fontWeight: _mixerOpen ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

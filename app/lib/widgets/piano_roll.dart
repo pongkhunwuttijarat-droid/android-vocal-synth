@@ -8,7 +8,10 @@ import '../models.dart';
 import '../theme.dart';
 
 /// Editor tool selected in the piano-roll toolbar.
-enum PianoRollTool { select, draw, split, erase }
+enum PianoRollTool { view, select, draw, pencil, split, erase }
+
+/// What the select tool acts on (OM-style sub-modes).
+enum SelectTarget { all, notes, curve }
 
 /// Piano-roll editor widget: toolbar, note grid with continuous pitch curve,
 /// and transport bar. Mirrors ui-mock/index.html. POC-quality — all state
@@ -19,8 +22,12 @@ class PianoRoll extends StatefulWidget {
     required this.tracks,
     this.selectedTrackIndex = 0,
     this.onPlayRequested,
+    this.onPlayStopped,
+    this.onInitialSync,
     this.onNotesChanged,
     this.onCurveChanged,
+    this.showPhonemes = true,
+    this.showFxOverlay = false,
   });
 
   /// All project tracks; the roll renders [selectedTrackIndex]'s notes.
@@ -34,6 +41,17 @@ class PianoRoll extends StatefulWidget {
   /// animates the playhead. Null = playhead animation only (no audio).
   final Future<void> Function()? onPlayRequested;
 
+  /// Called when the user stops playback (toggles play off or the
+  /// playhead finishes). The parent stops the actual audio — the roll
+  /// only stops its own playhead animation, which otherwise left the
+  /// sound playing ("graphic หยุดแต่เสียงไม่").
+  final VoidCallback? onPlayStopped;
+
+  /// First-load callback (notes + curve). Unlike [onNotesChanged]/
+  /// [onCurveChanged] it does NOT represent a user edit — the parent
+  /// stores the data without scheduling a re-render.
+  final void Function(List<Note> notes, List<PitchPoint> curve)? onInitialSync;
+
   /// Called whenever the edited note list changes (add/move/edit lyric), so
   /// the parent can keep its project model in sync for export/play.
   final void Function(List<Note> notes)? onNotesChanged;
@@ -43,20 +61,34 @@ class PianoRoll extends StatefulWidget {
   /// curves are silently dropped).
   final void Function(List<PitchPoint> points)? onCurveChanged;
 
+  /// SynthV-style: show phoneme labels above the notes (default true).
+  /// Purely visual — the roll's editing logic is unchanged.
+  final bool showPhonemes;
+
+  /// Show the FX affected-area overlay (chunk marks, gain-reduction
+  /// curve, hot-note rings) — mirrors ui-mock's ⚡ FX layer. Purely
+  /// visual; toggled from the toolbar.
+  final bool showFxOverlay;
+
   @override
   State<PianoRoll> createState() => _PianoRollState();
 }
 
 // --- Geometry & palette constants (kept in sync with ui-mock/index.html) ---
 const double _keysWidth = 60.0; // OpenUtau Mobile / index-om.html
-const double _rowHeight = 32.0; // px per semitone
 const double _timelineHeight = 22.0; // OpenUtau Mobile timeline overlay
 // Keep the app's full A0..C8 range, while using the OpenUtau Mobile visual
 // treatment from the mock for the rendered viewport.
 const int _rows = 88;
 const int _topPitch = 48; // C8, relative to C4
 const int _bottomPitch = _topPitch - _rows + 1; // A0
-const double _noteHeight = 24.0;
+const double _baseNoteHeight = 24.0; // at 32px row → 75% of the row
+
+/// Note height scales with the Y zoom (75% of the row height), so notes
+/// stay proportional to the piano-roll scale when the user zooms the Y
+/// axis — the old const 24px broke the proportion at other zooms.
+double _noteHeightFor(double rowHeight) =>
+    rowHeight * (_baseNoteHeight / 32.0);
 const double _basePxPerBeat = 80.0; // px per beat at 100% zoom
 const double _secondsPerBeat = 60.0 / 128.0; // BPM 128
 
@@ -137,13 +169,73 @@ class _PianoRollState extends State<PianoRoll>
   @visibleForTesting
   List<Note> get debugNotes => List.unmodifiable(_notes);
 
+  /// Read-only FX-overlay visibility for widget tests.
+  @visibleForTesting
+  bool get debugShowFxOverlay => _showFxOverlay;
+
   /// Read-only view of the editable curve points for widget tests.
   @visibleForTesting
   List<PitchPoint> get debugCurvePoints => List.unmodifiable(_curvePoints);
 
-  PianoRollTool _tool = PianoRollTool.select;
+  // Default to View (pan) — safe browse mode; editing is an explicit tool.
+  PianoRollTool _tool = PianoRollTool.view;
+  /// Select sub-mode: all / notes only / curve only.
+  SelectTarget _selectTarget = SelectTarget.all;
   bool _showPitch = true;
-  int _zoomPercent = 90;
+  /// Two-axis zoom: X = pixels per beat, Y = row height.
+  /// Defaults: X 90% (ppb 72), Y 100% (row 32px) — same geometry as the
+  /// original single-axis zoom, so tests/UX stay stable.
+  int _zoomX = 90;
+  int _zoomY = 100;
+  double _zoomStart = 90;
+  double _zoomYStart = 90;
+
+  /// SynthV-style phoneme labels above notes (mirrors ui-mock).
+  bool _showPhonemes = true;
+
+  /// FX affected-area overlay visibility (mirrors ui-mock's ⚡ FX toggle).
+  bool _showFxOverlay = false;
+
+  /// Roll canvas (pinch target) — used to convert the gesture focal point
+  /// to viewport coords for zoom-relative-to-canvas.
+  final GlobalKey _rollKey = GlobalKey();
+
+  /// Apply a two-axis zoom keeping the content point under [viewportPoint]
+  /// stationary (zoom relative to canvas — the finger or viewport center
+  /// doesn't drift). Callers pass the point in the roll's viewport coords.
+  void _applyZoom(int nx, int ny, Offset viewportPoint) {
+    if (_zoomX == nx && _zoomY == ny) return;
+    // Content coords of the anchor BEFORE the zoom.
+    final kx = nx / _zoomX;
+    final ky = ny / _zoomY;
+    final cx = viewportPoint.dx +
+        (_hScroll.hasClients ? _hScroll.offset : 0);
+    final cy = viewportPoint.dy +
+        (_vScroll.hasClients ? _vScroll.offset : 0);
+    setState(() {
+      _zoomX = nx;
+      _zoomY = ny;
+    });
+    // After layout, keep the anchor's viewport offset constant.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_hScroll.hasClients) {
+        _hScroll.jumpTo((cx * kx - viewportPoint.dx)
+            .clamp(0.0, _hScroll.position.maxScrollExtent));
+      }
+      if (_vScroll.hasClients) {
+        _vScroll.jumpTo((cy * ky - viewportPoint.dy)
+            .clamp(0.0, _vScroll.position.maxScrollExtent));
+      }
+    });
+  }
+
+  /// Viewport center in the roll's own coords (used by slider/button zoom).
+  Offset get _viewportCenter {
+    final box =
+        _rollKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return Offset.zero;
+    return box.size.center(Offset.zero);
+  }
   int _revision = 0; // bumped on every edit so the painter repaints
 
   /// Snap grid in beats (1/1, 1/2, 1/4, 1/8, 1/16). Used when dragging notes
@@ -154,17 +246,39 @@ class _PianoRollState extends State<PianoRoll>
   /// from notes. Each point is (beat, semitones from the note reference).
   late List<PitchPoint> _curvePoints;
 
-  /// Curve editing: index of the point being dragged (-1 = none).
-  int _dragCurveIdx = -1;
-  double _curveDragStartY = 0;
-  double _curveDragStartSemis = 0;
+
+  /// View (pan) tool: start position + scroll offsets at pointer-down.
+  bool _panning = false;
+  Offset _panStart = Offset.zero;
+  double _panH0 = 0;
+  double _panV0 = 0;
+
+  /// Line-edit (pencil) tool: last pointer X (px) — the curve follows the
+  /// finger at `_capturePx` resolution instead of a coarse beat threshold.
+  double _pencilLastDx = double.negativeInfinity;
+
+  /// Pointer-event thinning (px): skip move events closer than this to the
+  /// last captured one. The GRID (not this) decides where points land —
+  /// this only stops redundant pointer events from re-triggering the
+  /// same snapped beat.
+  static const double _capturePx = 3;
+
+  /// Curve capture GRID: beats between editable curve points. Points are
+  /// SNAPPED to this grid (`round(beat/step)*step`), so redrawing over the
+  /// same span upserts the SAME points instead of piling up free-form
+  /// points — free-form positions were the cause of the jumpy/duplicate
+  /// values after repeated curve edits ("แก้ curve ซ้ำบ่อยๆ ค่าโดด").
+  /// Default 1/8 beat = 16th-note grid (OM Mobile "Normal").
+  double _captureStep = 0.125;
 
   late final AnimationController _playCtrl;
   bool _playing = false;
   final ScrollController _vScroll = ScrollController(initialScrollOffset: 90);
   final ScrollController _hScroll = ScrollController();
 
-  double get _ppb => _basePxPerBeat * _zoomPercent / 100;
+  double get _ppb => _basePxPerBeat * _zoomX / 100;
+  /// Row height (px per semitone) — zoomable on the Y axis.
+  double get _rowHeight => 32.0 * _zoomY / 100;
   double get _totalBeats =>
       _notes.fold(0.0, (m, n) => math.max(m, n.position + n.duration));
 
@@ -186,15 +300,13 @@ class _PianoRollState extends State<PianoRoll>
   }
 
   double _noteTopY(int pitch) =>
-      (_topPitch - pitch) * _rowHeight + (_rowHeight - _noteHeight) / 2;
-  double _noteCenterY(double pitch) =>
-      (_topPitch - pitch) * _rowHeight + _rowHeight / 2;
+      (_topPitch - pitch) * _rowHeight + (_rowHeight - _noteHeightFor(_rowHeight)) / 2;
 
   Rect _noteRect(Note n) => Rect.fromLTWH(
     n.position * _ppb,
     _noteTopY(n.pitch),
     n.duration * _ppb,
-    _noteHeight,
+    _noteHeightFor(_rowHeight),
   );
 
   /// Build the curve once from the current notes (one point per note center,
@@ -226,57 +338,69 @@ class _PianoRollState extends State<PianoRoll>
     _curvePoints.sort((a, b) => a.beat.compareTo(b.beat));
   }
 
-  /// The curve as a smooth cubic path through all curve points.
-  Path _curvePath() {
-    final pts = <Offset>[
-      for (final p in _curvePoints)
-        Offset(p.beat * _ppb, _noteCenterY(p.semitones)),
-    ];
-    if (pts.isEmpty) return Path();
-    final path = Path()..moveTo(pts.first.dx, pts.first.dy);
-    for (var i = 1; i < pts.length; i++) {
-      final p0 = pts[i - 1];
-      final p1 = pts[i];
-      final mx = (p0.dx + p1.dx) / 2;
-      path.cubicTo(mx, p0.dy, mx, p1.dy, p1.dx, p1.dy);
-    }
-    return path;
-  }
-
-  /// Hit-test the curve: grab an existing point (12px) or anywhere on the
-  /// line (10px — creates a new point there). Returns the point index to
-  /// drag, or -1. NOTE: has the side effect of inserting a point when the
-  /// line itself is grabbed; only call from pointer-down.
-  int _curveHitTest(Offset pos) {
-    for (var i = 0; i < _curvePoints.length; i++) {
-      final p = _curvePoints[i];
-      final d =
-          (Offset(p.beat * _ppb, _noteCenterY(p.semitones)) - pos).distance;
-      if (d <= 12) return i;
-    }
-    if (_curvePoints.length < 2) return -1;
-    final metrics = _curvePath().computeMetrics();
-    for (final m in metrics) {
-      for (var d = 0.0; d <= m.length; d += 6) {
-        final t = m.getTangentForOffset(d);
-        if (t == null) continue;
-        if ((t.position - pos).distance <= 10) {
-          final beat = math.max(0.0, pos.dx / _ppb);
-          _curvePoints.add(PitchPoint(beat, 0));
-          _curvePoints.sort((a, b) => a.beat.compareTo(b.beat));
-          _notifyCurveChanged();
-          return _curvePoints.indexWhere((p) => (p.beat - beat).abs() < 0.001);
-        }
-      }
-    }
-    return -1;
-  }
-
+  /// Hit-test note at [pos] (topmost first).
   Note? _hitTest(Offset pos) {
     for (final n in _notes.reversed) {
       if (_noteRect(n).contains(pos)) return n;
     }
     return null;
+  }
+
+  /// Freehand pitch writing (OM-style pencil): upsert a curve point at
+  /// the pointer position, SNAPPED to the capture grid (`_captureStep`).
+  ///
+  /// Curve points store ABSOLUTE pitch (like `_syncCurveFromNotes`), so
+  /// the Y axis maps the tapped row to the full roll range — no ±12 cap
+  /// (the old clamp made the line stop at C5 and "not follow the finger"
+  /// above it). The top of the roll is the highest key.
+  void _pencilWrite(Offset pos) {
+    // Snap the beat to the capture grid: repeated edits over the same
+    // span land on the SAME beat values, so the upsert below replaces
+    // the point instead of stacking near-duplicate free-form points
+    // (which made the curve jump after repeated edits).
+    final rawBeat = (pos.dx / _ppb).clamp(0.0, _totalBeats + 4.0);
+    final beat = (_captureStep <= 0)
+        ? rawBeat
+        : (rawBeat / _captureStep).round() * _captureStep;
+    // FRACTIONAL pitch — never floor to whole semitones. The old
+    // `row.floor()` made every drawn line a staircase (one pitch step per
+    // row); the curve must follow the finger continuously, like OpenUtau.
+    final pitchF =
+        _topPitch - (pos.dy / _rowHeight).clamp(0.0, _rows.toDouble() - 1);
+    var pitch = pitchF.clamp(_bottomPitch, _topPitch).toDouble();
+    // Upsert the EXACT grid point (snapped beats are identical across
+    // redraws → the same point gets overwritten, not duplicated).
+    final i = _curvePoints.indexWhere((p) => (p.beat - beat).abs() < 1e-9);
+    if (i >= 0) {
+      _curvePoints[i] = PitchPoint(beat, pitch);
+    } else {
+      // Smoothness: blend the new point 50% toward its left neighbour so
+      // the dense capture doesn't draw a jittery zigzag — the line
+      // follows the finger but stays smooth, like OpenUtau.
+      var prevIdx = -1;
+      for (var k = _curvePoints.length - 1; k >= 0; k--) {
+        if (_curvePoints[k].beat < beat) {
+          prevIdx = k;
+          break;
+        }
+      }
+      if (prevIdx >= 0) {
+        final prev = _curvePoints[prevIdx];
+        // Light blend (30%): follows the finger closely while damping
+        // jitter; the Catmull-Rom render passes through these points.
+        pitch = prev.semitones * 0.3 + pitch * 0.7;
+        // Outlier guard: a fast flick produces sparse pointer events — the
+        // raw new pitch can land far from the line, making ONE point stick
+        // out ("มีจุดนึงตกพิเศษ"). Clamp the per-point step to 4 semitones
+        // so a single bad sample can't spike the curve.
+        pitch = (pitch - prev.semitones).clamp(-4.0, 4.0) + prev.semitones;
+      }
+      _curvePoints.add(PitchPoint(beat, pitch));
+      _curvePoints.sort((a, b) => a.beat.compareTo(b.beat));
+    }
+    _pencilLastDx = pos.dx;
+    _revision++;
+    _notifyCurveChanged();
   }
 
   @override
@@ -286,22 +410,42 @@ class _PianoRollState extends State<PianoRoll>
       ..addStatusListener(_onPlayStatus);
     _notes = List.of(_activeTrack?.notes ?? const []);
     _syncCurveFromNotes();
+    _showPhonemes = widget.showPhonemes;
+    _showFxOverlay = widget.showFxOverlay;
     if (_notes.length > 3) _selectedNote = _notes[3]; // mock default: "the"
-    // Sync the initial note set to the parent (export/play use it).
+    // Sync the initial note set to the parent (export/play use it) via the
+    // dedicated onInitialSync callback — NOT onNotesChanged, so the parent
+    // does not treat a fresh open as an edit (no spurious re-render).
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _notifyNotesChanged();
-      _notifyCurveChanged();
+      widget.onInitialSync?.call(List.of(_notes), List.of(_curvePoints));
+      // Scroll the roll to the notes' pitch band (initialScrollOffset 90
+      // only shows the top rows, which are empty — C8 down to ~C7). Jump
+      // so the LOWEST note is ~1/3 up the viewport.
+      if (_vScroll.hasClients && _notes.isNotEmpty) {
+        final lowest = _notes
+            .map((n) => n.pitch)
+            .reduce((a, b) => a < b ? a : b);
+        final target =
+            ((_topPitch - lowest) * _rowHeight - _rowHeight * 10)
+                .clamp(0.0, _vScroll.position.maxScrollExtent);
+        _vScroll.jumpTo(target);
+      }
     });
   }
 
   @override
   void didUpdateWidget(PianoRoll oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.showPhonemes != oldWidget.showPhonemes) {
+      setState(() => _showPhonemes = widget.showPhonemes);
+    }
+    if (widget.showFxOverlay != oldWidget.showFxOverlay) {
+      setState(() => _showFxOverlay = widget.showFxOverlay);
+    }
     if (widget.selectedTrackIndex != oldWidget.selectedTrackIndex) {
       _notes = List.of(_activeTrack?.notes ?? const []);
       _selectedNote = null;
       _dragNote = null;
-      _dragCurveIdx = -1;
       _syncCurveFromNotes();
       // CRITICAL: sync the freshly loaded track back to the parent — the
       // roll's internal copy just changed, and export/play render the
@@ -326,6 +470,8 @@ class _PianoRollState extends State<PianoRoll>
     if (status == AnimationStatus.completed) {
       _playCtrl.reset();
       setState(() => _playing = false);
+      // Audio finished too (parent tracks completion to stop the player).
+      widget.onPlayStopped?.call();
     }
   }
 
@@ -334,6 +480,9 @@ class _PianoRollState extends State<PianoRoll>
     if (_playing) {
       _playCtrl.stop();
       setState(() => _playing = false);
+      // Stop the parent's audio — the roll only animates the playhead,
+      // without this the sound keeps playing ("graphic หยุดแต่เสียงไม่").
+      widget.onPlayStopped?.call();
     } else {
       // If a parent wired audio, delegate the actual sound to it. The
       // playhead animation runs regardless (fire-and-forget audio).
@@ -357,26 +506,46 @@ class _PianoRollState extends State<PianoRoll>
 
   void _onPointerDown(PointerDownEvent e) {
     final pos = e.localPosition;
+    // View tool: pan the roll (h/v scroll) — never selects or edits.
+    if (_tool == PianoRollTool.view) {
+      _panning = true;
+      _panStart = pos;
+      _panH0 = _hScroll.offset;
+      _panV0 = _vScroll.offset;
+      return;
+    }
+    // Pencil tool: freehand pitch drawing starts immediately.
+    if (_tool == PianoRollTool.pencil && _showPitch) {
+      setState(() => _pencilWrite(pos));
+      return;
+    }
     // NOTE hit-testing wins over the curve: the curve line runs through
     // the notes (same row), so testing the curve first steals every note
     // tap (opens curve-drag, inserts a point mid-pointer-event → the
     // "_dependents.isEmpty" crash). Curve points are still grabbable via
     // their 12px handle; the line only creates points on empty space.
     final hit = _hitTest(pos);
-    final curveIdx =
-        (hit == null && _tool == PianoRollTool.select && _showPitch)
-        ? _curveHitTest(pos)
-        : -1;
+    // OM-style line editing: dragging reshapes the curve under the finger
+    // — no point handles. Active on empty space in All mode, anywhere in
+    // Curve mode; never in Notes-only mode.
+    final lineDrag = (_tool == PianoRollTool.select &&
+        _showPitch &&
+        (_selectTarget == SelectTarget.curve ||
+            (_selectTarget == SelectTarget.all && hit == null)));
     setState(() {
-      if (curveIdx >= 0) {
+      if (lineDrag) {
         _selectedNote = null;
-        _dragCurveIdx = curveIdx;
-        _curveDragStartY = pos.dy;
-        _curveDragStartSemis = _curvePoints[curveIdx].semitones;
         _dragNote = null;
+        _pencilWrite(pos);
         return;
       }
       if (hit != null) {
+        // Curve-only select mode: notes are inert (no select/move/resize).
+        if (_tool == PianoRollTool.select &&
+            _selectTarget == SelectTarget.curve) {
+          _selectedNote = null;
+          return;
+        }
         _selectedNote = hit;
         if (_tool == PianoRollTool.erase) {
           _notes.remove(hit);
@@ -420,25 +589,30 @@ class _PianoRollState extends State<PianoRoll>
   }
 
   void _onPointerMove(PointerMoveEvent e) {
-    // --- curve point drag (edits the pitch curve, not the notes) ---
-    if (_dragCurveIdx >= 0) {
-      setState(() {
-        if (_dragCurveIdx >= _curvePoints.length) {
-          _dragCurveIdx = -1;
-          return;
-        }
-        final deltaSemis =
-            -((e.localPosition.dy - _curveDragStartY) / _rowHeight);
-        final semis = (_curveDragStartSemis + deltaSemis).clamp(-12.0, 12.0);
-        _curvePoints[_dragCurveIdx] = PitchPoint(
-          _curvePoints[_dragCurveIdx].beat,
-          semis,
-        );
-        _revision++;
-        _notifyCurveChanged();
-      });
+    // --- view tool: pan the roll (follows the pointer delta) ---
+    if (_panning) {
+      final dx = e.localPosition.dx - _panStart.dx;
+      final dy = e.localPosition.dy - _panStart.dy;
+      if (_hScroll.hasClients) {
+        _hScroll.jumpTo((_panH0 - dx).clamp(0.0, _hScroll.position.maxScrollExtent));
+      }
+      if (_vScroll.hasClients) {
+        _vScroll.jumpTo((_panV0 - dy).clamp(0.0, _vScroll.position.maxScrollExtent));
+      }
       return;
     }
+    // --- line edit (select + pencil): the curve follows the finger at
+    // ~3px resolution (dense capture — the user asked for a higher input
+    // capture rate than the old 0.1-beat thinning) ---
+    if (_tool == PianoRollTool.pencil ||
+        (_tool == PianoRollTool.select && _showPitch &&
+            _pencilLastDx >= 0)) {
+      if ((e.localPosition.dx - _pencilLastDx).abs() > _capturePx) {
+        setState(() => _pencilWrite(e.localPosition));
+      }
+      return;
+    }
+    // --- curve point drag (edits the pitch curve, not the notes) ---
     // --- note RESIZE (right edge) ---
     final resize = _resizeNote;
     if (resize != null) {
@@ -506,6 +680,8 @@ class _PianoRollState extends State<PianoRoll>
   }
 
   void _onPointerUp(PointerEvent e) {
+    _panning = false;
+    _pencilLastDx = double.negativeInfinity;
     _longPressTimer?.cancel();
     // A clean tap (no drag, no curve drag) on a selected note edits the
     // lyric. showDialog must NOT run inside setState (pushing a route mid-
@@ -514,7 +690,6 @@ class _PianoRollState extends State<PianoRoll>
     int? tapEditIdx;
     setState(() {
       if (!_dragMoved &&
-          _dragCurveIdx < 0 &&
           _selectedNote != null &&
           widget.onNotesChanged != null) {
         final idx = _notes.indexOf(_selectedNote!);
@@ -524,7 +699,6 @@ class _PianoRollState extends State<PianoRoll>
       }
       _dragNote = null;
       _resizeNote = null;
-      _dragCurveIdx = -1;
       _dragMoved = false;
     });
     if (tapEditIdx != null && mounted) {
@@ -682,7 +856,11 @@ class _PianoRollState extends State<PianoRoll>
       // framework collect it with the route.
       if (result == null || result.isEmpty || !mounted) return;
       setState(() {
-        _notes[idx] = note.copyWith(lyric: result.trim());
+        // Clear the note's phoneme when the lyric changes: the painter
+        // derives labels from the lyric's `[hint]`, and a stale `phoneme`
+        // field would win over the NEW hint → labels froze after edits
+        // ("phoneme เหนือ note ไม่ update").
+        _notes[idx] = note.copyWith(lyric: result.trim(), phoneme: '');
         _revision++;
         widget.onNotesChanged?.call(List.of(_notes));
       });
@@ -793,6 +971,13 @@ class _PianoRollState extends State<PianoRoll>
         child: Row(
           children: [
             _toolButton(
+              Icons.pan_tool_alt_outlined,
+              'View',
+              _tool == PianoRollTool.view,
+              () => setState(() => _tool = PianoRollTool.view),
+            ),
+            const SizedBox(width: 2),
+            _toolButton(
               Icons.north_west_rounded,
               'Select',
               _tool == PianoRollTool.select,
@@ -804,6 +989,13 @@ class _PianoRollState extends State<PianoRoll>
               'Draw',
               _tool == PianoRollTool.draw,
               () => setState(() => _tool = PianoRollTool.draw),
+            ),
+            const SizedBox(width: 2),
+            _toolButton(
+              Icons.gesture_rounded,
+              'Pitch',
+              _tool == PianoRollTool.pencil,
+              () => setState(() => _tool = PianoRollTool.pencil),
             ),
             const SizedBox(width: 2),
             _toolButton(
@@ -819,12 +1011,93 @@ class _PianoRollState extends State<PianoRoll>
               _tool == PianoRollTool.erase,
               () => setState(() => _tool = PianoRollTool.erase),
             ),
+            const SizedBox(width: 2),
+            _toolButton(
+              _selectTarget == SelectTarget.notes
+                  ? Icons.music_note_outlined
+                  : (_selectTarget == SelectTarget.curve
+                      ? Icons.show_chart_rounded
+                      : Icons.select_all_rounded),
+              _selectTarget == SelectTarget.all
+                  ? 'Select All'
+                  : (_selectTarget == SelectTarget.notes ? 'Select Notes' : 'Select Curve'),
+              _tool == PianoRollTool.select,
+              () => setState(() {
+                _tool = PianoRollTool.select;
+                _selectTarget = _selectTarget == SelectTarget.all
+                    ? SelectTarget.notes
+                    : (_selectTarget == SelectTarget.notes
+                        ? SelectTarget.curve
+                        : SelectTarget.all);
+              }),
+            ),
             const SizedBox(width: 10),
             _toolButton(
               Icons.waves_rounded,
               'Pitch',
               _showPitch,
               () => setState(() => _showPitch = !_showPitch),
+            ),
+            const SizedBox(width: 2),
+            _toolButton(
+              Icons.bolt_rounded,
+              'FX',
+              _showFxOverlay,
+              () => setState(() => _showFxOverlay = !_showFxOverlay),
+            ),
+            const SizedBox(width: 2),
+            PopupMenuButton<double>(
+              tooltip: 'Capture grid',
+              initialValue: _captureStep,
+              onSelected: (v) => setState(() => _captureStep = v),
+              position: PopupMenuPosition.under,
+              color: const Color(0xFF20232D),
+              itemBuilder: (context) => [
+                for (final (label, v) in const [
+                  ('Fine  (1/16 beat)', 0.0625),
+                  ('Normal (1/8 beat)', 0.125),
+                  ('Coarse (1/4 beat)', 0.25),
+                ])
+                  PopupMenuItem(
+                    value: v,
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: v == _captureStep
+                            ? LiltColors.purple
+                            : LiltColors.text,
+                      ),
+                    ),
+                  ),
+              ],
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2A263B),
+                  borderRadius: BorderRadius.circular(5),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _captureStep <= 0.07
+                          ? 'Fine'
+                          : (_captureStep >= 0.2 ? 'Coarse' : 'Normal'),
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: Color(0xFFCDD1DF),
+                      ),
+                    ),
+                    const Icon(
+                      Icons.arrow_drop_down_rounded,
+                      size: 13,
+                      color: Color(0xFFCDD1DF),
+                    ),
+                  ],
+                ),
+              ),
             ),
             const SizedBox(width: 16),
             const Text(
@@ -900,12 +1173,56 @@ class _PianoRollState extends State<PianoRoll>
                   ),
                 ),
                 child: Slider(
-                  value: _zoomPercent.toDouble(),
+                  value: _zoomX.toDouble(),
                   min: 60,
                   max: 130,
-                  onChanged: (v) => setState(() => _zoomPercent = v.round()),
+                  onChanged: (v) => _applyZoom(v.round(), _zoomY, _viewportCenter),
                 ),
               ),
+            ),
+            // Reliable −/+ zoom buttons (pinch can lose the gesture arena
+            // to the scroll views on device).
+            IconButton(
+              icon: const Icon(Icons.zoom_out_rounded, size: 18),
+              visualDensity: VisualDensity.compact,
+              tooltip: 'Zoom X out',
+              onPressed: () => _applyZoom(
+                (_zoomX - 10).clamp(30, 300), _zoomY, _viewportCenter),
+            ),
+            IconButton(
+              icon: const Icon(Icons.zoom_in_rounded, size: 18),
+              visualDensity: VisualDensity.compact,
+              tooltip: 'Zoom X in',
+              onPressed: () => _applyZoom(
+                (_zoomX + 10).clamp(30, 300), _zoomY, _viewportCenter),
+            ),
+            const SizedBox(width: 8),
+            const Text(
+              'Y',
+              style: TextStyle(fontSize: 11, color: Color(0xFF8E94A7)),
+            ),
+            SizedBox(
+              width: 110,
+              child: Slider(
+                value: _zoomY.toDouble(),
+                min: 50,
+                max: 150,
+                onChanged: (v) => _applyZoom(_zoomX, v.round(), _viewportCenter),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.zoom_out_rounded, size: 18),
+              visualDensity: VisualDensity.compact,
+              tooltip: 'Zoom Y out',
+              onPressed: () => _applyZoom(
+                _zoomX, (_zoomY - 10).clamp(30, 300), _viewportCenter),
+            ),
+            IconButton(
+              icon: const Icon(Icons.zoom_in_rounded, size: 18),
+              visualDensity: VisualDensity.compact,
+              tooltip: 'Zoom Y in',
+              onPressed: () => _applyZoom(
+                _zoomX, (_zoomY + 10).clamp(30, 300), _viewportCenter),
             ),
           ],
         ),
@@ -972,12 +1289,14 @@ class _PianoRollState extends State<PianoRoll>
         final contentW = math.max(rollW, (_totalBeats + 3.0) * _ppb);
         final contentH = _rows * _rowHeight;
         final playheadBeat = _playCtrl.value * _totalBeats;
-        // Never scroll while dragging a note, a pitch-curve point, or
-        // resizing — the Listener doesn't consume the pointer, so without
-        // this the scroll view steals the drag (curve edits scroll the roll,
-        // right-edge grabs scroll horizontally instead of resizing).
+        // Never scroll while dragging a note, editing the pitch curve
+        // (line edit in progress), or resizing — the Listener doesn't
+        // consume the pointer, so without this the scroll view steals the
+        // drag (curve edits scroll the roll instead of reshaping it).
         final physics =
-            (_dragNote != null || _dragCurveIdx >= 0 || _resizeNote != null)
+            (_dragNote != null ||
+                    _resizeNote != null ||
+                    _pencilLastDx >= 0)
             ? const NeverScrollableScrollPhysics()
             : null;
         return ColoredBox(
@@ -1000,7 +1319,31 @@ class _PianoRollState extends State<PianoRoll>
                   ),
                 ),
                 Expanded(
-                  child: SingleChildScrollView(
+                  child: GestureDetector(
+                    key: _rollKey,
+                    // Pinch-to-zoom on the roll (30%..300% of base),
+                    // relative to the canvas: the content point under the
+                    // finger stays put (no drift while zooming).
+                    onScaleStart: (_) {
+                      _zoomStart = _zoomX.toDouble();
+                      _zoomYStart = _zoomY.toDouble();
+                    },
+                    onScaleUpdate: (d) {
+                      final nx =
+                          (_zoomStart * d.scale).clamp(30.0, 300.0).round();
+                      final ny =
+                          (_zoomYStart * d.scale).clamp(30.0, 300.0).round();
+                      if ((nx - _zoomX).abs() >= 1 ||
+                          (ny - _zoomY).abs() >= 1) {
+                        final box = _rollKey.currentContext?.findRenderObject()
+                            as RenderBox?;
+                        final local = box == null
+                            ? Offset.zero
+                            : box.globalToLocal(d.focalPoint);
+                        _applyZoom(nx, ny, local);
+                      }
+                    },
+                    child: SingleChildScrollView(
                     controller: _hScroll,
                     scrollDirection: Axis.horizontal,
                     physics: physics,
@@ -1028,6 +1371,7 @@ class _PianoRollState extends State<PianoRoll>
                                 contentWidth: contentW,
                                 contentHeight: contentH,
                                 revision: _revision,
+                                showPhonemes: _showPhonemes,
                               ),
                             ),
                             // Layer 2: the continuous orange pitch curve —
@@ -1042,12 +1386,26 @@ class _PianoRollState extends State<PianoRoll>
                                 rowHeight: _rowHeight,
                                 showPitch: _showPitch,
                                 hasSelection:
-                                    _selectedNote != null || _dragCurveIdx >= 0,
+                                    _selectedNote != null,
                                 contentWidth: contentW,
                                 contentHeight: contentH,
                               ),
                             ),
-                            // Layer 3 (top): selected note outline (white),
+                            // Layer 3: FX affected-area overlay (chunk
+                            // marks + GR curve + hot rings) — above the
+                            // curve, below the selection outline.
+                            if (_showFxOverlay)
+                              CustomPaint(
+                                size: Size(contentW, contentH),
+                                painter: _FxOverlayPainter(
+                                  notes: _notes,
+                                  ppb: _ppb,
+                                  contentWidth: contentW,
+                                  contentHeight: contentH,
+                                  chunkPx: 230,
+                                ),
+                              ),
+                            // Layer 4 (top): selected note outline (white),
                             // above the curve like the mock's z-order.
                             CustomPaint(
                               size: Size(contentW, contentH),
@@ -1075,6 +1433,7 @@ class _PianoRollState extends State<PianoRoll>
                           ],
                         ),
                       ),
+                    ),
                     ),
                   ),
                 ),
@@ -1264,6 +1623,7 @@ class _RollPainter extends CustomPainter {
     required this.contentWidth,
     required this.contentHeight,
     required this.revision,
+    this.showPhonemes = false,
   });
 
   final List<Note> notes;
@@ -1276,8 +1636,60 @@ class _RollPainter extends CustomPainter {
   final double contentHeight;
   final int revision;
 
+  /// SynthV-style: draw phoneme labels ABOVE each note (dark boxes, one
+  /// per segment) when the note carries phonemes. Mirrors ui-mock.
+  final bool showPhonemes;
+
+  /// Phonemes for the label boxes: the lyric's `word[ph ph]` hint FIRST
+  /// (the painter must always reflect the CURRENT lyric — a stale
+  /// `phoneme` field would freeze the labels after lyric edits), falling
+  /// back to the note's `phoneme` field when the lyric has no hint (a
+  /// real phonemizer's output, e.g. future IPA support), and finally a
+  /// letter→alias split of the lyric against the voicebank's oto alias
+  /// set — NOT a raw copy of the lyric word ("มันแค่ copy lyric ไม่ใช่
+  /// phoneme"): 'na' resolves to `['n', 'A']` when both single-phoneme
+  /// aliases exist.
+  List<String> _phonemesOf(Note n) {
+    final m = RegExp(r'\[([^\]]+)\]').firstMatch(n.lyric);
+    final hint = m?.group(1)?.trim() ?? '';
+    if (hint.isNotEmpty) {
+      return hint.split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList();
+    }
+    final raw = n.phoneme.trim();
+    if (raw.isNotEmpty) {
+      return raw.split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList();
+    }
+    // No hint and no phoneme field: split the lyric into its letters and
+    // keep only those that exist as single-phoneme aliases in the
+    // voicebank (case-normalized — 'a' → 'A', 'i' → 'I', ...). This is a
+    // real phoneme resolution, not a lyric copy. E.g. 'na' → n + A.
+    final word = n.lyric.replaceAll(RegExp(r'\[[^\]]*\]'), '').trim();
+    if (word.isNotEmpty) {
+      final resolved = <String>[];
+      for (final ch in word.split('')) {
+        final upper = ch.toUpperCase();
+        if (_otoAliases.contains(upper)) {
+          resolved.add(upper);
+        }
+      }
+      if (resolved.isNotEmpty) return resolved;
+      return [word]; // no resolvable letters → show the word as-is
+    }
+    return const [];
+  }
+
+  /// Single-phoneme aliases present in the Teto English oto.ini (verified
+  /// against the bank — EXACT set: 3 A b d D e E f g i I j k l m n N O p
+  /// s S t T u U v V w z Z; uppercase-normalized here since the painter
+  /// compares upper-cased letters). Used by [_phonemesOf] to resolve a
+  /// hint-less lyric letter-by-letter into real voicebank phonemes.
+  static const Set<String> _otoAliases = {
+    '3', 'A', 'B', 'D', 'E', 'F', 'G', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'S', 'T', 'U', 'V', 'W', 'Z',
+  };
+
   double _noteTopY(int pitch) =>
-      (topPitch - pitch) * rowHeight + (rowHeight - _noteHeight) / 2;
+      (topPitch - pitch) * rowHeight + (rowHeight - _noteHeightFor(rowHeight)) / 2;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1326,7 +1738,7 @@ class _RollPainter extends CustomPainter {
       n.position * ppb,
       _noteTopY(n.pitch),
       n.duration * ppb,
-      _noteHeight,
+      _noteHeightFor(rowHeight),
     );
     final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(3));
     // soft drop shadow
@@ -1387,6 +1799,56 @@ class _RollPainter extends CustomPainter {
         ),
       );
     }
+    // SynthV-style: phoneme labels ABOVE the note (dark boxes, one per
+    // segment, spanning the note width). Mirrors ui-mock/index.html.
+    // NOTE: `segs.isNotEmpty` (NOT `length > 1`) — a lyric without a
+    // hint falls back to a single word box (e.g. 'na'), and the old
+    // `> 1` guard silently skipped it → the label vanished entirely
+    // ("ไม่มี label ด้วยซ้ำ").
+    if (showPhonemes) {
+      final segs = _phonemesOf(n);
+      if (segs.isNotEmpty && rect.width >= 24) {
+        final boxH = _noteHeightFor(rowHeight) * 0.46; // scales with Y zoom
+        final top = rect.top - boxH - 2;
+        final totalW = rect.width;
+        final nSegs = segs.length;
+        final boxW = (totalW - (nSegs - 1) * 2) / nSegs;
+        final segStyle = TextStyle(
+          fontSize: 8,
+          fontWeight: FontWeight.w700,
+          color: Colors.white,
+          height: 1.0,
+        );
+        for (var i = 0; i < nSegs; i++) {
+          final box = Rect.fromLTWH(rect.left + i * (boxW + 2), top, boxW, boxH);
+          canvas.drawRRect(
+            RRect.fromRectAndRadius(box, const Radius.circular(3)),
+            Paint()..color = const Color(0xB3000000),
+          );
+          canvas.drawRRect(
+            RRect.fromRectAndRadius(box, const Radius.circular(3)),
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1
+              ..color = Colors.white.withValues(alpha: 0.25),
+          );
+          if (boxW >= 12) {
+            final tp = TextPainter(
+              text: TextSpan(text: segs[i], style: segStyle),
+              textDirection: TextDirection.ltr,
+              maxLines: 1,
+            )..layout(maxWidth: boxW - 2);
+            tp.paint(
+              canvas,
+              Offset(
+                box.left + (box.width - tp.width) / 2,
+                box.top + (box.height - tp.height) / 2,
+              ),
+            );
+          }
+        }
+      }
+    }
   }
 
   void _paintPlayhead(Canvas canvas, Size size) {
@@ -1423,7 +1885,8 @@ class _RollPainter extends CustomPainter {
       oldDelegate.contentWidth != contentWidth ||
       oldDelegate.contentHeight != contentHeight ||
       oldDelegate.topPitch != topPitch ||
-      oldDelegate.rowHeight != rowHeight;
+      oldDelegate.rowHeight != rowHeight ||
+      oldDelegate.showPhonemes != showPhonemes;
 }
 
 /// Layer 2 of the roll: the continuous orange pitch curve, drawn as ONE
@@ -1465,12 +1928,32 @@ class _CurvePainter extends CustomPainter {
         Offset(p.beat * ppb, _noteCenterY(p.semitones)),
     ];
     if (pts.length >= 2) {
+      // Catmull-Rom spline: smooth AND passes through every point (the
+      // old midpoint-cubic didn't touch the points, so the drawn curve
+      // drifted from where the finger actually drew).
       final path = Path()..moveTo(pts.first.dx, pts.first.dy);
-      for (var i = 1; i < pts.length; i++) {
-        final p0 = pts[i - 1];
+      for (var i = 0; i < pts.length - 1; i++) {
+        final p0 = pts[i > 0 ? i - 1 : i];
         final p1 = pts[i];
-        final mx = (p0.dx + p1.dx) / 2;
-        path.cubicTo(mx, p0.dy, mx, p1.dy, p1.dx, p1.dy);
+        final p2 = pts[i + 1];
+        final p3 = pts[i + 2 < pts.length ? i + 2 : i + 1];
+        const steps = 8;
+        for (var s = 1; s <= steps; s++) {
+          final t = s / steps;
+          final t2 = t * t;
+          final t3 = t2 * t;
+          final x = 0.5 *
+              ((2 * p1.dx) +
+                  (-p0.dx + p2.dx) * t +
+                  (2 * p0.dx - 5 * p1.dx + 4 * p2.dx - p3.dx) * t2 +
+                  (-p0.dx + 3 * p1.dx - 3 * p2.dx + p3.dx) * t3);
+          final y = 0.5 *
+              ((2 * p1.dy) +
+                  (-p0.dy + p2.dy) * t +
+                  (2 * p0.dy - 5 * p1.dy + 4 * p2.dy - p3.dy) * t2 +
+                  (-p0.dy + 3 * p1.dy - 3 * p2.dy + p3.dy) * t3);
+          path.lineTo(x, y);
+        }
       }
       final alpha = hasSelection ? 1.0 : 0.6; // mock .95 / .55 layer
       final fill = Path.from(path)
@@ -1500,16 +1983,9 @@ class _CurvePainter extends CustomPainter {
           ..color = _orange.withValues(alpha: alpha),
       );
     }
-    // draggable handles on every point — grab the line to add one
-    final handle = Paint()..color = _orange;
-    final handleEdge = Paint()
-      ..color = const Color(0xFF111319)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
-    for (final p in pts) {
-      canvas.drawCircle(p, 5, handleEdge);
-      canvas.drawCircle(p, 3.2, handle);
-    }
+    // No point handles — OM-style: the LINE is the edit surface. Dragging
+    // anywhere on the curve reshapes it under the finger (points are
+    // upserted along the drag in the pointer handlers).
   }
 
   @override
@@ -1569,7 +2045,101 @@ class _RollTimelinePainter extends CustomPainter {
       oldDelegate.ppb != ppb;
 }
 
-/// Layer 3 (top) of the roll: the selected note's cyan outline, painted
+/// Layer 3 of the roll: the FX affected-area overlay (chunk marks,
+/// gain-reduction curve, hot-note rings) — mirrors ui-mock's ⚡ FX layer.
+class _FxOverlayPainter extends CustomPainter {
+  _FxOverlayPainter({
+    required this.notes,
+    required this.ppb,
+    required this.contentWidth,
+    required this.contentHeight,
+    required this.chunkPx,
+  });
+
+  final List<Note> notes;
+  final double ppb;
+  final double contentWidth;
+  final double contentHeight;
+
+  /// Chunk boundary spacing in px (mock: ~230px ≈ 2s @ 128bpm).
+  final double chunkPx;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Chunk boundaries: dashed vertical lines with a small hash label
+    // (mirrors the backend's ~2s time-based chunk cache keys).
+    final chunkPaint = Paint()
+      ..color = const Color(0x6655D7DE)
+      ..strokeWidth = 1;
+    for (var x = chunkPx; x < size.width; x += chunkPx) {
+      final dash = Path();
+      for (var y = 0.0; y < size.height; y += 8) {
+        dash
+          ..moveTo(x, y)
+          ..lineTo(x, (y + 4).clamp(0, size.height));
+      }
+      canvas.drawPath(dash, chunkPaint);
+      final label = TextPainter(
+        text: TextSpan(
+          text: ((x * 2654435761) % 0x1000000).toInt().toRadixString(16).padLeft(6, '0'),
+          style: const TextStyle(
+            fontSize: 8,
+            color: Color(0xFF55D7DE),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      label.paint(canvas, Offset(x + 4, 26));
+    }
+    // Gain-reduction curve (stylized cyan dashed line over the notes).
+    if (notes.length >= 2) {
+      final sorted = List.of(notes)
+        ..sort((a, b) => a.position.compareTo(b.position));
+      final line = Path();
+      final grPaint = Paint()
+        ..color = const Color(0xCC55D7DE)
+        ..strokeWidth = 2
+        ..style = PaintingStyle.stroke;
+      for (var i = 0; i < sorted.length; i++) {
+        final n = sorted[i];
+        final x = (n.position + n.duration / 2) * ppb;
+        final y = size.height - 20 - (40 * (0.55 + 0.45 * (i % 3) / 2));
+        if (i == 0) {
+          line.moveTo(x, y);
+        } else {
+          line.lineTo(x, y);
+        }
+      }
+      canvas.drawPath(line, grPaint);
+    }
+    // Hot notes: notes the FX pushes hardest get a cyan glow ring.
+    for (var i = 0; i < notes.length; i += 2) {
+      final n = notes[i];
+      final rect = Rect.fromLTWH(
+        n.position * ppb,
+        (48 - n.pitch) * 32 + (32 - _noteHeightFor(32)) / 2,
+        n.duration * ppb,
+        _noteHeightFor(32),
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, const Radius.circular(3)),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5
+          ..color = const Color(0x8855D7DE),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_FxOverlayPainter oldDelegate) =>
+      oldDelegate.notes != notes ||
+      oldDelegate.ppb != ppb ||
+      oldDelegate.chunkPx != chunkPx;
+}
+
+/// Layer 4 (top) of the roll: the selected note's cyan outline, painted
 /// above the curve layer (mock z-order: selected note > curve > playhead).
 class _SelectionPainter extends CustomPainter {
   _SelectionPainter({
@@ -1587,7 +2157,7 @@ class _SelectionPainter extends CustomPainter {
   final Color trackColor;
 
   double _noteTopY(int pitch) =>
-      (topPitch - pitch) * rowHeight + (rowHeight - _noteHeight) / 2;
+      (topPitch - pitch) * rowHeight + (rowHeight - _noteHeightFor(rowHeight)) / 2;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1597,7 +2167,7 @@ class _SelectionPainter extends CustomPainter {
       n.position * ppb,
       _noteTopY(n.pitch),
       n.duration * ppb,
-      _noteHeight,
+      _noteHeightFor(rowHeight),
     );
     final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(3));
     // redraw the note body so the outline sits on top of the curve layer

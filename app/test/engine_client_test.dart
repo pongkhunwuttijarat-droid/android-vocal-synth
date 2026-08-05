@@ -257,4 +257,50 @@ void main() {
       expect(seenHost, '10.0.0.5:9999');
     });
   });
+
+  group('ApiClient.cancel + setMixerParams (hard stop / hot-swap)', () {
+    test('cancel POSTs /cancel and bumps the epoch', () async {
+      final client = ApiClient(
+        httpClient: MockClient((req) async {
+          expect(req.url.path, '/cancel');
+          return _json({'ok': true, 'cancelled': true});
+        }),
+      );
+      final epochBefore = client.renderEpoch;
+      await client.cancel();
+      expect(client.renderEpoch, epochBefore + 1);
+    });
+
+    test('setMixerParams POSTs the JSON string body to /mixer-params',
+        () async {
+      final client = ApiClient(
+        httpClient: MockClient((req) async {
+          expect(req.url.path, '/mixer-params');
+          // body is jsonEncode'd: a JSON string containing the params.
+          expect(jsonDecode(req.body), '{"gain":0.8,"low_gain":3}');
+          return _json({'ok': true});
+        }),
+      );
+      await client.setMixerParams('{"gain":0.8,"low_gain":3}');
+    });
+
+    test('cancel ignores a dead engine (5xx) but rethrows 4xx', () async {
+      var calls = 0;
+      final client = ApiClient(
+        httpClient: MockClient((_) async {
+          calls++;
+          return _json({'error': 'engine gone'}, status: 503);
+        }),
+      );
+      await client.cancel(); // must not throw for a dead engine
+      expect(calls, 1);
+
+      final badClient = ApiClient(
+        httpClient: MockClient(
+          (_) async => _json({'error': 'bad'}, status: 400),
+        ),
+      );
+      await expectLater(badClient.cancel(), throwsA(isA<ApiException>()));
+    });
+  });
 }

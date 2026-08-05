@@ -35,13 +35,14 @@ class Note {
     int? pitch,
     double? position,
     double? duration,
+    String? phoneme,
   }) {
     return Note(
       lyric: lyric ?? this.lyric,
       pitch: pitch ?? this.pitch,
       position: position ?? this.position,
       duration: duration ?? this.duration,
-      phoneme: phoneme,
+      phoneme: phoneme ?? this.phoneme,
     );
   }
 }

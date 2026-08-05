@@ -234,6 +234,93 @@ pub async fn render(
     }
 }
 
+/// `POST /cancel` — hard Stop: abort the in-flight render. The worker
+/// sets the shared cancel flag; the pipeline bails between chunks and
+/// the render reply comes back as "render cancelled" (500).
+pub async fn cancel(State(state): State<Arc<AppState>>) -> Response {
+    let Some(renderer) = state.renderer.as_ref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "renderer not loaded (start the server with --so <path>)".into(),
+        );
+    };
+    match renderer.cancel() {
+        Ok(()) => Json(json!({ "ok": true, "cancelled": true })).into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+/// `POST /mixer-params` — hot-swap the mixer FX params (fader/EQ/comp
+/// changes from the app). Body: the params JSON string, e.g.
+/// `{"gain":0.8,"low_gain":3}`.
+pub async fn mixer_params(
+    State(state): State<Arc<AppState>>,
+    JsonBody(params): JsonBody<String>,
+) -> Response {
+    let Some(renderer) = state.renderer.as_ref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "renderer not loaded (start the server with --so <path>)".into(),
+        );
+    };
+    match renderer.set_mixer_params(params) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+/// `POST /post-fx` — post-synth mixer FX: apply the mixer chain to an
+/// ALREADY rendered wav (no re-synthesis — the fast fader/EQ path).
+/// Request body: raw wav bytes; header `x-mixer-params`: the params JSON
+/// (e.g. `{"gain":0.8,"low_gain":3}`). Response: the FX'd wav.
+pub async fn post_fx(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(renderer) = state.renderer.as_ref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "renderer not loaded (start the server with --so <path>)".into(),
+        );
+    };
+    let params = match headers.get("x-mixer-params") {
+        Some(v) => v.to_str().unwrap_or("{}").to_string(),
+        None => "{}".to_string(),
+    };
+    // Decode the raw wav → f32 samples.
+    let wav = match voicebank::parse_wav(&body) {
+        Ok(w) => w,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                format!("post-fx: not a wav body: {e}"),
+            );
+        }
+    };
+    let samples = wav.samples;
+    if samples.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "post-fx: empty wav".into(),
+        );
+    }
+    let started = Instant::now();
+    match renderer.post_fx(params, samples).await {
+        Ok(out) if !out.is_empty() => {
+            state
+                .stats
+                .record_render(started.elapsed().as_millis() as u64);
+            wav_response(write_wav_16(&out, SAMPLE_RATE))
+        }
+        Ok(_) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "post-fx produced no samples".into(),
+        ),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
 /// Which status a pipeline error from `/render` maps to: parameter /
 /// project-content problems are client errors, everything else is a
 /// server-side engine failure.

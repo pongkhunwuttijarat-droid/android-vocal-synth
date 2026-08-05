@@ -25,12 +25,21 @@ void main() {
         null,
       );
     });
+    // Tall surface: the OM track panel (BPM chips + track list) stretches
+    // the Row, pushing the roll's y-origin down — a 600px surface puts the
+    // roll off-screen.
+    await tester.binding.setSurfaceSize(const Size(900, 1600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
     final client = ApiClient(
       httpClient: MockClient(
         (req) async => http.Response.bytes(List.filled(100, 42), 200),
       ),
     );
     await tester.pumpWidget(MaterialApp(home: EditorScreen(client: client)));
+    await tester.pumpAndSettle();
+    // Default tool is View (pan) — editing tests explicitly switch to
+    // Select so note interactions behave like the UI's edit mode.
+    await tester.tap(find.text('Select'));
     await tester.pumpAndSettle();
   }
 
@@ -55,6 +64,8 @@ void main() {
     final vScroll = tester
         .stateList<ScrollableState>(find.byType(Scrollable))
         .firstWhere((s) => s.position.maxScrollExtent > 1000);
+    // Roll pitches are relative to C4 (topPitch 48 = C8, note.pitch 0 =
+    // C4): the note row sits at (48 - pitch) rows from the top.
     final rowCenterY = (48 - note.pitch) * 32.0 + 16.0;
     vScroll.position.jumpTo((rowCenterY - 250).clamp(0.0, 2364.0));
     await tester.pumpAndSettle();
@@ -91,6 +102,8 @@ void main() {
         .stateList<ScrollableState>(find.byType(Scrollable))
         .firstWhere((s) => s.position.maxScrollExtent > 1000);
     final note = tester.widget<PianoRoll>(rollFinder).tracks.first.notes.first;
+    // Roll pitches are relative to C4 (topPitch 48 = C8, note.pitch 0 =
+    // C4): the note row sits at (48 - pitch) rows from the top.
     final rowCenterY = (48 - note.pitch) * 32.0 + 16.0;
     vScroll.position.jumpTo((rowCenterY - 250).clamp(0.0, 2364.0));
     await tester.pumpAndSettle();

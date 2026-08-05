@@ -79,6 +79,11 @@ object EngineProcess {
             val cmd = listOf(
                 serverBin.absolutePath,
                 "--so", File(engineDir, "libworldline.so").absolutePath,
+                // Mixer FX plugin (libmixerfx.so, bundled with jniLibs):
+                // EQ/comp/softclip applied to the final mix. Params start
+                // at defaults (passthrough: clip disabled → 0 dB EQ).
+                "--mixer-so", File(engineDir, "libmixerfx.so").absolutePath,
+                "--mixer-params", """{"clip_enabled":0,"eq_enabled":1}""",
                 "--voicebanks", voicebanksDir.absolutePath,
                 "--port", PORT.toString(),
                 "--bind", "127.0.0.1",
@@ -91,8 +96,15 @@ object EngineProcess {
                 process = pb.start()
                 // Drain stdout so the pipe never fills up and blocks the server.
                 Thread {
-                    process?.inputStream?.bufferedReader()?.forEachLine { line ->
-                        Log.i(TAG, "[server] $line")
+                    try {
+                        process?.inputStream?.bufferedReader()?.forEachLine { line ->
+                            Log.i(TAG, "[server] $line")
+                        }
+                    } catch (e: java.io.IOException) {
+                        // Server exited (port conflict / force-stop / crash):
+                        // the stream closes and the drain thread must not
+                        // take the app down with an uncaught exception.
+                        Log.d(TAG, "engine output stream closed: $e")
                     }
                 }.start()
                 Log.i(TAG, "engine started (pid ${process?.hashCode()})")

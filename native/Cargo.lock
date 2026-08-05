@@ -745,6 +745,7 @@ dependencies = [
  "axum",
  "clap",
  "domain",
+ "mixer-fx",
  "runtime",
  "serde",
  "serde_json",

@@ -172,7 +172,6 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('⬇  Export audio'));
     await tester.pumpAndSettle();
-
     expect(renderedProject, '/tmp/lilt-editor-song.ustx');
     expect(renderedVoicebank, kDemoRenderVoicebank);
     expect(find.textContaining('Rendered'), findsOneWidget);

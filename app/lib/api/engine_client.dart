@@ -36,6 +36,19 @@ abstract class EngineClient {
     required String project,
     required String voicebank,
   });
+
+  /// Hard Stop: abort the in-flight render on the server (the worker
+  /// bails between chunks and the render reply comes back as an error).
+  Future<void> cancel();
+
+  /// Hot-swap the mixer FX params (`{"gain":..,"low_gain":..,...}`).
+  Future<void> setMixerParams(String paramsJson);
+
+  /// Post-synth FX: apply the mixer chain to an already rendered wav.
+  Future<Uint8List> postFx({
+    required Uint8List rawWav,
+    required String paramsJson,
+  });
 }
 
 /// Default engine base URL (see CONTRACT-v1 §1).
@@ -195,10 +208,15 @@ class ApiClient implements EngineClient {
 
   /// `POST /render` — render a `.ustx` project on the server, returns the
   /// wav bytes.
+  ///
+  /// `epoch` is a client-side cancellation token: bump [renderEpoch] (via
+  /// [cancelRender]) and in-flight renders throw [ApiException] instead of
+  /// returning stale audio.
   @override
   Future<Uint8List> render({
     required String project,
     required String voicebank,
+    int epoch = 0,
   }) async {
     final resp = await _guard(
       _http.post(
@@ -210,8 +228,73 @@ class ApiClient implements EngineClient {
       'render',
     );
     _ensureOk(resp, 'render');
+    if (epoch != renderEpoch) {
+      throw ApiException('render cancelled');
+    }
     return Uint8List.fromList(resp.bodyBytes);
   }
+
+  /// Cancel all in-flight renders: bump the epoch so their results are
+  /// discarded on arrival, AND hard-Stop the server-side render so the
+  /// worker stops doing work (the render reply then arrives as an error
+  /// instead of finishing silently).
+  @override
+  Future<void> cancel() async {
+    renderEpoch++;
+    try {
+      final resp = await _guard(
+        _http.post(Uri.parse('$baseUrl/cancel'), headers: _jsonHeaders),
+        renderTimeout,
+        'cancel',
+      );
+      _ensureOk(resp, 'cancel');
+    } on ApiException catch (e) {
+      // Cancel failing (e.g. engine already dead) is not fatal — the
+      // epoch bump already invalidates any in-flight result.
+      if (e.statusCode != null && e.statusCode! < 500) rethrow;
+    }
+  }
+
+  /// Hot-swap the mixer FX params on the server worker.
+  @override
+  Future<void> setMixerParams(String paramsJson) async {
+    final resp = await _guard(
+      _http.post(
+        Uri.parse('$baseUrl/mixer-params'),
+        headers: _jsonHeaders,
+        body: jsonEncode(paramsJson),
+      ),
+      renderTimeout,
+      'mixer-params',
+    );
+    _ensureOk(resp, 'mixer-params');
+  }
+
+  /// Post-synth FX: apply the mixer chain to an ALREADY rendered wav
+  /// (no re-synthesis — the fast fader/EQ drag path). Sends the raw wav
+  /// bytes; returns the FX'd wav.
+  @override
+  Future<Uint8List> postFx({
+    required Uint8List rawWav,
+    required String paramsJson,
+  }) async {
+    final resp = await _guard(
+      _http.post(
+        Uri.parse('$baseUrl/post-fx'),
+        headers: {
+          ..._jsonHeaders,
+          'x-mixer-params': paramsJson,
+        },
+        body: rawWav,
+      ),
+      renderTimeout,
+      'post-fx',
+    );
+    _ensureOk(resp, 'post-fx');
+    return Uint8List.fromList(resp.bodyBytes);
+  }
+
+  int renderEpoch = 0;
 
   static const _jsonHeaders = {
     'Content-Type': 'application/json; charset=utf-8',

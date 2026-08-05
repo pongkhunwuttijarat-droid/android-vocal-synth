@@ -158,6 +158,7 @@ fn cmd_render(args: RenderArgs) -> Result<(), String> {
             args.verbose,
             &mut cache,
             mixer.as_mut(),
+            None,
         )?
     };
     for reason in &report.skipped {

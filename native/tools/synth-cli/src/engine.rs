@@ -45,6 +45,18 @@ pub trait Engine {
     /// Point the engine's render cache at `dir` (OpenUtau-style res-{hash}
     /// files). Engines without a cache may treat this as a no-op.
     fn set_cache_dir(&mut self, dir: &Path, max_bytes: usize) -> Result<(), String>;
+
+    /// Wire a cooperative-cancellation flag (host sets it to abort an
+    /// in-flight render between chunks). Default: no-op for engines
+    /// without chunk-level cancellation.
+    fn set_cancel(&mut self, _cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {}
+
+    /// Reset the cancellation flag before a new render. Default: no-op.
+    fn clear_cancel(&mut self) {}
+
+    /// Attach a mixer FX plugin (dlopen'd libmixerfx.so). Default: no-op
+    /// for engines without mixer support.
+    fn set_mixer(&mut self, _mixer: mixer_fx::MixerFx) {}
 }
 
 /// Worldline engine adapter: wraps a loaded `WorldlineRenderer` plus the
@@ -58,6 +70,9 @@ pub struct WorldlineEngine {
     cache: Option<RenderCache>,
     /// Optional mixer FX plugin (dlopen'd) — processed after mixing.
     mixer: Option<mixer_fx::MixerFx>,
+    /// Cooperative cancellation flag — set by the host (Stop button) to
+    /// abort an in-flight render between chunks.
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     verbose: bool,
 }
 
@@ -70,6 +85,7 @@ impl WorldlineEngine {
             renderer,
             cache: None,
             mixer: None,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             verbose,
         })
     }
@@ -84,6 +100,24 @@ impl WorldlineEngine {
             "Japanese" => Ok(PhonemizerKind::Japanese),
             _ => Ok(PhonemizerKind::English),
         }
+    }
+
+    /// Attach a mixer FX plugin (dlopen'd libmixerfx.so) to the engine.
+    /// Processed on the final mixed samples of every render.
+    pub fn set_mixer(&mut self, mixer: mixer_fx::MixerFx) {
+        self.mixer = Some(mixer);
+    }
+
+    /// Wire a cooperative-cancellation flag. Set it (store true) to abort
+    /// the in-flight render between chunks; the flag is shared with the
+    /// host so it can also be used for a hard Stop on the next render.
+    pub fn set_cancel(&mut self, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        self.cancel = cancel;
+    }
+
+    /// Reset the cancellation flag (call before starting a new render).
+    pub fn clear_cancel(&mut self) {
+        self.cancel.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -112,6 +146,7 @@ impl Engine for WorldlineEngine {
             self.verbose,
             &mut self.cache,
             self.mixer.as_mut(),
+            Some(&self.cancel),
         )
     }
 

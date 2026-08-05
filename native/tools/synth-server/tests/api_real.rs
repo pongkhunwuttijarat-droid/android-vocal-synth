@@ -35,7 +35,7 @@ fn so_path() -> PathBuf {
 }
 
 fn mock_bank_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-data/mock-voicebank")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-data/mock-voicebank")
 }
 
 fn teto_bank_path() -> PathBuf {
@@ -47,7 +47,7 @@ fn demo_song_path() -> PathBuf {
 }
 
 fn mock_song_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-data/mock-song.ustx")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-data/mock-song.ustx")
 }
 
 /// AppState with the real renderer and the mock bank scanned.
@@ -56,7 +56,7 @@ fn real_state() -> Arc<AppState> {
     Arc::new(AppState::new(
         mock_bank_path(),
         scan.entries,
-        Some(RenderService::spawn(so_path()).expect("spawn render service")),
+        Some(RenderService::spawn(so_path(), None, "{}".to_string()).expect("spawn render service")),
     ))
 }
 
@@ -120,6 +120,35 @@ async fn render_demo_song_with_teto_bank_returns_wav_bytes() {
     // demo-song is ~3 s: 44 + ~3000 ms * 44100 * 2 / 1000 bytes
     assert!(body.len() > 44 + 1_000 * 44100 * 2 / 1000, "> 1 s of audio");
     assert_eq!(state.stats.snapshot().renders_count, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires libworldline.so; WORLDLINE_SO=... cargo test -p synth-server --test api_real -- --ignored --nocapture"]
+async fn cancel_returns_ok_and_mixer_params_accepts_json() {
+    let state = real_state();
+
+    // Hard Stop is accepted even with no render in flight.
+    let resp = handlers::cancel(State(state.clone())).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .expect("read body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("ok json");
+    assert_eq!(json["cancelled"], true, "cancel body: {json}");
+
+    // Mixer params hot-swap is accepted (worker recreates the FX plugin;
+    // no mixer .so here → it logs a warning but stays healthy).
+    let resp = handlers::mixer_params(
+        State(state),
+        JsonBody(r#"{"gain":0.8,"low_gain":3}"#.to_string()),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .expect("read body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("ok json");
+    assert_eq!(json["ok"], true, "mixer-params body: {json}");
 }
 
 #[tokio::test]

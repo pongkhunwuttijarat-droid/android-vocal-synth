@@ -67,6 +67,7 @@ fn renders_demo_song_with_teto_bank_to_audio() {
         true,
         &mut None,
         None,
+        None,
     )
     .expect("render project");
     assert_eq!(
@@ -74,7 +75,7 @@ fn renders_demo_song_with_teto_bank_to_audio() {
         Vec::<String>::new(),
         "nothing may be skipped"
     );
-    assert_eq!(report.phrases_rendered, 1);
+    assert_eq!(report.phrases_rendered, 2, "one phrase → 2 time-based chunks");
     assert!(!report.samples.is_empty(), "synth produced no samples");
 
     let duration_ms = report.samples.len() as f64 * 1000.0 / f64::from(SAMPLE_RATE);
@@ -144,6 +145,7 @@ fn mock_song_with_teto_bank_is_reported_as_skipped() {
         false,
         &mut None,
         None,
+        None,
     )
     .expect("render project must not crash");
     assert!(report.samples.is_empty());
@@ -173,6 +175,7 @@ fn demo_song_with_mock_bank_partially_resolves_and_is_reported() {
         PhonemizerKind::English,
         false,
         &mut None,
+        None,
         None,
     )
     .expect("render project must not crash");

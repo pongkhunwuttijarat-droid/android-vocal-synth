@@ -170,6 +170,7 @@ pub fn render_project(
     verbose: bool,
     cache: &mut Option<RenderCache>,
     mixer: Option<&mut mixer_fx::MixerFx>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<RenderReport, String> {
     let track = project.tracks.get(track_no as usize).ok_or_else(|| {
         format!(
@@ -208,6 +209,35 @@ pub fn render_project(
                 ));
                 continue;
             }
+            // Partial mapping (some phonemes without an oto alias): the
+            // oto list has fewer entries than `phonemes` and cannot be
+            // sliced by chunk ctx_range — skip the whole phrase once,
+            // like the reference's oto == null handling. Checked before
+            // chunking so the reason is reported once, not per chunk.
+            let sb_oto_len = phrase
+                .input
+                .sample_based
+                .as_ref()
+                .map(|sb| sb.oto.len())
+                .unwrap_or(0);
+            if sb_oto_len != phrase.input.phonemes.len() {
+                let names: Vec<&str> = phrase
+                    .input
+                    .phonemes
+                    .iter()
+                    .map(|p| p.phoneme.as_str())
+                    .collect();
+                skipped.push(format!(
+                    "part '{}' phrase @{:.0} ms: render failed — partial oto \
+                     mapping ({} of {} phonemes) ({})",
+                    part.name,
+                    phrase.group.position_ms,
+                    sb_oto_len,
+                    phrase.input.phonemes.len(),
+                    names.join(" "),
+                ));
+                continue;
+            }
             // Chunk-level render (incremental): split the phrase into
             // time-based chunks — note-atomic (a word's phonemes never
             // split), rest-split, each chunk renders with context notes
@@ -221,6 +251,14 @@ pub fn render_project(
                 CHUNK_CONTEXT_NOTES,
             );
             for chunk in &chunk_plan {
+                // Cooperative cancellation: the host sets the flag (e.g.
+                // the user hit Stop) — bail out between chunks so the
+                // reply comes back fast instead of finishing the render.
+                if let Some(c) = cancel {
+                    if c.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err("render cancelled".to_string());
+                    }
+                }
                 let key = chunk.hash(&phrase.input.phonemes);
                 let mut sub = phrase.input.clone();
                 sub.phonemes = phrase.input.phonemes[chunk.ctx_range.clone()].to_vec();
@@ -235,7 +273,9 @@ pub fn render_project(
                 sub.phrase.leading_ms = ctx_first.leading_ms;
                 sub.phrase.duration_ms =
                     (ctx_last.position_ms + ctx_last.duration_ms) - ctx_first.position_ms;
-                // sample_based.oto is per-phoneme — slice it to match.
+                // sample_based.oto is per-phoneme (1:1 with `phonemes`
+                // after the partial-mapping gate above) — slice it to
+                // match the chunk's context range.
                 if let (Some(sb), Some(base)) = (
                     sub.sample_based.as_mut(),
                     phrase.input.sample_based.as_ref(),

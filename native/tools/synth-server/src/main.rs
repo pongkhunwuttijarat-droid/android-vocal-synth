@@ -32,6 +32,13 @@ struct Cli {
     /// /synth-note and /render then return 500).
     #[arg(long)]
     so: Option<PathBuf>,
+    /// Path to libmixerfx.so (optional FX chain on the final mix).
+    #[arg(long)]
+    mixer_so: Option<PathBuf>,
+    /// JSON params for the mixer FX chain (e.g.
+    /// '{"clip_enabled":0}' for passthrough).
+    #[arg(long, default_value = "{}")]
+    mixer_params: String,
     /// Directory containing voicebank subdirectories — or a single
     /// voicebank directory itself.
     #[arg(long)]
@@ -56,9 +63,13 @@ async fn main() {
 async fn run(cli: Cli) -> Result<(), String> {
     let renderer = match &cli.so {
         Some(path) => {
-            let service = RenderService::spawn(path.clone())
+            let service = RenderService::spawn(path.clone(), cli.mixer_so.clone(), cli.mixer_params.clone())
                 .map_err(|e| format!("open {}: {e}", path.display()))?;
             println!("loaded renderer from {}", path.display());
+            match &cli.mixer_so {
+                Some(m) => println!("loaded mixer FX from {}", m.display()),
+                None => println!("no mixer FX plugin (--mixer-so not given)"),
+            }
             Some(service)
         }
         None => {
