@@ -28,3 +28,18 @@ app/android/app/build/
 # === Hermes ===
 .hermes/
 native/crates/*/target/
+
+# === Large models / datasets (skip from git — too big for history) ===
+test/poc/bigset/
+test/poc/eval/train-set.jsonl
+test/poc/eval/teacher-wavs/
+test/poc/eval/student-all/
+test/golden/diffsinger-golden-bank/
+test/golden/diffsinger-kiritan/
+test/golden/teto-english/cache/
+app/android/app/src/main/assets/engine/diffsinger/
+app/android/app/src/main/assets/engine/models/
+app/android/app/src/main/assets/engine/voicebanks/
+ref-openutau-clean/
+native/third_party/
+app/android/app/src/main/jniLibs/

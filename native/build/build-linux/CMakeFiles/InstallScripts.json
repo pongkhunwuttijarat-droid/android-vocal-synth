@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/home/seal/project/android-voice-synth/native/build/build-linux/cmake_install.cmake"
-	],
-	"Parallel" : false
-}
