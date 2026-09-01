@@ -15,8 +15,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOTNET="${DOTNET_ROOT:-$HOME/dotnet}/dotnet"
 
 if [[ -z "${OPENUTAU_REF:-}" ]]; then
-  echo "ERROR: OPENUTAU_REF must point at the OpenUtau source tree" >&2
-  exit 1
+  # The copy with resx <data> entries removed — the original
+  # "ref(openutau+openutau mobile)" fails MSBuild (resgen MSB3554
+  # "Access denied" on binary <data> like tiny.onnx).
+  OPENUTAU_REF="/home/seal/project/android-voice-synth/ref-openutau-clean"
 fi
 
 cd "$SCRIPT_DIR"

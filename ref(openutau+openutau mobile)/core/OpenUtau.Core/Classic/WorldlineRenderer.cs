@@ -80,7 +80,19 @@ namespace OpenUtau.Classic {
                     }
                 }
                 if (result.samples == null) {
-                    var phraseSynth = new Worldline.PhraseSynthV2(44100, version == 1 ? 441 : 512, 2048);
+                    // v1 (WORLDLINE-R) calls the raw C++ PhraseSynth
+                    // (PhraseSynthNew/AddRequest/SetCurves/Synth) — the
+                    // SAME path our Rust r1 engine uses, so the golden
+                    // reference measures apples-to-apples against r1.
+                    // v2 (WORLDLINE-R2) keeps the feature path
+                    // (SynthFeatures → mel.onnx → vocoder).
+                    Worldline.PhraseSynth phraseSynthV1 = null;
+                    Worldline.PhraseSynthV2 phraseSynth = null;
+                    if (version == 1) {
+                        phraseSynthV1 = new Worldline.PhraseSynth();
+                    } else {
+                        phraseSynth = new Worldline.PhraseSynthV2(44100, 512, 2048);
+                    }
                     double posOffsetMs = phrase.positionMs - phrase.leadingMs;
                     foreach (var item in resamplerItems) {
                         if (cancellation.IsCancellationRequested) {
@@ -92,18 +104,22 @@ namespace OpenUtau.Classic {
                         double fadeInMs = item.phone.envelope[1].X - item.phone.envelope[0].X;
                         double fadeOutMs = item.phone.envelope[4].X - item.phone.envelope[3].X;
                         try {
-                            phraseSynth.AddRequest(item, posMs, skipMs, lengthMs, fadeInMs, fadeOutMs);
+                            if (phraseSynthV1 != null) {
+                                phraseSynthV1.AddRequest(item, posMs, skipMs, lengthMs, fadeInMs, fadeOutMs);
+                            } else {
+                                phraseSynth.AddRequest(item, posMs, skipMs, lengthMs, fadeInMs, fadeOutMs);
+                            }
                         } catch (SynthRequestError e) {
                             if (e is CutOffExceedDurationError cee) {
                                 throw new MessageCustomizableException(
                                     $"Failed to render\n Oto error: cutoff exceeds audio duration \n{item.phone.phoneme}",
-                                    $"<translate:errors.failed.synth.cutoffexceedduration>\n{item.phone.phoneme}",
+                                    $"<translate:errors.failed.synth.cutoffexceedduration>\\n{item.phone.phoneme}",
                                     e);
                             }
                             if (e is CutOffBeforeOffsetError cbe) {
                                 throw new MessageCustomizableException(
                                     $"Failed to render\n Oto error: cutoff before offset \n{item.phone.phoneme}",
-                                    $"<translate:errors.failed.synth.cutoffbeforeoffset>\n{item.phone.phoneme}",
+                                    $"<translate:errors.failed.synth.cutoffbeforeoffset>\\n{item.phone.phoneme}",
                                     e);
                             }
                             throw e;
@@ -115,9 +131,13 @@ namespace OpenUtau.Classic {
                     var tension = SampleCurve(phrase, phrase.tension, 0.5, frames, x => 0.5 + 0.005 * x);
                     var breathiness = SampleCurve(phrase, phrase.breathiness, 0.5, frames, x => 0.5 + 0.005 * x);
                     var voicing = SampleCurve(phrase, phrase.voicing, 1.0, frames, x => 0.01 * x);
-                    phraseSynth.SetCurves(f0, gender, tension, breathiness, voicing);
+                    if (phraseSynthV1 != null) {
+                        phraseSynthV1.SetCurves(f0, gender, tension, breathiness, voicing);
+                    } else {
+                        phraseSynth.SetCurves(f0, gender, tension, breathiness, voicing);
+                    }
                     if (version == 1) {
-                        result.samples = phraseSynth.Synth();
+                        result.samples = phraseSynthV1.Synth();
                     } else {
                         var (totalFrames, f0Out, spEnvOut, apOut) = phraseSynth.SynthFeatures();
                         int paddedLength = totalFrames + 8;
@@ -136,9 +156,41 @@ namespace OpenUtau.Classic {
                             NamedOnnxValue.CreateFromTensor("sp_env", spEnvTensor),
                             NamedOnnxValue.CreateFromTensor("ap", apTensor)
                         };
-                        var session = Onnx.getInferenceSession(OpenUtau.Core.Classic.Data.Resources.mel, OnnxRunnerChoice.CPU);
+                        // Headless golden harness: Resources.mel is null
+                        // when the ResXFileRef did not embed the onnx
+                        // bytes at build time — fall back to the file on
+                        // disk next to this source tree.
+                        var mel = OpenUtau.Core.Classic.Data.Resources.mel;
+                        if (mel == null) {
+                            var melPath = System.IO.Path.Combine(
+                                AppContext.BaseDirectory, "mel.onnx");
+                            if (!System.IO.File.Exists(melPath)) {
+                                melPath = System.IO.Path.Combine(
+                                    AppContext.BaseDirectory, "Classic", "Data", "mel.onnx");
+                            }
+                            if (System.IO.File.Exists(melPath)) {
+                                mel = System.IO.File.ReadAllBytes(melPath);
+                            } else {
+                                throw new FileNotFoundException(
+                                    "mel.onnx not found (embedded resource null and no file on disk)", melPath);
+                            }
+                        }
+                        var session = Onnx.getInferenceSession(mel, OnnxRunnerChoice.CPU);
                         using var results = session.Run(inputs);
                         var melOutput = results.First(r => r.Name == "mel").AsTensor<float>();
+                        if (Environment.GetEnvironmentVariable("GOLDEN_DUMP_MEL") == "1") {
+                            int t = totalFrames;
+                            var powers = new List<float>();
+                            for (int f = 0; f < t; f++) {
+                                float sum = 0;
+                                for (int b = 0; b < 128; b++) {
+                                    float v = melOutput[0, leftPadding + f, b];
+                                    sum += v * v;
+                                }
+                                powers.Add(sum / 128f);
+                            }
+                            Console.WriteLine($"[mel-dump] total={t} pad_left={leftPadding} mean={powers.Average():F6} max={powers.Max():F6} first10=[{string.Join(", ", powers.Take(10).Select(p => p.ToString("F2")))}]");
+                        }
                         const string vocoderPkg = "pc-nsf-hifigan";
                         string vocoderPath = PackageManager.Inst.GetInstalledPath(vocoderPkg) ?? "";
                         if (vocoderBytes == null) {

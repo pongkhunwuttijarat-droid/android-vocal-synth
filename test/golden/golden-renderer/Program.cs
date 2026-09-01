@@ -5,8 +5,10 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using OpenUtau.Api;
 using OpenUtau.Classic;
 using OpenUtau.Core;
+using OpenUtau.Core.DiffSinger;
 using OpenUtau.Core.Format;
 using OpenUtau.Core.Render;
 using OpenUtau.Core.SignalChain;
@@ -60,21 +62,37 @@ namespace GoldenRenderer {
             ToolsManager.Inst.Initialize();
 
             // --- Load the Teto voicebank -----------------------------------
-            var loader = new VoicebankLoader(TetoDir);
+            // DIFFSINGER_SINGER=<dir> switches to the C# DiffSinger
+            // golden path (the kiritan bank adapted for the ref's
+            // phonemizer infra — see test/golden/diffsinger-golden-bank).
+            var dsSingerDir = Environment.GetEnvironmentVariable("DIFFSINGER_SINGER");
+            var loader = new VoicebankLoader(dsSingerDir ?? TetoDir);
             var voicebank = loader.SearchAll().FirstOrDefault();
             if (voicebank == null) {
-                Console.Error.WriteLine("ERROR: no voicebank found under " + TetoDir);
+                Console.Error.WriteLine("ERROR: no voicebank found under " + (dsSingerDir ?? TetoDir));
                 return 2;
             }
-            var singer = new ClassicSinger(voicebank);
-            singer.EnsureLoaded();
-            if (!singer.Loaded) {
-                Console.Error.WriteLine("ERROR: Teto singer failed to load (Loaded=false)");
-                return 2;
+            USinger singer;
+            bool diffSingerMode = !string.IsNullOrEmpty(dsSingerDir);
+            if (diffSingerMode) {
+                singer = new DiffSingerSinger(voicebank);
+                singer.EnsureLoaded();
+                if (!singer.Loaded) {
+                    Console.Error.WriteLine("ERROR: DiffSinger singer failed to load (Loaded=false)");
+                    return 2;
+                }
+                Console.WriteLine($"Singer: {singer.Name} id={singer.Id} type={singer.SingerType} (DiffSinger)");
+            } else {
+                singer = new ClassicSinger(voicebank);
+                singer.EnsureLoaded();
+                if (!singer.Loaded) {
+                    Console.Error.WriteLine("ERROR: Teto singer failed to load (Loaded=false)");
+                    return 2;
+                }
+                Console.WriteLine($"Singer: {singer.Name} id={singer.Id} type={singer.SingerType}");
             }
             // Register so track.Validate keeps it (not CreateMissing).
             SingerManager.Inst.Singers[singer.Id] = singer;
-            Console.WriteLine($"Singer: {singer.Name} id={singer.Id} type={singer.SingerType}");
 
             // --- Build the project ------------------------------------------
             UProject project;
@@ -118,7 +136,26 @@ namespace GoldenRenderer {
             // the default renderer = WORLDLINE-R for classic singers and
             // triggers phonemization).
             project.tracks[0].Singer = singer;
+            if (diffSingerMode) {
+                // The track's phonemizer must match the bank: the singer's
+                // declared phonemizer (character.yaml) — the C# does not
+                // auto-assign it on Validate, so set it explicitly.
+                var dsFactory = PhonemizerFactory.Get(typeof(DiffSingerChinesePhonemizer));
+                project.tracks[0].Phonemizer = dsFactory.Create();
+                Console.WriteLine($"  track phonemizer -> {dsFactory.type.FullName}");
+            }
             DocManager.Inst.ExecuteCmd(new LoadProjectNotification(project));
+
+            // The DiffSinger phonemizer caches its encoder outputs as a
+            // tensorcache under the project's cacheDir — ensure it exists
+            // BEFORE ValidateFull triggers the phonemizer.
+            Directory.CreateDirectory(project.cacheDir);
+            Directory.CreateDirectory(Path.Combine(project.cacheDir, "OpenUtau"));
+            // The harness's default cache (when cache_dir is empty) is
+            // /tmp/golden-renderer-cache — cover both.
+            Directory.CreateDirectory("/tmp/golden-renderer-cache");
+            Directory.CreateDirectory("/tmp/golden-renderer-cache/OpenUtau");
+
             project.ValidateFull();
 
             // --- Wait for the async phonemizer ------------------------------
@@ -126,6 +163,10 @@ namespace GoldenRenderer {
             if (part0 == null) {
                 Console.Error.WriteLine("ERROR: no voice part in project");
                 return 2;
+            }
+            if (diffSingerMode) {
+                Console.WriteLine($"  track phonemizer: {project.tracks[0].Phonemizer?.GetType().FullName} (declared: {project.tracks[0].Singer?.DefaultPhonemizer})");
+                Console.WriteLine($"  part notes: {part0.notes.Count}, first lyric: {part0.notes.First().lyric}");
             }
             int waitedMs = 0;
             while (!part0.PhonemesUpToDate && waitedMs < 30000) {
@@ -136,8 +177,59 @@ namespace GoldenRenderer {
                 Console.Error.WriteLine("ERROR: phonemizer did not finish in 30s");
                 return 2;
             }
+            // The render phrases are built during Validate — but every
+            // ValidateFull re-triggers the async phonemizer, so the build
+            // keeps racing it. Build the phrases DIRECTLY now that the
+            // phonemes are up to date (no-op for Teto — its phrases were
+            // already built).
+            if (diffSingerMode && part0.renderPhrases.Count == 0) {
+                try {
+                    part0.renderPhrases.Clear();
+                    part0.renderPhrases.AddRange(RenderPhrase.FromPart(project, project.tracks[0], part0));
+                } catch (Exception re) {
+                    Console.WriteLine($"  FromPart threw: {re.Message}");
+                    Console.WriteLine($"  FromPart stack: {re.StackTrace}");
+                }
+            }
+            if (diffSingerMode) {
+                var phonemeSnapshot = part0.phonemes.ToList();
+                Console.WriteLine($"  after re-validate: phonemes={phonemeSnapshot.Count} renderPhrases={part0.renderPhrases?.Count ?? -1}");
+                Console.WriteLine($"  phoneme flags: {string.Join("; ", phonemeSnapshot.Select(p => $"{p.phoneme}@{p.position}:err={p.Error}"))}");
+                var firstErr = phonemeSnapshot.FirstOrDefault(p => p.ErrorException != null);
+                if (firstErr != null) {
+                    Console.WriteLine($"  phoneme error: {firstErr.ErrorException.Message}");
+                    Console.WriteLine($"  phoneme error inner: {firstErr.ErrorException.InnerException?.Message}");
+                }
+                // Reflection: read the phonemizer's private unrecognized
+                // lyrics map + the last ProcessPart exception (we must NOT
+                // modify the reference repo).
+                var ph = project.tracks[0].Phonemizer;
+                var t = ph.GetType();
+                while (t != null && t.GetField("unrecognizedLyrics", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance) == null) {
+                    t = t.BaseType;
+                }
+                var field = t?.GetField("unrecognizedLyrics", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (field?.GetValue(ph) is Dictionary<int, string> unrecognized) {
+                    Console.WriteLine($"  unrecognized lyrics: {string.Join("; ", unrecognized.Select(kv => $"{kv.Key}={kv.Value}"))}");
+                }
+                var exField = ph.GetType().GetField("lastProcessPartException", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                    ?? ph.GetType().BaseType?.GetField("lastProcessPartException", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var procEx = exField?.GetValue(ph) as Exception;
+                if (procEx != null) {
+                    Console.WriteLine($"  ProcessPart exception: {procEx.Message}");
+                } else {
+                    Console.WriteLine($"  ProcessPart exception: none");
+                }
+            }
             var phrases = part0.GetRenderRequest();
             Console.WriteLine($"Phonemes ready after {waitedMs} ms; phrases: {phrases?.phrases?.Length ?? 0}");
+            if (diffSingerMode) {
+                foreach (var phrase in phrases.phrases) {
+                    var ends = string.Join(",", phrase.phones.Select(p => $"{p.phoneme}@{p.endMs:F1}"));
+                    Console.WriteLine($"  phrase ends: {ends}");
+                }
+                Console.WriteLine($"  part phonemes: {part0.phonemes?.Count ?? -1} (up to date: {part0.PhonemesUpToDate})");
+            }
             if (phrases == null || phrases.phrases.Length == 0) {
                 Console.Error.WriteLine("ERROR: no render phrases (check lyrics/aliases exist in oto.ini)");
                 return 2;
@@ -148,7 +240,7 @@ namespace GoldenRenderer {
             // Mirrors our Rust engine's PhraseSynth::Synth() — the defensible
             // golden comparison target (Sprint 2.3.4).
             if (args[0] == "phrase") {
-                return RenderPhrasesDirect(args[1], project, phrases.phrases);
+                return RenderPhrasesDirect(args[1], project, phrases.phrases, diffSingerMode);
             }
 
             // --- Print timing for golden investigation ----------------------
@@ -218,14 +310,25 @@ namespace GoldenRenderer {
         /// MONO wav — mirroring what our Rust engine's PhraseSynth::Synth()
         /// produces. This is the defensible comparison target for the
         /// golden test (Sprint 2.3.4).
-        static int RenderPhrasesDirect(string outPath, UProject project, RenderPhrase[] phrases) {
+        static int RenderPhrasesDirect(string outPath, UProject project, RenderPhrase[] phrases, bool diffSingerMode = false) {
             const int sampleRate = 44100;
             // Stitch all phrases into one mono stream (phrase order).
             var all = new List<float>();
             double peak = 0;
-            // WORLDLINE-R = version 1 (frame 441 / 10ms — the same numbers
-            // as our Rust PhraseSynth). Version 2 is the ONNX mel path.
-            var renderer = new WorldlineRenderer(1);
+            // Renderer version selectable via WORLDLINE_RENDERER env:
+            // 1 = WORLDLINE-R (WORLD resynthesis, frame 441/10ms),
+            // 2 = WORLDLINE-R2 (SynthFeatures → mel.onnx → HiFiGAN,
+            // frame 512/11.6ms — matches our DEFAULT_FRAME_MS).
+            int ver = 1;
+            var verStr = Environment.GetEnvironmentVariable("WORLDLINE_RENDERER");
+            if (!string.IsNullOrEmpty(verStr) && int.TryParse(verStr, out int parsed)) {
+                ver = parsed;
+            }
+            // DiffSinger: render through the phrase's OWN renderer (the
+            // DiffSingerRenderer ValidateFull assigned for a DS singer).
+            IRenderer renderer = diffSingerMode
+                ? phrases[0].renderer
+                : new WorldlineRenderer(ver);
             var progress = new Progress(phrases.Length);
             var cts = new CancellationTokenSource();
             for (int i = 0; i < phrases.Length; i++) {
