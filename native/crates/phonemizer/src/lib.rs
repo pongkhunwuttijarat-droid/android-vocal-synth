@@ -27,13 +27,17 @@
 //! `EnglishVCCVPhonemizer` plugins and the classic oto-based timing in
 //! `OpenUtau.Core/Classic/ClassicSinger.cs`.
 
+pub mod adapter;
+pub mod detect;
 pub mod english;
 pub mod g2p;
+pub mod ipa;
 pub mod japanese;
 pub mod lilt_dict;
 pub mod phonemizer;
 pub mod timing;
 pub mod translit;
+pub mod universal;
 
 pub use domain::UPhoneme as Phoneme;
 pub use english::EnglishCvvcPhonemizer;

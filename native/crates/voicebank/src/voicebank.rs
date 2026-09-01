@@ -125,6 +125,12 @@ impl Voicebank {
         self.oto_map.get(phoneme)
     }
 
+    /// Derive this bank's phoneme manifest (L3) from its oto aliases —
+    /// the mapping target the IPA adapter consults. Engine-agnostic.
+    pub fn phoneme_manifest(&self) -> crate::manifest::PhonemeManifest {
+        crate::manifest::PhonemeManifest::from_voicebank(self)
+    }
+
     /// Tone-name variant of [`Voicebank::lookup`] (`"C4"` etc.).
     pub fn lookup_tone_name(&self, phoneme: &str, tone_name: &str) -> Option<&Oto> {
         self.lookup(phoneme, crate::tone::name_to_tone(tone_name)?)

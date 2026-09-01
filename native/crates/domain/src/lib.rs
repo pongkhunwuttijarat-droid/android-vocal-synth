@@ -29,6 +29,7 @@
 //! as block mappings instead of `{...}` flow mappings (serde_yaml has no
 //! per-field flow-style control).
 
+pub mod capabilities;
 pub mod curve;
 pub mod expression;
 pub mod note;

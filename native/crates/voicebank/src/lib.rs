@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod frq;
+pub mod manifest;
 pub mod oto;
 pub mod prefix_map;
 pub mod text;
