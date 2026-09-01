@@ -1,0 +1,7 @@
+phonemes: phonemes.txt
+acoustic: acoustic.onnx
+vocoder: vocoder
+hidden_size: 4
+num_mel_bins: 4
+mel_base: "10"
+mel_scale: slaney

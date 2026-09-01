@@ -1,0 +1,4 @@
+name: fake-vocoder
+model: model.onnx
+num_mel_bins: 4
+pitch_controllable: false
