@@ -418,15 +418,13 @@ fn build_request(
     oto: &OtoEntry,
 ) -> PhonemeRequest {
     let con_vel = expression_value(input, grid, VEL, phoneme.position_ms, 100.0) as f64;
-    // Loudness calibration vs the C# reference (golden apples-to-apples):
-    // the C++ AutoGain mixes scaled/unscaled maxima exactly like
-    // Worldline.cs, but the reference's `item.volume` is the VOL
-    // expression (0..200, default 100) divided by 100 ONCE in
-    // RenderPhone, then again in Worldline.cs — net 0.01. Empirically
-    // matching the reference RMS (0.1595) on the Machine Love chorus
-    // requires the pre-scaled value here: VOL 100 → 55 gives 0.97× the
-    // reference loudness without clipping (peak 0.42 vs 0.98).
-    let volume = expression_value(input, grid, VOL, phoneme.position_ms, 100.0) as f64 * 0.44;
+    // Volume: the C++ PhraseSynth AutoGain applies `gain = volume*0.01`
+    // (effects.cpp) — C# sends item.volume = (int)(phone.volume*100) =
+    // VOL (0..200, default 100), so gain = VOL*0.01. NO ×0.44
+    // calibration here: that was tuned for the C# v2 feature path
+    // (SynthSegment), and feeding it into PhraseSynth scaled r1 2.27×
+    // quieter than the reference (ratio 2.0-2.3 on the scale demo).
+    let volume = expression_value(input, grid, VOL, phoneme.position_ms, 100.0) as f64;
     let modulation = expression_value(input, grid, MOD, phoneme.position_ms, 0.0) as f64;
     let tempo = DEFAULT_TEMPO_BPM;
     let stretch_ratio = 2f64.powf(1.0 - con_vel / 100.0);
@@ -699,7 +697,7 @@ mod tests {
         assert_eq!(r.phoneme, "3 h3");
         assert_eq!(r.tone, 60);
         assert_eq!(r.con_vel, 100.0);
-        assert!((r.volume - 44.0).abs() < 1e-9); // VOL 100 × 0.45 (calibrated)
+        assert!((r.volume - 100.0).abs() < 1e-9); // VOL 100 → raw (C++ PhraseSynth: gain = VOL*0.01)
         assert_eq!(r.modulation, 0.0);
         assert_eq!(r.tempo, 120.0);
         assert_eq!(r.offset, 442.3);
@@ -750,7 +748,7 @@ mod tests {
         let r = &build_requests(&i).unwrap()[0];
         assert_eq!(r.tone, 62);
         assert_eq!(r.con_vel, 150.0);
-        assert!((r.volume - 80.0 * 0.44).abs() < 1e-9); // VOL 80 × 0.45
+        assert!((r.volume - 80.0).abs() < 1e-9); // VOL 80 → raw
         assert_eq!(r.modulation, 30.0);
     }
 
@@ -758,7 +756,7 @@ mod tests {
     fn missing_expressions_use_defaults() {
         let r = &build_requests(&input(vec![phoneme()], vec![oto_entry()])).unwrap()[0];
         assert_eq!(r.con_vel, 100.0);
-        assert!((r.volume - 44.0).abs() < 1e-9); // VOL 100 × 0.45 (calibrated)
+        assert!((r.volume - 100.0).abs() < 1e-9); // VOL 100 → raw (C++ PhraseSynth: gain = VOL*0.01)
         assert_eq!(r.modulation, 0.0);
     }
 

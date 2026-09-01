@@ -11,3 +11,13 @@ voicebank = { path = "../voicebank" }
 feed = { path = "../feed" }
 worldline-sys = { path = "../worldline-sys" }
 thiserror = "2"
+
+# R2 (WORLDLINE-R2) neural path: feature extraction (r2.rs) + ONNX mel /
+# HiFiGAN vocoder. Feature-gated so v1 builds never pull the ONNX
+# runtime (~20 MB download).
+ort = { version = "2.0.0-rc.13", optional = true, features = ["ndarray"] }
+ndarray = "0.17"
+
+[features]
+default = []
+r2 = ["dep:ort"]

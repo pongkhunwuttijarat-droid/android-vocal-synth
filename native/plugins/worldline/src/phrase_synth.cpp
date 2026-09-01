@@ -17,16 +17,20 @@ namespace worldline {
 
 // Frame period in ms. v1 (WORLDLINE-R) uses 10 ms (441 samples @44.1k);
 // v2 (WORLDLINE-R2) uses 512 samples = 11.61 ms — the reference picks
-// `version == 1 ? 441 : 512` hop in `WorldlineRenderer`. v2 is the
-// DEFAULT: A/B on the scale demo showed v1's f0 tracking loses the note
-// (~150-200 Hz off) on fast descending runs, while v2 follows the
-// reference. Overridable via WORLD_FRAME_MS for experiments.
+// `version == 1 ? 441 : 512` hop in `WorldlineRenderer`. The build
+// chooses the default via WORLDLINE_FRAME_MS_DEFAULT (cmake): the v1
+// artifact (libworldline-v1.so, matches the official OpenUtau Mobile
+// .so) compiles with 10, the v2 artifact (libworldline.so) with 11.61.
+// WORLD_FRAME_MS env still overrides for experiments.
+#ifndef WORLDLINE_FRAME_MS_DEFAULT
+#define WORLDLINE_FRAME_MS_DEFAULT (512.0 * 1000.0 / 44100.0)  // 11.61 — v2
+#endif
 static double FrameMs() {
   if (const char* v = std::getenv("WORLD_FRAME_MS")) {
     double ms = atof(v);
     if (ms > 0) return ms;
   }
-  return 512.0 * 1000.0 / 44100.0;  // 11.61 — v2 (WORLDLINE-R2)
+  return WORLDLINE_FRAME_MS_DEFAULT;
 }
 const int padding = 2;
 

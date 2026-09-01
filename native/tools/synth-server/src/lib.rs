@@ -34,6 +34,7 @@
 //!   `{"error": "..."}` with 400/404/500 status codes.
 
 pub mod handlers;
+pub mod projects;
 pub mod render_service;
 pub mod server;
 pub mod state;

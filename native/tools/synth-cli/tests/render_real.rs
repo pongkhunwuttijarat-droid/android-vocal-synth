@@ -48,6 +48,42 @@ fn peak(samples: &[f32]) -> f32 {
     samples.iter().fold(0.0f32, |peak, &s| peak.max(s.abs()))
 }
 
+/// DiffSinger E2E with the FAKE model (no .so needed — the DsEngine
+/// renders entirely through ort): dsconfig load → phoneme table → tensor
+/// build (tokens/durations/f0) → acoustic.onnx → mel → vocoder.onnx →
+/// PCM. The fake model (`test/golden/diffsinger-fake`) is a crude
+/// Unsqueeze+Tile graph — its job is to prove the chain, not sound like
+/// a singer. The 29-note scale demo should produce ~14.5 s of samples.
+#[test]
+fn diffsinger_fake_model_renders_e2e() {
+    use synth_cli::engine::{DsEngine, Engine as _};
+
+    let project = pipeline::load_project(&repo_root().join("test/golden/scale-demo-app.ustx"))
+        .expect("load scale demo");
+    let voicebank = pipeline::load_voicebank(&teto_voicebank_path()).expect("load teto bank");
+    let model_dir = repo_root().join("test/golden/diffsinger-fake");
+    let mut engine = DsEngine::open(&model_dir, false).expect("open fake ds model");
+
+    let report = engine.render_project(&project, &voicebank, 0).expect("render project");
+    assert!(
+        report.skipped.is_empty(),
+        "nothing may be skipped: {:?}",
+        report.skipped
+    );
+    assert!(!report.samples.is_empty(), "synth produced no samples");
+
+    let duration_ms = report.samples.len() as f64 * 1000.0 / f64::from(SAMPLE_RATE);
+    println!(
+        "diffsinger fake: {} samples ({duration_ms:.1} ms), peak {:.2}",
+        report.samples.len(),
+        peak(&report.samples)
+    );
+    assert!(
+        duration_ms > 10000.0,
+        "expected ~14.5 s of audio, got {duration_ms:.1} ms"
+    );
+}
+
 /// THE first-sound test: demo-song (Teto-compatible hints) through the
 /// real .so with the full Teto English bank. Non-silent audio, > 1 s, and
 /// the wavwriter round-trip must decode to the same sample count.
@@ -189,9 +225,17 @@ fn demo_song_with_mock_bank_partially_resolves_and_is_reported() {
 #[test]
 fn phonemizer_kind_from_track_name() {
     let mut track = domain::UTrack::new("Track1");
-    assert_eq!(PhonemizerKind::from_track(&track), PhonemizerKind::English);
+    // Default is now the Universal (IPA-first) phonemizer.
+    assert_eq!(PhonemizerKind::from_track(&track), PhonemizerKind::Universal);
     track.phonemizer = Some("OpenUtau Japanese VCV Phonemizer".into());
     assert_eq!(PhonemizerKind::from_track(&track), PhonemizerKind::Japanese);
     track.phonemizer = Some("EnglishVCCVPhonemizer".into());
-    assert_eq!(PhonemizerKind::from_track(&track), PhonemizerKind::English);
+    // English-declared tracks now route to Universal too — the legacy
+    // English CVVC path's verbatim fallback skips whole phrases on
+    // unknown words ("shi" -> no alias -> song renders only its first
+    // phrase); Universal letter-splits + NearestPhoneme-maps them.
+    assert_eq!(PhonemizerKind::from_track(&track), PhonemizerKind::Universal);
+    // An unrecognized name falls through to Universal (was English).
+    track.phonemizer = Some("Custom Renderer".into());
+    assert_eq!(PhonemizerKind::from_track(&track), PhonemizerKind::Universal);
 }

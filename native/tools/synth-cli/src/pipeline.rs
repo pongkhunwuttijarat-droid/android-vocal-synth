@@ -24,6 +24,8 @@
 
 use std::path::Path;
 
+use rayon::prelude::*;
+
 use crate::chunking;
 use domain::{UPart, UProject, UTrack, UVoicePart};
 use feed::render_input::RenderInput;
@@ -39,7 +41,12 @@ use worldline_plugin::WorldlineRenderer;
 pub use runtime::mixer::SAMPLE_RATE;
 
 /// Chunk target duration (ms) — incremental re-render granularity.
-pub const CHUNK_TARGET_MS: f64 = 2000.0;
+/// Chunk target: phrases up to ~4 s render as ONE chunk (a single phrase
+/// render — apples-to-apples with the golden renderer, no crossfade/trim
+/// artifacts). Longer phrases split note-atomically to bound memory and
+/// enable incremental re-render. Was 2000 ms — the 3 s scale demo split
+/// into 2 chunks while the C# reference renders it as one phrase.
+pub const CHUNK_TARGET_MS: f64 = 4000.0;
 /// Whole neighbour notes carried into each chunk as crossfade context.
 pub const CHUNK_CONTEXT_NOTES: usize = 1;
 
@@ -48,21 +55,30 @@ pub const CHUNK_CONTEXT_NOTES: usize = 1;
 pub enum PhonemizerKind {
     English,
     Japanese,
+    /// IPA-first (L1+L2): detect → IPA → voicebank aliases via the
+    /// manifest. Handles English AND Japanese through the same path.
+    Universal,
 }
 
 impl PhonemizerKind {
-    /// Pick from a track's configured phonemizer name (English fallback,
-    /// matching the CLI contract: English for Teto English, Japanese for
-    /// the VCV banks).
+    /// Pick from a track's configured phonemizer name (Universal default,
+    /// matching the IPA plan: one phonemizer for every bank; English/
+    /// Japanese remain available for the legacy paths).
     pub fn from_track(track: &UTrack) -> Self {
         let Some(name) = track.phonemizer.as_deref() else {
-            return PhonemizerKind::English;
+            return PhonemizerKind::Universal;
         };
         let lower = name.to_ascii_lowercase();
         if lower.contains("japanese") || lower.contains("jpn") || lower.contains("vcv") {
             PhonemizerKind::Japanese
         } else {
-            PhonemizerKind::English
+            // English (and anything else) → Universal: the legacy English
+            // CVVC path falls back to the lyric VERBATIM on unknown words
+            // ("shi" → no oto alias → the whole phrase skipped). Universal
+            // letter-splits + NearestPhoneme-maps unknown words and
+            // delegates kana to the VCV phonemizer — one path for every
+            // lyric ("ถ้าไม่ตรงภาษาก็เข้า universal ให้หมดเลยนะ").
+            PhonemizerKind::Universal
         }
     }
 }
@@ -101,6 +117,17 @@ pub fn derive_phonemes(
                 .process(&part.notes, Some(voicebank))
         }
         PhonemizerKind::Japanese => JapaneseVcvPhonemizer.process(&part.notes, Some(voicebank)),
+        PhonemizerKind::Universal => {
+            // IPA-first: manifest (L3) + adapter (L2) + universal
+            // phonemizer (L1) — one path for every language.
+            use phonemizer::adapter::IpaAdapter;
+            use phonemizer::ipa::IpaDictionary;
+            use phonemizer::universal::UniversalPhonemizer;
+            let manifest = voicebank.phoneme_manifest();
+            let dict = IpaDictionary::en_subset();
+            let adapter = IpaAdapter::new(&manifest, &dict);
+            UniversalPhonemizer::new(adapter).process(&part.notes, Some(voicebank))
+        }
     };
     TimingEngine.process(
         &part.notes,
@@ -155,6 +182,49 @@ pub struct RenderReport {
     pub samples: Vec<f32>,
 }
 
+/// A phrase renderer: `RenderInput` → mono PCM. Both the v1 WORLD
+/// renderer (`WorldlineRenderer`, Synth()) and the v2 neural engine
+/// (`R2Engine`, mel→HiFiGAN) implement this — the pipeline never depends
+/// on a concrete engine, so hosts can select v1 / v2 per request.
+/// A phrase renderer (r1/r2/classic/diffsinger). `Send + Sync` lets the
+/// pipeline render the chunks of one phrase in parallel (each engine
+/// instance is reentrant: fresh state per `render_phrase` call).
+pub trait PhraseRenderer: Send + Sync {
+    /// Render one phrase (the pipeline's chunking may call this
+    /// concurrently on different chunks).
+    fn render_phrase(&self, input: &feed::render_input::RenderInput) -> Result<Vec<f32>, String>;
+    /// Engine discriminator for the render cache: different engines
+    /// (r1 WORLD vs r2 neural) must never share cache entries even for
+    /// identical phoneme input.
+    fn cache_salt(&self) -> u64 {
+        0
+    }
+    /// Whether concurrent `render_phrase` calls are deterministic. The
+    /// default is SEQUENTIAL (golden-safe): the C++ WORLD and the
+    /// multi-threaded ort reductions are float-schedule sensitive, so a
+    /// parallel fan-out can shift the output. Engines that verified
+    /// determinism (e.g. single-threaded ort sessions) opt in.
+    fn parallel_safe(&self) -> bool {
+        false
+    }
+}
+
+impl PhraseRenderer for WorldlineRenderer {
+    fn render_phrase(&self, input: &feed::render_input::RenderInput) -> Result<Vec<f32>, String> {
+        WorldlineRenderer::render_phrase(self, input).map_err(|e| e.to_string())
+    }
+    fn cache_salt(&self) -> u64 {
+        // "worldline-r" — fnv-ish from the engine name.
+        0x726c31_0000_0001
+    }
+    fn parallel_safe(&self) -> bool {
+        // The C++ WORLD's randn state is thread-local since the
+        // thread-safety fix — concurrent chunk renders are verified
+        // byte-identical (deterministic).
+        true
+    }
+}
+
 /// Render every voice part of `track_no` and mix the phrases in time.
 ///
 /// A phrase whose phonemes do not map to oto aliases is skipped (with a
@@ -164,13 +234,45 @@ pub struct RenderReport {
 pub fn render_project(
     project: &UProject,
     voicebank: &Voicebank,
-    renderer: &WorldlineRenderer,
+    renderer: &dyn PhraseRenderer,
     track_no: i32,
     kind: PhonemizerKind,
     verbose: bool,
     cache: &mut Option<RenderCache>,
     mixer: Option<&mut mixer_fx::MixerFx>,
     cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<RenderReport, String> {
+    render_project_with(
+        project,
+        voicebank,
+        renderer,
+        track_no,
+        kind,
+        verbose,
+        cache,
+        mixer,
+        cancel,
+        None,
+    )
+}
+
+/// `render_project` with per-phrase engine selection. `engine_by_phrase`
+/// maps a phrase index (in render order across the track's voice parts)
+/// to the renderer to use for it; `None` = use `renderer` for every
+/// phrase (the default). This is how the app renders "ระหว่างท่อน" —
+/// different sections of a song with different synthesis engines
+/// (WORLDLINE-R / WORLDLINE-R2 / Classic).
+pub fn render_project_with(
+    project: &UProject,
+    voicebank: &Voicebank,
+    renderer: &dyn PhraseRenderer,
+    track_no: i32,
+    kind: PhonemizerKind,
+    verbose: bool,
+    cache: &mut Option<RenderCache>,
+    mixer: Option<&mut mixer_fx::MixerFx>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    engine_by_phrase: Option<&dyn Fn(usize) -> &'static dyn PhraseRenderer>,
 ) -> Result<RenderReport, String> {
     let track = project.tracks.get(track_no as usize).ok_or_else(|| {
         format!(
@@ -192,8 +294,16 @@ pub fn render_project(
 
     let mut chunks: Vec<MixInput> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+    let mut phrase_idx = 0usize;
     for part in parts {
         for phrase in build_phrase_inputs(project, track, part, voicebank, kind)? {
+            // Per-phrase engine selection ("ระหว่างท่อน"): the host maps a
+            // phrase index to a specific renderer (r1/r2/classic).
+            let phrase_renderer: &dyn PhraseRenderer = match engine_by_phrase {
+                Some(f) => f(phrase_idx),
+                None => renderer,
+            };
+            phrase_idx += 1;
             if phrase.input.sample_based.is_none() {
                 let names: Vec<&str> = phrase
                     .input
@@ -244,112 +354,179 @@ pub fn render_project(
             // each side (crossfade continuity) and is trimmed back to its
             // own span. Cache key = chunk hash (context included), so an
             // edit only invalidates the chunks that own it.
+            //
+            // Chunking applies to FRESH renders too: a whole-phrase chunk
+            // would (a) spike memory on long songs and (b) store one
+            // giant cache entry that later incremental edits cannot
+            // reuse. Seams are made inaudible by the mixer's equal-power
+            // crossfade.
             let chunk_plan = chunking::plan_chunks(
                 &phrase.input.phonemes,
                 &phrase.input.notes,
                 CHUNK_TARGET_MS,
                 CHUNK_CONTEXT_NOTES,
             );
-            for chunk in &chunk_plan {
-                // Cooperative cancellation: the host sets the flag (e.g.
-                // the user hit Stop) — bail out between chunks so the
-                // reply comes back fast instead of finishing the render.
-                if let Some(c) = cancel {
-                    if c.load(std::sync::atomic::Ordering::Relaxed) {
-                        return Err("render cancelled".to_string());
-                    }
-                }
-                let key = chunk.hash(&phrase.input.phonemes);
-                let mut sub = phrase.input.clone();
-                sub.phonemes = phrase.input.phonemes[chunk.ctx_range.clone()].to_vec();
-                // Point the phrase frame at the chunk's first context
-                // phoneme so the f0/expression curves start there — the
-                // renderer's curves are sampled from
-                // `phrase.position_ms - phrase.leading_ms`, and a stale
-                // full-phrase origin would prepend silence to the chunk.
-                let ctx_first = &phrase.input.phonemes[chunk.ctx_range.start];
-                let ctx_last = &phrase.input.phonemes[chunk.ctx_range.end - 1];
-                sub.phrase.position_ms = ctx_first.position_ms;
-                sub.phrase.leading_ms = ctx_first.leading_ms;
-                sub.phrase.duration_ms =
-                    (ctx_last.position_ms + ctx_last.duration_ms) - ctx_first.position_ms;
-                // sample_based.oto is per-phoneme (1:1 with `phonemes`
-                // after the partial-mapping gate above) — slice it to
-                // match the chunk's context range.
-                if let (Some(sb), Some(base)) = (
-                    sub.sample_based.as_mut(),
-                    phrase.input.sample_based.as_ref(),
-                ) {
-                    sb.oto = base.oto[chunk.ctx_range.clone()].to_vec();
-                }
-                // `get_or_compute`'s closure cannot return a Result, so
-                // render first when missing and propagate errors; on a
-                // cache hit the render is skipped.
-                let rendered: Vec<f32> = match cache {
-                    Some(ref mut c) => {
-                        if let Some(hit) = c.get(key) {
-                            hit
-                        } else {
-                            let r = renderer.render_phrase(&sub).map_err(|e| {
-                                format!(
-                                    "part '{}' phrase @{:.0} ms chunk {}-{}: render failed: {e}",
-                                    part.name,
-                                    phrase.group.position_ms,
-                                    chunk.own_range.start,
-                                    chunk.own_range.end
-                                )
-                            })?;
-                            let _ = c.put(key, r.clone());
-                            r
-                        }
-                    }
-                    None => renderer.render_phrase(&sub).map_err(|e| {
-                        format!(
-                            "part '{}' phrase @{:.0} ms chunk {}-{}: render failed: {e}",
-                            part.name,
-                            phrase.group.position_ms,
-                            chunk.own_range.start,
-                            chunk.own_range.end
-                        )
-                    })?,
-                };
-                // Trim the rendered (own+context) audio back to the chunk's
-                // own span, keeping the first phoneme's leading.
-                let ctx_first = &phrase.input.phonemes[chunk.ctx_range.start];
-                let audio_start_ms = ctx_first.position_ms - ctx_first.leading_ms;
-                let first_lead = phrase.input.phonemes[chunk.own_range.start].leading_ms;
-                let sr = f64::from(SAMPLE_RATE) / 1000.0;
-                let start_i = (((chunk.start_ms - first_lead) - audio_start_ms) * sr).max(0.0) as usize;
-                let end_i = (((chunk.end_ms) - audio_start_ms) * sr) as usize;
-                let samples = if end_i > start_i && start_i < rendered.len() {
-                    rendered[start_i..end_i.min(rendered.len())].to_vec()
-                } else {
-                    Vec::new()
-                };
-                if verbose {
-                    println!(
-                        "  phrase @{:.0} ms chunk {}-{} (own {}-{}): {} samples ({:.0} ms){}",
-                        phrase.input.phrase.position_ms,
-                        chunk.ctx_range.start,
-                        chunk.ctx_range.end,
+            // --- render the chunks of this phrase ---------------------------
+            // Parallel (rayon) when the engine verified deterministic
+            // concurrent renders; otherwise the golden-safe sequential
+            // path. Each chunk builds its own sub-phrase (the pure
+            // origin/curve rebasing below) and renders through
+            // `render_phrase(&self)`. The cache is behind a mutex
+            // (per-key file IO — negligible contention); `collect`
+            // preserves the chunk order, so the mixed output is
+            // byte-identical to the sequential path.
+            let cache_mutex = cache.as_mut().map(|c| std::sync::Mutex::new(&mut *c));
+            let render_chunk = |chunk: &chunking::Chunk| -> Result<Option<MixInput>, String> {
+// Cooperative cancellation: the host sets the flag (e.g.
+// the user hit Stop) — bail out between chunks so the
+// reply comes back fast instead of finishing the render.
+if let Some(c) = cancel {
+    if c.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("render cancelled".to_string());
+    }
+}
+let key = chunk.hash(&phrase.input.phonemes, phrase_renderer.cache_salt());
+let mut sub = phrase.input.clone();
+sub.phonemes = phrase.input.phonemes[chunk.ctx_range.clone()].to_vec();
+// Point the phrase frame at the chunk's first context
+// phoneme so the f0/expression curves start there — the
+// renderer's curves are sampled from
+// `phrase.position_ms - phrase.leading_ms`, and a stale
+// full-phrase origin would prepend silence to the chunk.
+let ctx_first = &phrase.input.phonemes[chunk.ctx_range.start];
+let ctx_last = &phrase.input.phonemes[chunk.ctx_range.end - 1];
+sub.phrase.position_ms = ctx_first.position_ms;
+sub.phrase.leading_ms = ctx_first.leading_ms;
+sub.phrase.duration_ms =
+    (ctx_last.position_ms + ctx_last.duration_ms) - ctx_first.position_ms;
+// Rebasing `phrase.position_ms` above moved the curve
+// sampling origin to the chunk's first context phoneme,
+// but `pitches_cents`/`curves` are still FULL-phrase
+// arrays indexed from the original phrase origin. A
+// later chunk would sample the EARLIER notes' pitches
+// (the scale demo's chunk 2 renders notes 0-7's pitches
+// again — the descending scale "bounces back up").
+// Shift the arrays to the chunk origin (floor: the grid
+// index floors anyway, and the grid is 5-tick steps — a
+// sub-interval remainder matches the whole-phrase path).
+let origin_old = phrase.input.phrase.position_ms
+    - phrase.input.phrase.leading_ms;
+let origin_new = ctx_first.position_ms - ctx_first.leading_ms;
+if origin_new > origin_old + 0.001 {
+    let interval = worldline_plugin::ms_per_interval(&phrase.input);
+    let skip = ((origin_new - origin_old) / interval).floor() as usize;
+    if skip > 0 {
+        sub.pitches_cents.drain(..skip.min(sub.pitches_cents.len()));
+        for c in [
+            &mut sub.curves.dynamics,
+            &mut sub.curves.gender,
+            &mut sub.curves.breathiness,
+            &mut sub.curves.tension,
+            &mut sub.curves.voicing,
+        ] {
+            c.drain(..skip.min(c.len()));
+        }
+    }
+}
+// sample_based.oto is per-phoneme (1:1 with `phonemes`
+// after the partial-mapping gate above) — slice it to
+// match the chunk's context range.
+if let (Some(sb), Some(base)) = (
+    sub.sample_based.as_mut(),
+    phrase.input.sample_based.as_ref(),
+) {
+    sb.oto = base.oto[chunk.ctx_range.clone()].to_vec();
+}
+// `get_or_compute`'s closure cannot return a Result, so
+// render first when missing and propagate errors; on a
+// cache hit the render is skipped. The cache is behind a
+// mutex for the parallel chunks (per-key file IO — the
+// contention is negligible).
+let rendered: Vec<f32> = match &cache_mutex {
+    Some(m) => {
+        // Lock ONLY for the key lookup/insert — the render
+        // itself runs OUTSIDE the lock so the parallel
+        // chunks actually run concurrently.
+        let hit = {
+            let mut c = m
+                .lock()
+                .map_err(|e| format!("render cache lock: {e}"))?;
+            c.get(key)
+        };
+        match hit {
+            Some(h) => h,
+            None => {
+                let r = phrase_renderer.render_phrase(&sub).map_err(|e| {
+                    format!(
+                        "part '{}' phrase @{:.0} ms chunk {}-{}: render failed: {e}",
+                        part.name,
+                        phrase.group.position_ms,
                         chunk.own_range.start,
-                        chunk.own_range.end,
-                        samples.len(),
-                        samples.len() as f64 * 1000.0 / f64::from(SAMPLE_RATE),
-                        if cache.is_some() { " (cached)" } else { "" },
-                    );
-                }
-                chunks.push(MixInput {
-                    chunk: AudioChunk {
-                        samples,
-                        // samples[0] starts at (chunk.start - first lead).
-                        position_ms: chunk.start_ms - first_lead,
-                        leading_ms: first_lead,
-                        hash: key,
-                    },
-                    track: TrackSpec::default(),
-                });
+                        chunk.own_range.end
+                    )
+                })?;
+                let mut c = m
+                    .lock()
+                    .map_err(|e| format!("render cache lock: {e}"))?;
+                let _ = c.put(key, r.clone());
+                r
             }
+        }
+    }
+    None => phrase_renderer.render_phrase(&sub).map_err(|e| {
+        format!(
+            "part '{}' phrase @{:.0} ms chunk {}-{}: render failed: {e}",
+            part.name,
+            phrase.group.position_ms,
+            chunk.own_range.start,
+            chunk.own_range.end
+        )
+    })?,
+};
+// Trim the rendered (own+context) audio back to the chunk's
+// own span, keeping the first phoneme's leading.
+let ctx_first = &phrase.input.phonemes[chunk.ctx_range.start];
+let audio_start_ms = ctx_first.position_ms - ctx_first.leading_ms;
+let first_lead = phrase.input.phonemes[chunk.own_range.start].leading_ms;
+let sr = f64::from(SAMPLE_RATE) / 1000.0;
+let start_i = (((chunk.start_ms - first_lead) - audio_start_ms) * sr).max(0.0) as usize;
+let end_i = (((chunk.end_ms) - audio_start_ms) * sr) as usize;
+let samples = if end_i > start_i && start_i < rendered.len() {
+    rendered[start_i..end_i.min(rendered.len())].to_vec()
+} else {
+    Vec::new()
+};
+if verbose {
+    println!(
+        "  phrase @{:.0} ms chunk {}-{} (own {}-{}): {} samples ({:.0} ms){}",
+        phrase.input.phrase.position_ms,
+        chunk.ctx_range.start,
+        chunk.ctx_range.end,
+        chunk.own_range.start,
+        chunk.own_range.end,
+        samples.len(),
+        samples.len() as f64 * 1000.0 / f64::from(SAMPLE_RATE),
+        if cache_mutex.is_some() { " (cached)" } else { "" },
+    );
+}
+Ok(Some(MixInput {
+    chunk: AudioChunk {
+        samples,
+        // samples[0] starts at (chunk.start - first lead).
+        position_ms: chunk.start_ms - first_lead,
+        leading_ms: first_lead,
+        hash: key,
+    },
+    track: TrackSpec::default(),
+}))
+            };
+            let chunk_results: Result<Vec<Option<MixInput>>, String> = if phrase_renderer.parallel_safe() {
+                chunk_plan.par_iter().map(render_chunk).collect()
+            } else {
+                chunk_plan.iter().map(render_chunk).collect()
+            };
+            chunks.extend(chunk_results?.into_iter().flatten());
+
         }
     }
 
@@ -431,7 +608,7 @@ pub fn synth_note_validate(
 /// no oto entry.
 pub fn synth_note(
     voicebank: &Voicebank,
-    renderer: &WorldlineRenderer,
+    renderer: &dyn PhraseRenderer,
     alias: &str,
     tone: i32,
     duration_ms: f64,

@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use synth_cli::engine::{DsEngine, WorldlineClassicEngine, WorldlineR2Engine};
 use synth_cli::pipeline::{self, PhonemizerKind, SAMPLE_RATE};
 use wavwriter::{write_wav_16, write_wav_file};
 
@@ -64,9 +65,35 @@ struct RenderArgs {
     /// Phonemizer override (default: picked from the track's setting).
     #[arg(long, value_enum)]
     phonemizer: Option<PhonemizerArg>,
+    /// Render engine: r1 = WORLDLINE-R (WORLD resynthesis, default),
+    /// r2 = WORLDLINE-R2 (neural mel→HiFiGAN; needs --mel-onnx and
+    /// --vocoder-onnx), classic = WORLDLINE-R Classic (SynthFeatures →
+    /// C++ WorldSynthesis — the reference v1 feature path),
+    /// diffsinger = diffusion acoustic model (needs --ds-model).
+    #[arg(long, value_enum, default_value_t = EngineArg::R1)]
+    engine: EngineArg,
+    /// R2 mel.onnx model path (only with --engine r2).
+    #[arg(long)]
+    mel_onnx: Option<PathBuf>,
+    /// R2 pc-nsf-hifigan onnx model path (only with --engine r2).
+    #[arg(long)]
+    vocoder_onnx: Option<PathBuf>,
+    /// DiffSinger voicebank dir with dsconfig.yaml (only with
+    /// --engine diffsinger).
+    #[arg(long)]
+    ds_model: Option<PathBuf>,
     /// Print per-phrase progress.
     #[arg(long)]
     verbose: bool,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum EngineArg {
+    R1,
+    R2,
+    Classic,
+    #[value(name = "diffsinger")]
+    DiffSinger,
 }
 
 #[derive(Args)]
@@ -109,8 +136,41 @@ fn run(cli: Cli) -> Result<(), String> {
 fn cmd_render(args: RenderArgs) -> Result<(), String> {
     let project = pipeline::load_project(&args.project)?;
     let voicebank = pipeline::load_voicebank(&args.voicebank)?;
-    let renderer = worldline_plugin::WorldlineRenderer::open(&args.so)
-        .map_err(|e| format!("open {}: {e}", args.so.display()))?;
+
+    // Engine selection: r1 = WORLDLINE-R (WORLD resynthesis via
+    // libworldline.so), r2 = WORLDLINE-R2 (neural mel→HiFiGAN, needs
+    // the ONNX models). Both render the SAME voicebank samples.
+    let engine: Box<dyn pipeline::PhraseRenderer> = match args.engine {
+        EngineArg::R1 => Box::new(
+            worldline_plugin::WorldlineRenderer::open(&args.so)
+                .map_err(|e| format!("open {}: {e}", args.so.display()))?,
+        ),
+        EngineArg::R2 => {
+            let mel = args
+                .mel_onnx
+                .ok_or("--engine r2 requires --mel-onnx")?;
+            let vocoder = args
+                .vocoder_onnx
+                .ok_or("--engine r2 requires --vocoder-onnx")?;
+            Box::new(
+                WorldlineR2Engine::open(&args.so, mel, vocoder, args.verbose)
+                    .map_err(|e| format!("open r2 engine: {e}"))?,
+            )
+        }
+        EngineArg::Classic => Box::new(
+            WorldlineClassicEngine::open(&args.so, args.verbose)
+                .map_err(|e| format!("open classic engine: {e}"))?,
+        ),
+        EngineArg::DiffSinger => {
+            let model = args
+                .ds_model
+                .ok_or("--engine diffsinger requires --ds-model <dir>")?;
+            Box::new(
+                DsEngine::open(model, args.verbose)
+                    .map_err(|e| format!("open diffsinger engine: {e}"))?,
+            )
+        }
+    };
 
     let track = project
         .tracks
@@ -152,7 +212,7 @@ fn cmd_render(args: RenderArgs) -> Result<(), String> {
         pipeline::render_project(
             &project,
             &voicebank,
-            &renderer,
+            engine.as_ref(),
             args.track,
             kind,
             args.verbose,

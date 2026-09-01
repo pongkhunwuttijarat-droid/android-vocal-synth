@@ -4,13 +4,15 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-synth-cli = { path = "../synth-cli" }
+synth-cli = { path = "../synth-cli", features = ["r2"] }
 domain = { path = "../../crates/domain" }
 runtime = { path = "../../crates/runtime", features = ["feed-integration"] }
 voicebank = { path = "../../crates/voicebank" }
+phonemizer = { path = "../../crates/phonemizer" }
 worldline-plugin = { path = "../../crates/worldline-plugin" }
 mixer-fx = { path = "../../crates/mixer-fx" }
 wavwriter = { path = "../../crates/wavwriter" }
+ustx-codec = { path = "../../crates/ustx-codec" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }

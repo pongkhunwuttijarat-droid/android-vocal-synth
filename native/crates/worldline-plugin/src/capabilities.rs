@@ -79,6 +79,39 @@ impl WorldlineCapabilities {
     }
 }
 
+/// Engine-agnostic capability declaration: worldline implements the
+/// `domain::EngineCapabilities` trait so the phonemizer/host layer can
+/// query it without depending on this crate.
+impl domain::capabilities::EngineCapabilities for WorldlineCapabilities {
+    fn id(&self) -> &'static str {
+        "worldline"
+    }
+
+    fn needs_wav_samples(&self) -> bool {
+        self.needs_wav_samples
+    }
+
+    fn needs_oto(&self) -> bool {
+        self.needs_oto
+    }
+
+    fn needs_frq(&self) -> bool {
+        self.needs_frq
+    }
+
+    fn expressions(&self) -> &'static [&'static str] {
+        self.expressions
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    fn channels(&self) -> u16 {
+        self.channels
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,5 +136,20 @@ mod tests {
         assert_eq!(WorldlineMode::Worldline.as_str(), "worldline");
         assert_eq!(WorldlineMode::Worldline2.as_str(), "worldline2");
         assert_eq!(WorldlineMode::ALL.len(), 3);
+    }
+
+    #[test]
+    fn implements_engine_capabilities_trait() {
+        // The host/phonemizer layer queries engines through the
+        // domain trait — NOT through this concrete type.
+        use domain::capabilities::EngineCapabilities as _;
+        let c: &dyn domain::capabilities::EngineCapabilities =
+            WorldlineCapabilities::get();
+        assert_eq!(c.id(), "worldline");
+        assert!(c.needs_oto());
+        assert!(!c.needs_frq());
+        assert_eq!(c.sample_rate(), 44100);
+        assert_eq!(c.channels(), 1);
+        assert_eq!(c.expressions().len(), 12);
     }
 }

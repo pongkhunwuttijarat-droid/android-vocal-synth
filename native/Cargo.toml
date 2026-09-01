@@ -12,10 +12,15 @@ members = [
     "crates/runtime",
     "crates/worldline-plugin",
     "crates/phrase",
+    "crates/diffsinger",
     "crates/wavwriter",
+    "crates/train-prep",
+    "crates/moe-train",
+    "crates/trainer-gui",
     "tools/audiocompare",
     "tools/synth-cli",
     "tools/synth-server",
+    "crates/ustx-codec",
 ]
 
 [workspace.package]

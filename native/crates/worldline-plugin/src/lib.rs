@@ -27,7 +27,12 @@
 pub mod capabilities;
 pub mod convert;
 pub mod error;
+#[cfg(feature = "r2")]
+pub mod r2;
 pub mod renderer;
+
+#[cfg(feature = "r2")]
+pub mod r2_engine;
 
 pub use capabilities::{WorldlineCapabilities, WorldlineMode};
 pub use convert::{
@@ -37,3 +42,16 @@ pub use convert::{
 };
 pub use error::Error;
 pub use renderer::{WorldlineRenderer, DEFAULT_FRAME_MS, DEFAULT_SAMPLE_RATE};
+/// Free a C++-allocated buffer (WorldSynthesis/F0 output).
+pub use worldline_sys::libc_free;
+/// The dlopen'd WORLD analysis API handle (F0 / analysis / synthesis).
+pub use worldline_sys::Analysis;
+/// Raw C++ `WorldSynthesis` (f0/sp/ap + curves → PCM; allocates *y,
+/// free with [`libc_free`]). Re-exported for the classic engine.
+pub use worldline_sys::WorldSynthesis;
+
+/// Open the dlopen'd WORLD analysis API (F0 / WORLD analysis) from
+/// `worldline_so`. Both the R2 engine and tooling use this.
+pub fn analysis(so: impl AsRef<std::path::Path>) -> Result<worldline_sys::Analysis, Error> {
+    Ok(worldline_sys::Analysis::open(so)?)
+}

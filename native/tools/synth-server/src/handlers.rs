@@ -26,6 +26,9 @@ use wavwriter::write_wav_16;
 use crate::state::AppState;
 use crate::stats::StatsSnapshot;
 
+// The UniversalPhonemizer's `process` comes from the Phonemizer trait.
+use phonemizer::Phonemizer as _;
+
 /// Upper bound for `duration_ms`, to keep a LAN client from requesting
 /// absurd renders.
 const MAX_DURATION_MS: f64 = 60_000.0;
@@ -90,6 +93,258 @@ pub struct RenderRequest {
     /// Track index to render (default 0).
     #[serde(default)]
     pub track: Option<i32>,
+    /// Synthesis engine: "r1" (WORLDLINE-R, default), "r2" (WORLDLINE-R2
+    /// neural — needs both ONNX models), "classic" (WORLDLINE-R Classic:
+    /// SynthFeatures → C++ WorldSynthesis).
+    #[serde(default)]
+    pub engine: Option<String>,
+    /// Optional per-phrase engines — one id per phrase in render order
+    /// ("ระหว่างท่อน": different sections of the song with different
+    /// synthesis engines). Empty/absent = use `engine` for all phrases.
+    #[serde(default)]
+    pub engines: Option<Vec<String>>,
+}
+
+/// `POST /phonemize` request body — resolve a project track's lyrics to
+/// voicebank aliases through the universal (IPA-first) phonemizer.
+///
+/// Mirrors [`RenderRequest`]: the DATA lives in the project file on the
+/// server side — the app saves its project (FileProjectStore → .ustx on
+/// disk the server can read) and references it by path, it does NOT ship
+/// lyrics over HTTP ("data พวกนี้ควรเป็น project file ที่เก็บบน server
+/// side"). The app uses this for the SynthV-style phoneme labels above
+/// notes ("phoneme ควรมาจาก phonemizer ไม่ใช่ letter-split ใน Dart").
+#[derive(Debug, Deserialize)]
+pub struct PhonemizeRequest {
+    /// Absolute path to the `.ustx` project file (same as `/render`).
+    pub project: String,
+    /// Voicebank name as listed by `GET /voicebanks` (or its dir id, or
+    /// an absolute library path).
+    pub voicebank: String,
+    /// Track index to phonemize (default 0).
+    #[serde(default)]
+    pub track: Option<i32>,
+}
+
+/// `POST /phonemize` — project track → per-note phoneme aliases.
+///
+/// Response: `{"notes": [{"lyric": "...", "phonemes": ["l", "A"]}, ...]}`
+/// in note order of the track's first voice part.
+pub async fn phonemize(
+    State(state): State<Arc<AppState>>,
+    JsonBody(req): JsonBody<PhonemizeRequest>,
+) -> Response {
+    let voicebank = match resolve_voicebank(&state, &req.voicebank) {
+        Ok(vb) => vb,
+        Err(e) => return error_response(e.status(), e.message()),
+    };
+    let project_path = Path::new(&req.project);
+    if !project_path.is_file() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("project file not found: {}", req.project),
+        );
+    }
+    let project = match pipeline::load_project(project_path) {
+        Ok(p) => p,
+        Err(e) => {
+            return error_response(StatusCode::BAD_REQUEST, format!("load project: {e}"))
+        }
+    };
+    let track_no = req.track.unwrap_or(0);
+    let Some(track) = project.tracks.get(track_no as usize) else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("track {track_no} not found"),
+        );
+    };
+    let Some(part) = project
+        .parts
+        .iter()
+        .find(|p| p.track_no() == track_no && matches!(p, domain::UPart::Voice(_)))
+    else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("no voice part on track {track_no}"),
+        );
+    };
+    let domain::UPart::Voice(voice) = part else { unreachable!() };
+
+    let manifest = voicebank.phoneme_manifest();
+    // Route by the track's phonemizer setting — mirror the render
+    // pipeline (pipeline.rs `render_phonemes`): Japanese tracks get the
+    // real VCV phonemizer, English the CVVC+g2p path, everything else
+    // the IPA-first Universal. The endpoint used to hardcode Universal,
+    // which returns Japanese lyrics VERBATIM ("VCV adapter is a later
+    // task" in universal.rs) — wrong labels for Japanese banks.
+    let kind = pipeline::PhonemizerKind::from_track(track);
+    let phonemes = match kind {
+        pipeline::PhonemizerKind::Japanese => {
+            phonemizer::japanese::JapaneseVcvPhonemizer.process(&voice.notes, Some(&voicebank))
+        }
+        pipeline::PhonemizerKind::English => {
+            phonemizer::english::EnglishCvvcPhonemizer::with_g2p(
+                phonemizer::lilt_dict::lilt_demo_g2p(),
+            )
+            .process(&voice.notes, Some(&voicebank))
+        }
+        pipeline::PhonemizerKind::Universal => {
+            let dict = phonemizer::ipa::IpaDictionary::en_subset();
+            let adapter = phonemizer::adapter::IpaAdapter::new(&manifest, &dict);
+            phonemizer::universal::UniversalPhonemizer::new(adapter)
+                .process(&voice.notes, Some(&voicebank))
+        }
+    };
+    // Group the flat phoneme list back per note (parent index) so the
+    // app can place the label boxes above the right note.
+    let mut notes_out: Vec<serde_json::Value> = Vec::with_capacity(voice.notes.len());
+    for (nidx, note) in voice.notes.iter().enumerate() {
+        let mut aliases: Vec<String> = phonemes
+            .iter()
+            .filter(|p| p.parent == Some(nidx))
+            .map(|p| p.phoneme.clone())
+            .collect();
+        // The labels above the notes must look like PHONEMES, not a copy
+        // of the lyric: a whole-word alias ("la" -> ["la"] — the render
+        // path's direct oto alias, golden-required) reads as the painter
+        // just copying the note ("มันลอกใน note มาเลย"). Segment it into
+        // single-phoneme aliases for DISPLAY only — the render pipeline
+        // keeps the direct alias untouched.
+        let word = note.lyric.split('[').next().unwrap_or("").trim();
+        if aliases.len() == 1 && aliases[0] == word && word.chars().count() > 1 {
+            let segmented: Vec<String> = word
+                .chars()
+                .filter_map(|c| {
+                    let as_is = c.to_string();
+                    if manifest.can_render(&as_is) {
+                        Some(as_is)
+                    } else {
+                        let up = c.to_uppercase().to_string();
+                        if manifest.can_render(&up) {
+                            Some(up)
+                        } else {
+                            let low = c.to_lowercase().to_string();
+                            if manifest.can_render(&low) {
+                                Some(low)
+                            } else {
+                                None
+                            }
+                        }
+                    }
+                })
+                .collect();
+            if segmented.len() > 1 {
+                aliases = segmented;
+            }
+        }
+        notes_out.push(json!({
+            "lyric": note.lyric,
+            "phonemes": aliases,
+        }));
+    }
+    Json(json!({ "notes": notes_out })).into_response()
+}
+
+/// `POST /project` request body — save a project. The app sends the
+/// compact JSON view (name/bpm/tracks/curves); the server encodes it to
+/// `.ustx` via the Rust codec and stores the file. NO project data ever
+/// lives in the app.
+#[derive(Debug, Deserialize)]
+pub struct ProjectSaveRequest {
+    /// Project name (also the file name).
+    pub name: String,
+    /// The codec JSON view (`{name, bpm, time_signature, tracks}`).
+    pub project: serde_json::Value,
+}
+
+/// `POST /project` — save (upsert) a project file server-side.
+pub async fn project_save(
+    State(state): State<Arc<AppState>>,
+    JsonBody(req): JsonBody<ProjectSaveRequest>,
+) -> Response {
+    // Encode the JSON view → .ustx via the Rust codec (same codec the
+    // app's FFI wrapper calls — single implementation, server side).
+    let view = req.project.to_string();
+    let c_in = std::ffi::CString::new(view).unwrap_or_default();
+    let out = ustx_codec::UstxEncode(c_in.as_ptr());
+    if out.is_null() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "project codec: encode failed (invalid JSON view)".into(),
+        );
+    }
+    let bytes = unsafe { std::ffi::CStr::from_ptr(out) }
+        .to_bytes()
+        .to_vec();
+    unsafe { ustx_codec::UstxFree(out) };
+
+    match state.projects.save(&req.name, &bytes) {
+        Ok(()) => Json(json!({ "ok": true, "name": req.name })).into_response(),
+        Err(e) => error_response(StatusCode::BAD_REQUEST, e.message()),
+    }
+}
+
+/// `GET /projects` — list saved project names.
+pub async fn projects_list(State(state): State<Arc<AppState>>) -> Response {
+    match state.projects.list() {
+        Ok(names) => Json(json!({ "projects": names })).into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.message()),
+    }
+}
+
+/// `GET /project/<name>` — read a project, decoded to the JSON view
+/// (server-side decode — the app never touches .ustx bytes).
+pub async fn project_load(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Response {
+    let bytes = match state.projects.load(&name) {
+        Ok(b) => b,
+        Err(e) => return error_response(StatusCode::NOT_FOUND, e.message()),
+    };
+    // Decode .ustx → JSON view server-side (same codec; "ทุก project
+    // data เลย server side").
+    let c_in = match std::ffi::CString::new(bytes) {
+        Ok(c) => c,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "project codec: file contains NUL".into(),
+            )
+        }
+    };
+    let out = ustx_codec::UstxDecode(c_in.as_ptr());
+    if out.is_null() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "project codec: decode failed (corrupt .ustx)".into(),
+        );
+    }
+    let json_str = unsafe { std::ffi::CStr::from_ptr(out) }
+        .to_string_lossy()
+        .into_owned();
+    unsafe { ustx_codec::UstxFree(out) };
+    let value: serde_json::Value = match serde_json::from_str(&json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                format!("project codec: bad JSON view: {e}"),
+            )
+        }
+    };
+    Json(value).into_response()
+}
+
+/// `DELETE /project/<name>` — remove a project file.
+pub async fn project_delete(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Response {
+    match state.projects.delete(&name) {
+        Ok(()) => Json(json!({ "ok": true, "name": name })).into_response(),
+        Err(e) => error_response(StatusCode::NOT_FOUND, e.message()),
+    }
 }
 
 /// `GET /health` — liveness plus a version / renderer summary.
@@ -204,9 +459,15 @@ pub async fn render(
         );
     };
 
+    // Engine select: "r2"/"classic" route to the matching engine the
+    // worker opened (see run_worker); anything else = r1 (WORLDLINE-R).
+    // `engines` (per phrase, render order) overrides per-phrase.
+    let engine = req.engine.as_deref().unwrap_or("r1");
+    let engines = req.engines.clone().unwrap_or_default();
+
     let started = Instant::now();
     match renderer
-        .render_project(project_path.to_path_buf(), voicebank, track)
+        .render_project(project_path.to_path_buf(), voicebank, track, engine, engines)
         .await
     {
         Ok(report) if !report.samples.is_empty() => {
@@ -439,7 +700,8 @@ mod tests {
     /// AppState without a renderer (validation/error paths only).
     fn test_state() -> Arc<AppState> {
         let scan = voicebanks::scan_voicebanks(&test_data_dir()).expect("scan test-data");
-        Arc::new(AppState::new(test_data_dir(), scan.entries, None))
+        let projects = std::env::temp_dir().join("lilt-test-projects");
+        Arc::new(AppState::new(test_data_dir(), projects, scan.entries, None))
     }
 
     fn synth_req(voicebank: &str, phoneme: &str, tone: i32, duration_ms: f64) -> SynthNoteRequest {
@@ -559,6 +821,8 @@ mod tests {
                 project: "/nonexistent/song.ustx".into(),
                 voicebank: "mock-voicebank".into(),
                 track: None,
+                engine: None,
+                engines: None,
             }),
         )
         .await;
@@ -573,6 +837,8 @@ mod tests {
                 project: test_data_dir().join("mock-song.ustx").display().to_string(),
                 voicebank: "no-such-bank".into(),
                 track: None,
+                engine: None,
+                engines: None,
             }),
         )
         .await;
@@ -587,6 +853,8 @@ mod tests {
                 project: test_data_dir().join("mock-song.ustx").display().to_string(),
                 voicebank: "mock-voicebank".into(),
                 track: None,
+                engine: None,
+                engines: None,
             }),
         )
         .await;

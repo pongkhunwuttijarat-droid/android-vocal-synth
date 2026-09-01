@@ -13,7 +13,9 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::{header, StatusCode};
-use synth_server::handlers::{self, JsonBody, RenderRequest, SynthNoteRequest};
+use synth_server::handlers::{
+    self, JsonBody, ProjectSaveRequest, RenderRequest, SynthNoteRequest,
+};
 use synth_server::render_service::RenderService;
 use synth_server::state::AppState;
 use synth_server::voicebanks;
@@ -53,11 +55,15 @@ fn mock_song_path() -> PathBuf {
 /// AppState with the real renderer and the mock bank scanned.
 fn real_state() -> Arc<AppState> {
     let scan = voicebanks::scan_voicebanks(&mock_bank_path()).expect("scan mock bank");
-    Arc::new(AppState::new(
+    let projects = std::env::temp_dir().join("lilt-api-test-projects");
+    let state = Arc::new(AppState::new(
         mock_bank_path(),
+        projects,
         scan.entries,
-        Some(RenderService::spawn(so_path(), None, "{}".to_string()).expect("spawn render service")),
-    ))
+        Some(RenderService::spawn(so_path(), None, "{}".to_string(), None, None, None).expect("spawn render service")),
+    ));
+    state.projects.ensure().expect("projects dir");
+    state
 }
 
 async fn wav_body(resp: axum::response::Response) -> Vec<u8> {
@@ -111,6 +117,8 @@ async fn render_demo_song_with_teto_bank_returns_wav_bytes() {
             // fallback must load it on the fly.
             voicebank: teto_bank_path().display().to_string(),
             track: None,
+            engine: None,
+            engines: None,
         }),
     )
     .await;
@@ -151,6 +159,86 @@ async fn cancel_returns_ok_and_mixer_params_accepts_json() {
     assert_eq!(json["ok"], true, "mixer-params body: {json}");
 }
 
+/// Server-side project storage: save → list → load → delete round-trip.
+/// NO project data lives in the app — the server owns the .ustx files.
+#[tokio::test]
+async fn project_crud_round_trip() {
+    let state = real_state();
+
+    // Save: JSON view in → .ustx file stored server-side.
+    let resp = handlers::project_save(
+        State(state.clone()),
+        JsonBody(ProjectSaveRequest {
+            name: "test-song".into(),
+            project: serde_json::json!({
+                "name": "test-song",
+                "bpm": 110,
+                "time_signature": "4/4",
+                "tracks": [{
+                    "name": "Vocal",
+                    "color": "#000000",
+                    "notes": [
+                        {"lyric": "la[l A]", "pitch": 0, "position": 0.0, "duration": 1.0}
+                    ],
+                    "curves": [{"abbr": "pitd", "xs": [25], "ys": [0]}]
+                }]
+            }),
+        }),
+    )
+    .await;
+    if resp.status() != StatusCode::OK {
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .expect("read error body");
+        panic!("save failed: {:?}", String::from_utf8_lossy(&body));
+    }
+    assert_eq!(resp.status(), StatusCode::OK, "save");
+
+    // List shows it.
+    let resp = handlers::projects_list(State(state.clone())).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .expect("read body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("list json");
+    let names: Vec<&str> = json["projects"]
+        .as_array()
+        .expect("projects array")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(names.contains(&"test-song"), "list: {json}");
+
+    // Load returns the JSON view (server-side decode — the app never
+    // touches .ustx bytes).
+    let resp = handlers::project_load(
+        State(state.clone()),
+        axum::extract::Path("test-song".into()),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 4 * 1024 * 1024)
+        .await
+        .expect("read body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("json view");
+    assert_eq!(json["name"], "test-song");
+    assert_eq!(json["tracks"][0]["notes"][0]["lyric"], "la[l A]");
+
+    // Delete removes it.
+    let resp = handlers::project_delete(
+        State(state.clone()),
+        axum::extract::Path("test-song".into()),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK, "delete");
+    let resp = handlers::project_load(
+        State(state),
+        axum::extract::Path("test-song".into()),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "load after delete");
+}
+
 #[tokio::test]
 #[ignore = "requires libworldline.so; WORLDLINE_SO=... cargo test -p synth-server --test api_real -- --ignored --nocapture"]
 async fn render_unmapped_project_returns_json_error() {
@@ -163,6 +251,8 @@ async fn render_unmapped_project_returns_json_error() {
             project: mock_song_path().display().to_string(),
             voicebank: teto_bank_path().display().to_string(),
             track: None,
+            engine: None,
+            engines: None,
         }),
     )
     .await;

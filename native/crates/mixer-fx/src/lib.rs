@@ -39,6 +39,7 @@ impl std::fmt::Debug for MixerFx {
 }
 
 unsafe impl Send for MixerFx {}
+unsafe impl Sync for MixerFx {}
 
 type CreateFn = unsafe extern "C" fn(*const MxFxConfig, *const c_char) -> *mut c_void;
 type ProcessFn = unsafe extern "C" fn(*mut c_void, *mut f32, i32, f64);

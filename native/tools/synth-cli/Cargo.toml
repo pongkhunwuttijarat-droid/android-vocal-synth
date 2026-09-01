@@ -10,9 +10,16 @@ voicebank = { path = "../../crates/voicebank" }
 phonemizer = { path = "../../crates/phonemizer" }
 feed = { path = "../../crates/feed" }
 phrase = { path = "../../crates/phrase" }
+diffsinger = { path = "../../crates/diffsinger" }
 runtime = { path = "../../crates/runtime", features = ["feed-integration"] }
-worldline-plugin = { path = "../../crates/worldline-plugin" }
+worldline-plugin = { path = "../../crates/worldline-plugin", features = ["r2"] }
+ort = { version = "2.0.0-rc.13" }
+rayon = "1"
 mixer-fx = { path = "../../crates/mixer-fx" }
 wavwriter = { path = "../../crates/wavwriter" }
 storage = { path = "../../crates/storage" }
 serde_yaml = "0.9"
+
+[features]
+default = ["r2"]
+r2 = []

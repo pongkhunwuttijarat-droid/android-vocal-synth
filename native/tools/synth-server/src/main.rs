@@ -32,6 +32,17 @@ struct Cli {
     /// /synth-note and /render then return 500).
     #[arg(long)]
     so: Option<PathBuf>,
+    /// R2 neural engine: path to mel.onnx (with --vocoder-onnx switches
+    /// /render from WORLDLINE-R to WORLDLINE-R2).
+    #[arg(long)]
+    mel_onnx: Option<PathBuf>,
+    /// R2 neural engine: path to pc-nsf-hifigan model.onnx.
+    #[arg(long)]
+    vocoder_onnx: Option<PathBuf>,
+    /// DiffSinger engine: path to the voicebank dir with dsconfig.yaml
+    /// (switches /render to the DiffSinger engine).
+    #[arg(long)]
+    ds_model: Option<PathBuf>,
     /// Path to libmixerfx.so (optional FX chain on the final mix).
     #[arg(long)]
     mixer_so: Option<PathBuf>,
@@ -43,6 +54,10 @@ struct Cli {
     /// voicebank directory itself.
     #[arg(long)]
     voicebanks: PathBuf,
+    /// Directory where the server stores project files (ALL project data
+    /// lives server-side — the app saves/loads via HTTP).
+    #[arg(long, default_value = "projects")]
+    projects: PathBuf,
     /// TCP port to listen on.
     #[arg(long, default_value_t = 8080)]
     port: u16,
@@ -63,9 +78,22 @@ async fn main() {
 async fn run(cli: Cli) -> Result<(), String> {
     let renderer = match &cli.so {
         Some(path) => {
-            let service = RenderService::spawn(path.clone(), cli.mixer_so.clone(), cli.mixer_params.clone())
-                .map_err(|e| format!("open {}: {e}", path.display()))?;
+            let service = RenderService::spawn(
+                path.clone(),
+                cli.mixer_so.clone(),
+                cli.mixer_params.clone(),
+                cli.mel_onnx.clone(),
+                cli.vocoder_onnx.clone(),
+                cli.ds_model.clone(),
+            )
+            .map_err(|e| format!("open {}: {e}", path.display()))?;
             println!("loaded renderer from {}", path.display());
+            if cli.mel_onnx.is_some() && cli.vocoder_onnx.is_some() {
+                println!("R2 neural engine enabled (mel.onnx + pc-nsf-hifigan)");
+            }
+            if let Some(ds) = &cli.ds_model {
+                println!("DiffSinger engine enabled ({})", ds.display());
+            }
             match &cli.mixer_so {
                 Some(m) => println!("loaded mixer FX from {}", m.display()),
                 None => println!("no mixer FX plugin (--mixer-so not given)"),
@@ -105,7 +133,14 @@ async fn run(cli: Cli) -> Result<(), String> {
         );
     }
 
-    let state = Arc::new(AppState::new(cli.voicebanks.clone(), scan.entries, renderer));
+    let state = Arc::new(AppState::new(
+        cli.voicebanks.clone(),
+        cli.projects.clone(),
+        scan.entries,
+        renderer,
+    ));
+    // Server-side project storage must exist before any save.
+    state.projects.ensure().map_err(|e| e.message())?;
     let bind: IpAddr = cli
         .bind
         .parse()

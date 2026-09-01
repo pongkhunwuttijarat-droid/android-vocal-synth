@@ -244,14 +244,17 @@ pub fn mix(inputs: &[MixInput]) -> FinalAudio {
                 out[target] += sample * gain;
             } else {
                 let prev = out[target];
-                let a = if i < overlap {
-                    // 1 → 0 across the leading zone: previous fades out,
-                    // this chunk fades in.
-                    1.0 - (i as f32 / overlap as f32)
-                } else {
-                    0.0
-                };
-                out[target] = prev * a + sample * gain * (1.0 - a);
+                // Equal-power crossfade (cos²/sin²) across the overlap
+                // zone: linear 1→0 blending of two *correlated* signals
+                // dips the amplitude at the midpoint (-3 dB at 50%),
+                // which is audible as a "จีบ" at the chunk seam. Cosine
+                // curves keep the total power constant, so the boundary
+                // sounds like one continuous render — "เหมือนไม่เคยมี
+                // chunk".
+                let t = (i as f32 / overlap as f32).min(1.0);
+                let a = (t * std::f32::consts::FRAC_PI_2).cos();
+                let b = (t * std::f32::consts::FRAC_PI_2).sin();
+                out[target] = prev * a + sample * gain * b;
             }
             written[target] += 1;
         }
@@ -335,6 +338,36 @@ mod tests {
         assert_eq!(audio.samples[99], 1.0 + 2.0);
         assert_eq!(audio.samples[100], 2.0);
         assert_eq!(audio.samples[143], 2.0);
+    }
+
+    #[test]
+    fn crossfade_keeps_power_constant() {
+        // Two chunks of the SAME correlated signal overlapping by the
+        // second chunk's leading (10 ms = 441 samples). The equal-power
+        // crossfade keeps the blend's amplitude constant: at the exact
+        // midpoint (t=0.5) both gains are 1/√2, so 1·a + 1·b = √2 ≈ 1.414
+        // for two in-phase unit signals — NOT the -3 dB dip a linear
+        // (0.5 + 0.5 = 1.0) blend produces. For a single source the
+        // energy stays ~1.0× (power a²+b² = 1).
+        let a = chunk(vec![1.0; 441 * 4], 0.0, 0.0);
+        // Second chunk starts at 10 ms with 10 ms leading → position
+        // minus leading = 0, so it overlaps chunk A from sample 0; the
+        // crossfade zone is the leading (441 samples).
+        let b = chunk(vec![1.0; 441 * 4], 10.0, 10.0);
+        let audio = mix(&[input(a, 0.0, 0.0), input(b, 0.0, 0.0)]);
+        // Midpoint of the overlap: i=220 in chunk B (t=0.5).
+        let mid = 220;
+        let v = audio.samples[mid];
+        // Equal-power for correlated: a² + b² = cos² + sin² = 1 → power
+        // preserved; amplitude of the two in-phase unit signals blended
+        // at 50% is √(1/2)+√(1/2) = √2.
+        assert!(
+            (v - std::f32::consts::SQRT_2).abs() < 0.01,
+            "midpoint blend {v} should be √2 (equal-power), not 1.0 (linear)"
+        );
+        // First full-gain sample of chunk B: i=441 → t=1 → a=0, b=1.
+        let end = 441;
+        assert!((audio.samples[end] - 1.0).abs() < 0.001);
     }
 
     #[test]

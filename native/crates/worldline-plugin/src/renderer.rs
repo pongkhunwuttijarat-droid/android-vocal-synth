@@ -30,7 +30,9 @@ pub const DEFAULT_SAMPLE_RATE: u32 = 44100;
 /// The Sprint 2.1 contract picks 11.6 ms (the v2 renderer frame:
 /// `512/44100 × 1000`); the C# v1 renderer uses 10 ms, which matches the
 /// C++ analysis frame. The C++ side stretches the curves to its own 10 ms
-/// grid, so this only affects sampling density.
+/// grid, so this only affects sampling density. Keeping the v2 frame
+/// (11.6 ms) per the contract — the golden comparison keeps v1/v2
+/// separate, and v2 is our declared renderer.
 pub const DEFAULT_FRAME_MS: f64 = 11.6;
 
 /// Sample-based renderer plugin: `feed::RenderInput` → PCM.

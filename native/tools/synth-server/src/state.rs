@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use voicebank::Voicebank;
 
+use crate::projects::ProjectStore;
 use crate::render_service::RenderService;
 use crate::stats::Stats;
 use crate::voicebanks::VoicebankEntry;
@@ -15,6 +16,8 @@ use crate::voicebanks::VoicebankEntry;
 pub struct AppState {
     /// The configured `--voicebanks` root (informational).
     pub voicebanks_root: PathBuf,
+    /// Server-side project storage (all project data lives here).
+    pub projects: ProjectStore,
     /// Voicebanks discovered at startup.
     pub entries: Vec<VoicebankEntry>,
     /// Render worker handle; `None` when the server runs without `--so`.
@@ -26,11 +29,13 @@ pub struct AppState {
 impl AppState {
     pub fn new(
         voicebanks_root: PathBuf,
+        projects_root: PathBuf,
         entries: Vec<VoicebankEntry>,
         renderer: Option<RenderService>,
     ) -> Self {
         AppState {
             voicebanks_root,
+            projects: ProjectStore::new(projects_root),
             entries,
             renderer,
             stats: Stats::default(),

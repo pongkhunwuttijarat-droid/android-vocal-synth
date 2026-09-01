@@ -141,14 +141,15 @@ void AutoGain(std::vector<double>& samples, double src_max, double out_max,
   // based on voiced ratio of synthed section
   // to avoid overamplifying consonants.
   double gain = volume * 0.01;
-  // C# (Worldline.cs): `wavMax` is measured on the UNSCALED wav, then
-  // samples are scaled by `gain`, and GetAutoGain measures `segMax` on
-  // the SCALED section — the two terms use different scales:
-  //   max = segMax(×gain)·weight + wavMax(×1)·(1-weight)
-  // Scaling both terms (the first attempt) made loudness diverge from the
-  // reference; matching the mixed scaling reproduces the C# loudness.
+  // C# (Worldline.cs GetAutoGain, line 618): `segMax` is measured on the
+  // UNSCALED wav — GetAutoGain runs BEFORE `samples = samples * gain`
+  // (line 550-554). Both terms are unscaled:
+  //   max = segMax·weight + wavMax·(1-weight)
+  // (A previous fork multiplied `out_max * gain`, which skewed the
+  // blend toward wavMax for quiet sections and away for loud ones —
+  // the official C++ matches the C# reference exactly.)
   double weight = 1.0 / (1.0 + exp(5.0 - 10.0 * voiced_ratio));
-  double max = (out_max * gain) * weight + src_max * (1.0 - weight);
+  double max = out_max * weight + src_max * (1.0 - weight);
   double auto_gain = max == 0 ? 1.0 : std::pow(0.5 / max, peakComp * 0.01);
   if (auto_gain * gain != 1) {
     for (int i = 0; i < samples.size(); ++i) {

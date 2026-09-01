@@ -544,6 +544,15 @@ impl Drop for PhraseSynth {
     }
 }
 
+// SAFETY: `PhraseSynth` wraps a raw C++ handle, but the render path
+// (`WorldlineRenderer::render_phrase`) opens a FRESH instance per call
+// and only ever reads through the shared handle (the `.so` lifetime
+// keeper). The C++ `PhraseSynth` has no mutable global state, so
+// concurrent independent instances are safe — same reasoning as the
+// `MixerFx` unsafe impl.
+unsafe impl Send for PhraseSynth {}
+unsafe impl Sync for PhraseSynth {}
+
 // ---------------------------------------------------------------------------
 // Layout tests (run with plain `cargo test`)
 // ---------------------------------------------------------------------------
@@ -609,3 +618,172 @@ mod tests {
         assert_eq!(r.tempo, 1.0);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Free-function analysis API (dlopen'd, like PhraseSynth) — the R2 feature
+// path calls F0 / WorldAnalysisF0In / InitAnalysisConfig. These symbols
+// live in the same libworldline.so and are resolved at runtime; they are
+// NOT link-time symbols (the .so is dlopen'd, never linked).
+// ---------------------------------------------------------------------------
+
+/// Runtime-resolved WORLD analysis functions (R2 path).
+pub struct Analysis {
+    _lib: libloading::Library,
+    f0: Symbol<'static, unsafe extern "C" fn(*mut f32, i32, i32, f64, i32, *mut *mut f64) -> i32>,
+    analysis_f0_in:
+        Symbol<'static, unsafe extern "C" fn(*const AnalysisConfig, *mut f32, i32, *mut f64, i32, *mut f64, *mut f64)>,
+    init_config:
+        Symbol<'static, unsafe extern "C" fn(*mut AnalysisConfig, i32, i32, i32)>,
+    world_synthesis:
+        Symbol<'static, unsafe extern "C" fn(*mut f64, i32, *mut f64, u8, i32, *mut f64, u8, i32, f64, i32, *mut *mut f64, *mut f64, *mut f64, *mut f64, *mut f64) -> i32>,
+}
+
+impl Analysis {
+    /// dlopen `libworldline.so` and resolve the analysis symbols.
+    ///
+    /// # Safety model
+    ///
+    /// Same as [`PhraseSynth::open`]: loading an untrusted or ABI-mismatched
+    /// `.so` can crash the process.
+    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, Error> {
+        let lib = unsafe { libloading::Library::new(path.as_ref()) }?;
+        // Extend a symbol's borrow to 'static — sound because the Library
+        // is moved into the returned struct (libloading's documented
+        // owning-wrapper pattern).
+        // SAFETY: the caller must keep `lib` alive (it is, in `_lib`).
+        unsafe fn sym<'a, T>(
+            lib: &'a libloading::Library,
+            name: &[u8],
+        ) -> Result<Symbol<'static, T>, libloading::Error> {
+            let s = lib.get::<T>(name)?;
+            Ok(std::mem::transmute::<Symbol<'_, T>, Symbol<'static, T>>(s))
+        }
+        // SAFETY: dlsym lookups; failure yields Err (no UB).
+        unsafe {
+            let f0 = sym::<unsafe extern "C" fn(*mut f32, i32, i32, f64, i32, *mut *mut f64) -> i32>(&lib, b"F0")?;
+            let analysis_f0_in = sym::<unsafe extern "C" fn(*const AnalysisConfig, *mut f32, i32, *mut f64, i32, *mut f64, *mut f64)>(&lib, b"WorldAnalysisF0In")?;
+            let init_config =
+                sym::<unsafe extern "C" fn(*mut AnalysisConfig, i32, i32, i32)>(&lib, b"InitAnalysisConfig")?;
+            let world_synthesis = sym::<unsafe extern "C" fn(
+                *mut f64, i32, *mut f64, u8, i32, *mut f64, u8, i32, f64, i32,
+                *mut *mut f64, *mut f64, *mut f64, *mut f64, *mut f64,
+            ) -> i32>(&lib, b"WorldSynthesis")?;
+            Ok(Analysis {
+                _lib: lib,
+                f0,
+                analysis_f0_in,
+                init_config,
+                world_synthesis,
+            })
+        }
+    }
+
+    /// Initialize an analysis config (fs/hop/fft).
+    pub fn init_config(&self, fs: i32, hop_size: i32, fft_size: i32) -> AnalysisConfig {
+        let mut config = AnalysisConfig::default();
+        unsafe { (self.init_config)(&mut config, fs, hop_size, fft_size) };
+        config
+    }
+
+    /// Estimate F0; returns the per-frame Hz values (0 = unvoiced).
+    /// `method` mirrors the C++ API: -1 returns the DIO grid SIZE with
+    /// the buffer left unfilled (the caller fills it from a .frq file),
+    /// 0 = DIO, 1 = Harvest, 2 = Pyin.
+    /// The C++ side allocates the buffer — freed here.
+    pub fn f0(&self, samples: &[f32], fs: i32, frame_period: f64, method: i32) -> Vec<f64> {
+        let mut out: *mut f64 = std::ptr::null_mut();
+        let n = unsafe {
+            (self.f0)(
+                samples.as_ptr() as *mut f32,
+                samples.len() as i32,
+                fs,
+                frame_period,
+                method,
+                &mut out,
+            )
+        };
+        if n <= 0 || out.is_null() {
+            return Vec::new();
+        }
+        let v = unsafe { std::slice::from_raw_parts(out, n as usize) }.to_vec();
+        libc_free(out as *mut c_void);
+        v
+    }
+
+    /// WORLD analysis with a precomputed F0 curve → spectral envelope +
+    /// aperiodicity (row-major, `num_frames × sp_size` each).
+    pub fn analysis_f0_in(
+        &self,
+        config: &AnalysisConfig,
+        samples: &[f32],
+        f0: &[f64],
+        sp_size: usize,
+    ) -> (Vec<f64>, Vec<f64>) {
+        let mut sp = vec![0.0f64; f0.len() * sp_size];
+        let mut ap = vec![0.0f64; f0.len() * sp_size];
+        unsafe {
+            (self.analysis_f0_in)(
+                config,
+                samples.as_ptr() as *mut f32,
+                samples.len() as i32,
+                f0.as_ptr() as *mut f64,
+                f0.len() as i32,
+                sp.as_mut_ptr(),
+                ap.as_mut_ptr(),
+            );
+        }
+        (sp, ap)
+    }
+
+    /// WORLD synthesis (C++ `WorldSynthesis`): f0/sp/ap + per-frame
+    /// gender/tension/breathiness/voicing curves → PCM. Allocates `*y`
+    /// (the C++ side uses libc `free` — call [`libc_free`]). Returns the
+    /// sample count (0 on failure). `is_mgc`/`is_bap` = 0 (spectral).
+    #[allow(clippy::too_many_arguments)]
+    pub fn world_synthesis(
+        &self,
+        f0: &mut [f64],
+        sp_env: &mut [f64],
+        sp_size: i32,
+        ap: &mut [f64],
+        fft_size: i32,
+        frame_period: f64,
+        fs: i32,
+        y: *mut *mut f64,
+        gender: &mut [f64],
+        tension: &mut [f64],
+        breathiness: &mut [f64],
+        voicing: &mut [f64],
+    ) -> i32 {
+        unsafe {
+            (self.world_synthesis)(
+                f0.as_mut_ptr(),
+                f0.len() as i32,
+                sp_env.as_mut_ptr(),
+                0,
+                sp_size,
+                ap.as_mut_ptr(),
+                0,
+                fft_size,
+                frame_period,
+                fs,
+                y,
+                gender.as_mut_ptr(),
+                tension.as_mut_ptr(),
+                breathiness.as_mut_ptr(),
+                voicing.as_mut_ptr(),
+            )
+        }
+    }
+}
+
+extern "C" {
+    fn free(ptr: *mut c_void);
+}
+
+/// Free a buffer allocated by the C++ side (`WorldSynthesis`/`F0` — the
+/// reference frees with libc `free`). Re-exported for engine adapters.
+pub fn libc_free(ptr: *mut c_void) {
+    unsafe { free(ptr) };
+}
+

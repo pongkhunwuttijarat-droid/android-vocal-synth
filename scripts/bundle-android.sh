@@ -72,4 +72,18 @@ N_FRQ=$(ls "$VBDST/voice/"*_wav.frq 2>/dev/null | wc -l)
 echo "  ✓ voicebank FULL (character.txt + oto.ini + $N_WAV wavs + $N_FRQ frq)"
 echo "  ✓ voicebank size: $(du -sh "$VBDST" | cut -f1)"
 
+# 5. DiffSinger bank (kiritan — dsconfig + acoustic.onnx + nsf_hifigan
+#    vocoder, ~314 MB) — enables the "diffsinger" engine on device.
+DS="$ROOT/test/golden/diffsinger-kiritan"
+DSDST="$ASSETS/diffsinger"
+if [[ -d "$DS" ]]; then
+  rm -rf "$DSDST"
+  mkdir -p "$DSDST/nsf_hifigan"
+  cp "$DS/dsconfig.yaml" "$DS/phonemes.txt" "$DS/acoustic.onnx" "$DSDST/"
+  cp "$DS/nsf_hifigan/vocoder.yaml" "$DS/nsf_hifigan/model.onnx" "$DSDST/nsf_hifigan/"
+  echo "  ✓ DiffSinger bank kiritan ($(du -sh "$DSDST" | cut -f1))"
+else
+  echo "  - no DiffSinger bank at $DS — 'diffsinger' engine unavailable"
+fi
+
 echo "== done — app is ready for flutter build/run =="

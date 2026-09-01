@@ -36,11 +36,14 @@ pub struct Chunk {
 
 impl Chunk {
     /// Cache key: hash of the phonemes in the RENDERED range (own +
-    /// context). Editing any note changes the chunks that own it and the
-    /// chunks that use it as context.
-    pub fn hash(&self, phonemes: &[RenderPhoneme]) -> u64 {
+    /// context), salted with the engine id so different engines (r1
+    /// WORLD vs r2 neural) never share cache entries. Editing any note
+    /// changes the chunks that own it and the chunks that use it as
+    /// context.
+    pub fn hash(&self, phonemes: &[RenderPhoneme], engine_salt: u64) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
+        engine_salt.hash(&mut h);
         (self.ctx_range.len() as u64).hash(&mut h);
         for ph in &phonemes[self.ctx_range.clone()] {
             ph.phoneme.hash(&mut h);

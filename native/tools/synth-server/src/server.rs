@@ -6,7 +6,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use axum::extract::Request;
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 
 use crate::handlers;
@@ -23,6 +23,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/cancel", post(handlers::cancel))
         .route("/mixer-params", post(handlers::mixer_params))
         .route("/post-fx", post(handlers::post_fx))
+        .route("/phonemize", post(handlers::phonemize))
+        .route("/project", post(handlers::project_save))
+        .route("/projects", get(handlers::projects_list))
+        .route("/project/{name}", get(handlers::project_load))
+        .route("/project/{name}", delete(handlers::project_delete))
         .route("/stats", get(handlers::stats))
         .with_state(state)
         .layer(middleware::from_fn(log_requests))
