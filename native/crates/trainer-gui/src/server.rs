@@ -483,6 +483,13 @@ async fn api_render(
     }
     let prefix = state.model_path();
     let bytes = match params.backend.as_str() {
+        "wgpu-f16" => {
+            type Backend = burn::backend::Wgpu<burn::tensor::f16, i32>;
+            let device = burn::backend::wgpu::WgpuDevice::IntegratedGpu(0);
+            let moe = load_moe::<Backend>(&set, &prefix, params.hidden, params.depth, &device)
+                .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+            render_phrase_wav::<Backend>(&moe, &set, params.phrase_idx, &state.vocoder_path(), params.gain, &device)
+        }
         "wgpu" => {
             type Backend = burn::backend::Wgpu;
             let device = burn::backend::wgpu::WgpuDevice::IntegratedGpu(0);
@@ -652,6 +659,12 @@ fn run_training_on<B: burn::tensor::backend::AutodiffBackend>(
             &state.stop,
             progress,
         )?;
+        // Vocab sidecar: the render-time MoeEngine needs the phoneme id
+        // mapping the checkpoints were trained on. Written even on the
+        // GUI train path so the produced .mpk is renderable by an engine.
+        if let Err(e) = write_vocab_sidecar_set(&state.model_path(), set) {
+            eprintln!("WARN: vocab sidecar: {e}");
+        }
         // Final general losses are the last progress values in status.
         let st = state.status.read().unwrap();
         let train = st.train_loss;
@@ -685,4 +698,17 @@ fn run_training_on<B: burn::tensor::backend::AutodiffBackend>(
         save_model(&model, &state.model_path())?;
         Ok((train, val, stopped, Vec::new()))
     }
+}
+
+/// Write `{prefix}-phonemes.txt` — one phoneme per line (index order =
+/// `TrainSet.vocab`), so the render-time MoeEngine (set-free) can map a
+/// phoneme symbol to the embedding id the checkpoints were trained with.
+fn write_vocab_sidecar_set(prefix: &str, set: &moe_train::data::TrainSet) -> Result<(), String> {
+    let path = format!("{prefix}-phonemes.txt");
+    let mut body = String::new();
+    for p in &set.vocab {
+        body.push_str(p);
+        body.push('\n');
+    }
+    std::fs::write(&path, body).map_err(|e| format!("write {path}: {e}"))
 }
