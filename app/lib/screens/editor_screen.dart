@@ -4,12 +4,14 @@ import 'dart:io' show File, Platform;
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 
 import '../api/engine_client.dart';
 import '../api/engine_paths.dart';
+import '../data/badapple_demo.dart';
 import '../editor_ustx.dart';
 import '../models.dart';
+import '../project/project_doc.dart';
+import '../project/server_project_store.dart';
 import '../theme.dart';
 import '../widgets/mixer_panel.dart';
 import '../widgets/piano_roll.dart';
@@ -40,7 +42,7 @@ class EditorScreen extends StatefulWidget {
 }
 
 class _EditorScreenState extends State<EditorScreen> {
-  static const List<Track> _defaultTracks = [
+  static final List<Track> _defaultTracks = [
     // Vocal scale demo — "la la la" (l A): C major, 2 octaves up + down.
     // Phonemes l/A exist as singles AND as the "l A" pair in Teto English,
     // so the scale renders gap-free (unlike the previous song demos).
@@ -80,9 +82,13 @@ class _EditorScreenState extends State<EditorScreen> {
         Note(lyric: 'la[l A]', pitch: 0, position: 14.0, duration: 1.0),
       ],
     ),
+    // The DiffSinger demo — "Bad Apple!!" (full UST, 867 notes, tempo
+    // 138) — Japanese romaji lyrics; the no7's ja/ voice renders the
+    // Japanese accent. Select the "DiffSinger" engine + this track.
+    ...badappleDemoTracks(),
   ];
 
-  int _selectedTrack = 0;
+  int _selectedTrack = 1;
 
   /// Side panel (Project/Sections) collapsed — mirrors ui-mock's ◀ toggle.
   bool _panelCollapsed = false;
@@ -94,6 +100,37 @@ class _EditorScreenState extends State<EditorScreen> {
   // Lazy: only created when the user actually hits play — constructing it in
   // widget tests would hit the audioplayers platform channel and hang.
   AudioPlayer? _player;
+
+  /// Real-time playback position (seconds) streamed to the roll's
+  /// playhead (position-driven sync — the playhead follows the actual
+  /// audio, never a linear estimate).
+  final StreamController<double> _playbackPositions =
+      StreamController<double>.broadcast();
+  /// Real audio duration (seconds) — the playhead clamps against THIS so
+  /// it reaches the end exactly when the audio ends (engine switches
+  /// change the rendered wav length; a beats-based estimate never
+  /// completes -> "เล่นไม่จบ").
+  final StreamController<double> _playbackDuration =
+      StreamController<double>.broadcast();
+  double _lastPlaybackDuration = 0;
+  bool _posListenerAttached = false;
+
+  void _ensurePositionListener(AudioPlayer player) {
+    if (_posListenerAttached) return;
+    _posListenerAttached = true;
+    player.onPositionChanged.listen((pos) {
+      if (mounted && !_playbackPositions.isClosed) {
+        _playbackPositions.add(pos.inMilliseconds / 1000.0);
+      }
+    });
+    player.onDurationChanged.listen((d) {
+      if (d.inMilliseconds <= 0) return;
+      _lastPlaybackDuration = d.inMilliseconds / 1000.0;
+      if (mounted && !_playbackDuration.isClosed) {
+        _playbackDuration.add(_lastPlaybackDuration);
+      }
+    });
+  }
   bool _exporting = false;
   /// A render is in flight — the ⋯ menu shows Stop instead of Export.
   bool _renderActive = false;
@@ -106,8 +143,19 @@ class _EditorScreenState extends State<EditorScreen> {
   /// `/post-fx`, so fader/EQ drags never re-synthesize.
   Uint8List? _rawAudio;
 
+  /// Server phonemizer labels per note index (current track) — pushed to
+  /// the roll for the SynthV labels above the notes.
+  Map<int, List<String>>? _phonemesByNote;
+
   /// Latest FINAL audio (raw + current mixer FX). This is what Play uses.
   Uint8List? _latestAudio;
+
+  /// True when the rendered audio no longer matches the project (notes,
+  /// curve or engine changed since the last render). Play MUST NOT use a
+  /// stale `_latestAudio` — the old code played whatever was cached even
+  /// right after an edit, so the song kept the previous render until the
+  /// debounce finished ("ใช้ old cache ตอนแก้แล้วไม่มี rerender").
+  bool _audioDirty = true;
 
   /// True while audio is actually playing — the menu shows ⏹ Stop so the
   /// user can interrupt playback (previously the Stop item only appeared
@@ -119,8 +167,30 @@ class _EditorScreenState extends State<EditorScreen> {
   /// (play the raw synth). Applied via `/post-fx` at playback time.
   String? _mixerParams;
 
+  /// Synthesis engine: "r1" (WORLDLINE-R — C++ PhraseSynth, default),
+  /// "r2" (WORLDLINE-R2 — neural mel→HiFiGAN), "classic"
+  /// (WORLDLINE-R Classic — SynthFeatures → C++ WorldSynthesis).
+  String _engine = 'diffsinger';
+
   /// Current project tracks (default demo, replaced by Open project).
   List<Track> _tracks = List.of(_defaultTracks);
+
+  /// Name of the current project (used for the save file name). Defaults
+  /// to the demo; renamed by Save As / Open.
+  String _projectName = 'Lilt Editor Song';
+
+  /// Path of the last successful save — null until the first save. The
+  /// autosave cycle writes here (no Save As dialog on every edit).
+  String? _lastSavedPath;
+
+  /// Debounce timer for the autosave cycle: edits are saved ~1.5s after
+  /// the last change (notes/curve/name), so switching screens or closing
+  /// the app never loses work ("ควรทำระบบ save cycle ได้แล้ว").
+  Timer? _autosaveTimer;
+
+  /// The project store (server-backed — ALL project data lives on the
+  /// server; the app only ships the JSON view over HTTP).
+  ServerProjectStore? _store;
 
   /// Project tempo — the Vocal Scale demo is authored at 110 BPM. This must
   /// match the demo or the rendered audio differs from the engine reference
@@ -200,37 +270,95 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
-  /// Save the current project as a .ustx file (app documents dir).
+  /// Save the current project via the store (Rust .ustx codec). Returns
+  /// the saved path, or null on failure.
   Future<String?> _saveProject() async {
     try {
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/lilt-project.ustx');
-      await file.writeAsString(_buildCurrentUstx());
-      debugPrint('saved project → ${file.path}');
-      return file.path;
+      final store = _store ??= ServerProjectStore(_client);
+      final doc = ProjectDoc(
+        name: _projectName,
+        bpm: _bpm.toDouble(),
+        tracks: _editableTracks,
+        curvesByTrack: Map.of(_editedCurves),
+      );
+      final path = await store.save(doc);
+      _lastSavedPath = path;
+      debugPrint('saved project → $path');
+      if (mounted) _showSnack('💾 Saved: $_projectName');
+      return path;
     } catch (e) {
       debugPrint('save project failed: $e');
       return null;
     }
   }
 
-  /// Open a .ustx project file and load its tracks into the editor.
+  /// Schedule an autosave ~1.5s after the last edit. The first save
+  /// (when the project has never been saved) opens the Save As dialog so
+  /// the user picks a name; afterwards saves are silent.
+  void _scheduleAutosave() {
+    _autosaveTimer?.cancel();
+    _autosaveTimer = Timer(const Duration(milliseconds: 1500), () async {
+      if (_lastSavedPath == null) return; // never saved → user picks name
+      await _saveProject();
+    });
+  }
+
+  /// Save As: prompt for a project name, then save. Used by the first
+  /// save and the "Save As" menu item.
+  Future<void> _saveProjectAs() async {
+    if (!mounted) return;
+    final name = await _promptProjectName();
+    if (name == null || name.isEmpty || !mounted) return;
+    _projectName = name;
+    await _saveProject();
+  }
+
+  Future<String?> _promptProjectName() {
+    final controller = TextEditingController(text: _projectName);
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Save project as…'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Project name'),
+          onSubmitted: (v) => Navigator.pop(ctx, v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Open a .ustx project file (via the store's Rust codec) and load its
+  /// tracks + curves into the editor.
   Future<bool> _openProject(String path) async {
     try {
-      final yaml = await File(path).readAsString();
-      final parsed = parseUstx(yaml);
-      if (parsed.isEmpty) return false;
-      final loaded = <Track>[
-        for (var i = 0; i < parsed.length; i++)
-          Track(name: parsed[i].name, colorSeed: i, notes: parsed[i].notes),
-      ];
+      final store = _store ??= ServerProjectStore(_client);
+      final doc = await store.load(path);
+      if (doc == null || doc.tracks.isEmpty) return false;
       setState(() {
-        _tracks = loaded;
+        _tracks = doc.tracks;
+        _projectName = doc.name;
+        _lastSavedPath = path;
         _editedNotes
           ..clear()
           ..addAll({
-            for (var i = 0; i < loaded.length; i++) i: List.of(loaded[i].notes),
+            for (var i = 0; i < doc.tracks.length; i++)
+              i: List.of(doc.tracks[i].notes),
           });
+        _editedCurves
+          ..clear()
+          ..addAll(doc.curvesByTrack ?? const {});
         _selectedTrack = 0;
       });
       return true;
@@ -240,19 +368,16 @@ class _EditorScreenState extends State<EditorScreen> {
     }
   }
 
-  /// Open-project flow: list .ustx files in the documents dir and let the
-  /// user pick one (POC: no system file picker yet).
+  /// Open-project flow: list saved projects (store) and let the user
+  /// pick one.
   Future<void> _pickAndOpenProject() async {
     try {
-      final dir = await getApplicationDocumentsDirectory();
+      final store = _store ??= ServerProjectStore(_client);
       if (!mounted) return;
-      final files = dir
-          .listSync()
-          .whereType<File>()
-          .where((f) => f.path.endsWith('.ustx'))
-          .toList();
-      if (files.isEmpty) {
-        _showSnack('No .ustx projects in documents yet — save first');
+      final projects = await store.list();
+      if (!mounted) return;
+      if (projects.isEmpty) {
+        _showSnack('No saved projects yet — Save As to create one');
         return;
       }
       final chosen = await showDialog<String>(
@@ -260,21 +385,19 @@ class _EditorScreenState extends State<EditorScreen> {
         builder: (ctx) => SimpleDialog(
           title: const Text('Open project'),
           children: [
-            for (final f in files)
+            for (final p in projects)
               SimpleDialogOption(
-                onPressed: () => Navigator.pop(ctx, f.path),
-                child: Text(f.path.split('/').last),
+                onPressed: () => Navigator.pop(ctx, p.path),
+                child: Text(p.name),
               ),
           ],
         ),
       );
-      if (chosen != null) {
-        final ok = await _openProject(chosen);
-        if (!mounted) return;
-        _showSnack(ok ? 'Opened $chosen' : 'Could not open project file');
-      }
+      if (chosen == null) return;
+      final ok = await _openProject(chosen);
+      if (ok) _showSnack('📂 Opened: $_projectName');
     } catch (e) {
-      _showSnack('Open failed: $e');
+      debugPrint('open project flow failed: $e');
     }
   }
 
@@ -285,6 +408,14 @@ class _EditorScreenState extends State<EditorScreen> {
       ..showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  /// Display name for an engine id (r1/r2/classic).
+  String _engineLabel(String id) => switch (id) {
+        'r2' => 'WORLDLINE-R2',
+        'classic' => 'Classic',
+        'diffsinger' => 'DiffSinger',
+        _ => 'WORLDLINE-R',
+      };
+
   /// Re-render quietly 500ms after the last edit (debounced). Uses the
   /// engine render cache, so an unchanged edit round-trips fast; stores
   /// the RAW audio so Play is instant. Never interrupts editing.
@@ -292,11 +423,40 @@ class _EditorScreenState extends State<EditorScreen> {
     _editDebounce?.cancel();
     _editDebounce = Timer(const Duration(milliseconds: 500), () async {
       try {
+        // Phoneme labels first (fast — no synthesis), then the audio.
+        await _refreshPhonemes();
         await _renderRaw();
       } catch (e) {
         debugPrint('re-render failed: $e');
       }
     });
+  }
+
+  /// Fetch the REAL server phonemizer output for the current track and
+  /// push it into the roll's note labels (above each note, SynthV-style).
+  /// Falls back to the painter's hint/letter-split when the engine is
+  /// down — labels never block playback.
+  Future<void> _refreshPhonemes() async {
+    try {
+      final (project, voicebank) = await _renderTarget();
+      final resp = await _client.phonemize(
+        project: project,
+        voicebank: voicebank,
+        track: _selectedTrack,
+      );
+      final notes = resp['notes'] as List<dynamic>?;
+      if (notes == null || !mounted) return;
+      final map = <int, List<String>>{};
+      for (var i = 0; i < notes.length; i++) {
+        final ph = (notes[i] as Map<String, dynamic>)['phonemes'];
+        map[i] = (ph as List<dynamic>? ?? const [])
+            .map((e) => e.toString())
+            .toList();
+      }
+      setState(() => _phonemesByNote = map);
+    } catch (e) {
+      debugPrint('phonemize failed (labels fall back to hints): $e');
+    }
   }
 
   /// Render the current project through the engine (synth only — no mixer
@@ -307,9 +467,11 @@ class _EditorScreenState extends State<EditorScreen> {
     final wav = await _client.render(
       project: project,
       voicebank: voicebank,
+      engine: _engine,
     );
     _rawAudio = wav;
     _latestAudio = await _applyMixerFx(wav);
+    _audioDirty = false;
     debugPrint('rendered raw: ${wav.length} bytes');
   }
 
@@ -331,9 +493,11 @@ class _EditorScreenState extends State<EditorScreen> {
   /// edit, `_scheduleReRender` keeps the raw audio fresh — but a mixer
   /// drag only re-FXes, never re-synthesizes.
   Future<void> _playDemo() async {
-    // If we have fresh audio already, play it directly (no render).
-    if (_latestAudio != null) {
+    // Fresh audio only: a stale `_latestAudio` (edit/engine switch since
+    // the last render) must NEVER be played — render first, then play.
+    if (_latestAudio != null && !_audioDirty) {
       final player = _player ??= AudioPlayer();
+      _ensurePositionListener(player);
       setState(() => _isPlaying = true);
       _trackPlaybackEnd(player);
       await player.play(BytesSource(_latestAudio!));
@@ -345,6 +509,7 @@ class _EditorScreenState extends State<EditorScreen> {
     try {
       await _renderRaw();
       final player = _player ??= AudioPlayer();
+      _ensurePositionListener(player);
       setState(() => _isPlaying = true);
       _trackPlaybackEnd(player);
       await player.play(BytesSource(_latestAudio!));
@@ -366,13 +531,37 @@ class _EditorScreenState extends State<EditorScreen> {
   /// event (or the Stop button), never by the awaited play call.
   void _trackPlaybackEnd(AudioPlayer player) {
     player.onPlayerComplete.listen((_) {
-      if (mounted) setState(() => _isPlaying = false);
+      if (mounted) {
+        setState(() => _isPlaying = false);
+        // Push the final position = real duration so the roll's playhead
+        // reaches exactly 1.0 and stops (its stop logic runs on
+        // position >= duration — without this a wav shorter than the
+        // beats estimate leaves the playhead stuck before the end).
+        if (_lastPlaybackDuration > 0 && !_playbackPositions.isClosed) {
+          _playbackPositions.add(_lastPlaybackDuration);
+        }
+      }
+    });
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // Pre-render the song in the background right after the first frame:
+    // Play becomes instant instead of blocking on the first full render
+    // ("Rendering… (first time takes a while)"). Debounced + error-caught
+    // inside _scheduleReRender, so a cold start with no server just logs.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scheduleReRender();
     });
   }
 
   @override
   void dispose() {
     _editDebounce?.cancel();
+    _autosaveTimer?.cancel();
+    _playbackPositions.close();
+    _playbackDuration.close();
     _player?.dispose();
     super.dispose();
   }
@@ -405,6 +594,7 @@ class _EditorScreenState extends State<EditorScreen> {
       final wav = await _client.render(
         project: project,
         voicebank: voicebank,
+        engine: _engine,
         epoch: epoch,
       );
       // 16-bit mono @ 44100 Hz (worldline SAMPLE_RATE).
@@ -546,6 +736,54 @@ class _EditorScreenState extends State<EditorScreen> {
         ),
         centerTitle: true,
         actions: [
+          // Engine select: WORLDLINE-R (r1) / WORLDLINE-R2 (r2) /
+          // Classic — the server routes per request (engine field).
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: Center(
+              child: DropdownButton<String>(
+                value: _engine,
+                underline: const SizedBox.shrink(),
+                icon: const Icon(Icons.expand_more_rounded, size: 16),
+                style: const TextStyle(fontSize: 12, color: Colors.white70),
+                dropdownColor: const Color(0xFF2A2F3A),
+                items: const [
+                  DropdownMenuItem(
+                    value: 'r1',
+                    child: Text('WORLDLINE-R'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'r2',
+                    child: Text('WORLDLINE-R2'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'classic',
+                    child: Text('Classic'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'diffsinger',
+                    child: Text('DiffSinger'),
+                  ),
+                ],
+                onChanged: (v) {
+                  if (v != null && v != _engine) {
+                    // Engine switch invalidates every rendered chunk (the
+                    // server cache is salted per engine) — drop the stale
+                    // audio and re-render the song with the new engine, so
+                    // Play never hears the old engine's rendering.
+                    setState(() {
+                      _engine = v;
+                      _latestAudio = null;
+                      _rawAudio = null;
+                      _audioDirty = true;
+                    });
+                    _showSnack('Engine: ${_engineLabel(v)} — re-rendering…');
+                    _scheduleReRender();
+                  }
+                },
+              ),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.save_outlined, size: 20),
             tooltip: 'Save project (.ustx)',
@@ -576,6 +814,8 @@ class _EditorScreenState extends State<EditorScreen> {
               if (v == 'play') _playDemo();
               if (v == 'export') _exportAudio();
               if (v == 'stop') _cancelRenderNow();
+              if (v == 'save') _saveProjectAs();
+              if (v == 'autosave') _saveProject();
               if (v == 'open') _pickAndOpenProject();
             },
             itemBuilder: (context) => [
@@ -594,6 +834,10 @@ class _EditorScreenState extends State<EditorScreen> {
               ),
               const PopupMenuDivider(),
               const PopupMenuItem(
+                value: 'save',
+                child: Text('💾  Save As…', style: TextStyle(fontSize: 13)),
+              ),
+              const PopupMenuItem(
                 value: 'open',
                 child: Text('📂  Open project', style: TextStyle(fontSize: 13)),
               ),
@@ -607,6 +851,18 @@ class _EditorScreenState extends State<EditorScreen> {
           final roll = PianoRoll(
             tracks: _editableTracks,
             selectedTrackIndex: _selectedTrack,
+            curvesByTrack: _editedCurves,
+            // The playhead timeline MUST match the render tempo — the
+            // roll's old const BPM 128 ran 6% faster than songs rendered
+            // at 110 BPM (playhead finished early → tail cut off).
+            secondsPerBeat: 60.0 / _bpm,
+            // Position-driven playhead: stream the player's REAL audio
+            // position so the playhead can never drift from the sound
+            // (startup latency, tempo, decode hiccups all covered).
+            playbackPositions: _playbackPositions.stream,
+            playbackDuration: _playbackDuration.stream,
+            // REAL phonemizer labels (server /phonemize) above the notes.
+            phonemesByNote: _phonemesByNote,
             onPlayRequested: _playDemo,
             onPlayStopped: _stopPlayback,
             onInitialSync: (notes, curve) {
@@ -615,11 +871,15 @@ class _EditorScreenState extends State<EditorScreen> {
             },
             onNotesChanged: (notes) {
               _editedNotes[_selectedTrack] = List.of(notes);
+              _audioDirty = true;
               _scheduleReRender();
+              _scheduleAutosave();
             },
             onCurveChanged: (points) {
               _editedCurves[_selectedTrack] = List.of(points);
+              _audioDirty = true;
               _scheduleReRender();
+              _scheduleAutosave();
             },
           );
           // SingleChildScrollView: when the mixer is open the panel can
@@ -786,7 +1046,13 @@ class _EditorScreenState extends State<EditorScreen> {
     final color =
         LiltColors.trackColors[t.colorSeed % LiltColors.trackColors.length];
     return InkWell(
-      onTap: () => setState(() => _selectedTrack = i),
+      onTap: () {
+        if (_selectedTrack != i) {
+          setState(() => _selectedTrack = i);
+          _phonemesByNote = null; // stale (old track) until re-fetched
+          _refreshPhonemes();
+        }
+      },
       child: Container(
         height: 44,
         color: sel ? const Color(0xFF333333) : null,

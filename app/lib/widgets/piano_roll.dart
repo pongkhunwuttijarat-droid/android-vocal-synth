@@ -26,12 +26,22 @@ class PianoRoll extends StatefulWidget {
     this.onInitialSync,
     this.onNotesChanged,
     this.onCurveChanged,
+    this.curvesByTrack,
     this.showPhonemes = true,
     this.showFxOverlay = false,
+    this.playbackPositions,
+    this.playbackDuration,
+    this.secondsPerBeat = 60.0 / 128.0,
+    this.phonemesByNote,
   });
 
   /// All project tracks; the roll renders [selectedTrackIndex]'s notes.
   final List<Track> tracks;
+
+  /// Saved pitch curves per track index (the parent's persisted edits).
+  /// The roll restores these on init so a recreated roll (e.g. after a
+  /// screen switch) keeps the drawn curve — "curve หายตอนย้ายหน้า".
+  final Map<int, List<PitchPoint>>? curvesByTrack;
 
   /// Index of the track whose notes are shown/edited.
   final int selectedTrackIndex;
@@ -46,6 +56,32 @@ class PianoRoll extends StatefulWidget {
   /// only stops its own playhead animation, which otherwise left the
   /// sound playing ("graphic หยุดแต่เสียงไม่").
   final VoidCallback? onPlayStopped;
+
+  /// Real-time playback position in SECONDS, streamed by the parent (the
+  /// audio player's `onPositionChanged`). When set, the playhead follows
+  /// the ACTUAL audio position instead of a linear animation — immune to
+  /// player startup latency, tempo mismatch and drift ("not sync").
+  /// Null = linear playhead animation (fire-and-forget mode).
+  final Stream<double>? playbackPositions;
+
+  /// Real AUDIO duration in SECONDS (the player's `onDurationChanged`).
+  /// The playhead must clamp against THIS, not the beats estimate: after
+  /// an engine switch the rendered wav length differs (r1/r2/classic
+  /// frame math), so a fixed `totalBeats × secondsPerBeat` timeline
+  /// never reaches 1.0 — playback "stops early" without finishing.
+  final Stream<double>? playbackDuration;
+
+  /// Seconds per beat for the playhead timeline — MUST match the tempo
+  /// the project renders at, or the playhead runs faster/slower than the
+  /// audio (the roll's old const 60/128 = BPM 128 while songs render at
+  /// 110 → the playhead finished ~0.9 s early and cut the tail off).
+  final double secondsPerBeat;
+
+  /// Server phonemizer output: note index → phoneme aliases (from the
+  /// engine's `/phonemize`). The roll merges them into its notes'
+  /// `phoneme` fields for the SynthV labels above the notes — the REAL
+  /// phonemizer, not the Dart letter-split fallback.
+  final Map<int, List<String>>? phonemesByNote;
 
   /// First-load callback (notes + curve). Unlike [onNotesChanged]/
   /// [onCurveChanged] it does NOT represent a user edit — the parent
@@ -90,7 +126,6 @@ const double _baseNoteHeight = 24.0; // at 32px row → 75% of the row
 double _noteHeightFor(double rowHeight) =>
     rowHeight * (_baseNoteHeight / 32.0);
 const double _basePxPerBeat = 80.0; // px per beat at 100% zoom
-const double _secondsPerBeat = 60.0 / 128.0; // BPM 128
 
 // OpenUtau Mobile dark theme values from ui-mock/index-om.html.
 const Color _bg = Color(0xFF303030);
@@ -168,6 +203,10 @@ class _PianoRollState extends State<PianoRoll>
   /// Read-only view of the edited notes for widget tests.
   @visibleForTesting
   List<Note> get debugNotes => List.unmodifiable(_notes);
+  Note? get debugResizeNote => _resizeNote;
+  Note? get debugSelectedNote => _selectedNote;
+  Offset get debugDragStartPos => _dragStartPos;
+  Rect debugRectOf(Note n) => _noteRect(n);
 
   /// Read-only FX-overlay visibility for widget tests.
   @visibleForTesting
@@ -204,6 +243,11 @@ class _PianoRollState extends State<PianoRoll>
   /// stationary (zoom relative to canvas — the finger or viewport center
   /// doesn't drift). Callers pass the point in the roll's viewport coords.
   void _applyZoom(int nx, int ny, Offset viewportPoint) {
+    // Hard clamp — every caller (pinch, slider, ± buttons) stays within
+    // the zoom limits. The slider asserts if its value leaves [min,max]:
+    // a pinch past 300% drove the slider value out of range → red screen.
+    nx = nx.clamp(30, 300);
+    ny = ny.clamp(30, 300);
     if (_zoomX == nx && _zoomY == ny) return;
     // Content coords of the anchor BEFORE the zoom.
     final kx = nx / _zoomX;
@@ -272,6 +316,10 @@ class _PianoRollState extends State<PianoRoll>
   double _captureStep = 0.125;
 
   late final AnimationController _playCtrl;
+  /// Real-audio position subscription (position-driven playhead mode).
+  StreamSubscription<double>? _posSub;
+  /// Real-audio duration subscription (overrides the beats estimate).
+  StreamSubscription<double>? _durSub;
   bool _playing = false;
   final ScrollController _vScroll = ScrollController(initialScrollOffset: 90);
   final ScrollController _hScroll = ScrollController();
@@ -409,7 +457,18 @@ class _PianoRollState extends State<PianoRoll>
     _playCtrl = AnimationController(vsync: this)
       ..addStatusListener(_onPlayStatus);
     _notes = List.of(_activeTrack?.notes ?? const []);
-    _syncCurveFromNotes();
+    // Restore the SAVED curve when the parent has one for this track
+    // (the parent persists edits in `_editedCurves`; without this the
+    // curve resets to the note-anchor defaults every time the roll is
+    // recreated — "curve หายตอนย้ายหน้า"). Only when missing do we
+    // derive anchors from the notes.
+    final saved =
+        widget.curvesByTrack?[widget.selectedTrackIndex.clamp(0, 999999)];
+    if (saved != null && saved.isNotEmpty) {
+      _curvePoints = List.of(saved);
+    } else {
+      _syncCurveFromNotes();
+    }
     _showPhonemes = widget.showPhonemes;
     _showFxOverlay = widget.showFxOverlay;
     if (_notes.length > 3) _selectedNote = _notes[3]; // mock default: "the"
@@ -442,6 +501,28 @@ class _PianoRollState extends State<PianoRoll>
     if (widget.showFxOverlay != oldWidget.showFxOverlay) {
       setState(() => _showFxOverlay = widget.showFxOverlay);
     }
+    // Server phonemes arrived (or changed): merge them into the notes'
+    // phoneme fields for the labels above the notes. Display-only — no
+    // onNotesChanged (the server re-phonemizes at render anyway, and
+    // notifying would loop back into a render).
+    if (widget.phonemesByNote != oldWidget.phonemesByNote) {
+      final map = widget.phonemesByNote;
+      if (map != null && _notes.isNotEmpty) {
+        setState(() {
+          var changed = false;
+          for (final e in map.entries) {
+            final i = e.key;
+            if (i < 0 || i >= _notes.length) continue;
+            final joined = e.value.join(' ');
+            if (_notes[i].phoneme != joined) {
+              _notes[i] = _notes[i].copyWith(phoneme: joined);
+              changed = true;
+            }
+          }
+          if (changed) _revision++;
+        });
+      }
+    }
     if (widget.selectedTrackIndex != oldWidget.selectedTrackIndex) {
       _notes = List.of(_activeTrack?.notes ?? const []);
       _selectedNote = null;
@@ -459,6 +540,8 @@ class _PianoRollState extends State<PianoRoll>
   @override
   void dispose() {
     _playCtrl.dispose();
+    _posSub?.cancel();
+    _durSub?.cancel();
     _vScroll.dispose();
     _hScroll.dispose();
     super.dispose();
@@ -479,26 +562,80 @@ class _PianoRollState extends State<PianoRoll>
     if (_notes.isEmpty) return;
     if (_playing) {
       _playCtrl.stop();
+      _posSub?.cancel();
+      _posSub = null;
+      _durSub?.cancel();
+      _durSub = null;
       setState(() => _playing = false);
       // Stop the parent's audio — the roll only animates the playhead,
       // without this the sound keeps playing ("graphic หยุดแต่เสียงไม่").
       widget.onPlayStopped?.call();
     } else {
-      // If a parent wired audio, delegate the actual sound to it. The
-      // playhead animation runs regardless (fire-and-forget audio).
-      final req = widget.onPlayRequested;
-      if (req != null) {
-        req().catchError((Object e) {
-          debugPrint('playback request failed: $e');
-        });
-      }
-      final ms = (_totalBeats * _secondsPerBeat * 1000).round();
-      if (ms > 0 && _playCtrl.duration?.inMilliseconds != ms) {
-        _playCtrl.duration = Duration(milliseconds: ms);
-      }
-      _playCtrl.forward(from: 0);
-      setState(() => _playing = true);
+      _startPlayback();
     }
+  }
+
+  /// Start the playhead ONLY when the audio actually starts: audioplayers
+  /// takes ~100-500 ms to begin sound after `play()` is called, so a
+  /// playhead that animates immediately runs AHEAD of the audio — it
+  /// finishes first and the parent's onPlayStopped cuts the tail off the
+  /// song ("delay ก่อนเริ่ม → เสียงโดนตัดท้าย"). Awaiting the play
+  /// request aligns the timeline with the real audio start.
+  ///
+  /// When the parent streams [playbackPositions], the playhead follows
+  /// the REAL audio position instead — immune to startup latency, tempo
+  /// mismatch (the old const BPM 128 vs songs rendered at 110) and drift.
+  Future<void> _startPlayback() async {
+    final req = widget.onPlayRequested;
+    if (req != null) {
+      final started = await req()
+          .then((_) => true)
+          .catchError((Object e) {
+            debugPrint('playback request failed: $e');
+            return false;
+          });
+      if (!started || !mounted) return;
+    }
+    final ms = (_totalBeats * widget.secondsPerBeat * 1000).round();
+    if (ms > 0 && _playCtrl.duration?.inMilliseconds != ms) {
+      _playCtrl.duration = Duration(milliseconds: ms);
+    }
+    final posStream = widget.playbackPositions;
+    if (posStream != null) {
+      _posSub?.cancel();
+      _posSub = posStream.listen((seconds) {
+        if (!mounted) return;
+        final d = _playCtrl.duration;
+        if (d == null || d.inMilliseconds <= 0) return;
+        final v = (seconds * 1000 / d.inMilliseconds).clamp(0.0, 1.0);
+        if (v >= 1.0) {
+          _posSub?.cancel();
+          _posSub = null;
+          _durSub?.cancel();
+          _durSub = null;
+          _playCtrl.reset();
+          setState(() => _playing = false);
+          widget.onPlayStopped?.call();
+        } else {
+          _playCtrl.value = v;
+          setState(() {});
+        }
+      });
+      // The REAL audio duration overrides the beats estimate — the clamp
+      // above must reach exactly 1.0 when the audio ends.
+      _durSub?.cancel();
+      _durSub = widget.playbackDuration?.listen((seconds) {
+        if (!mounted) return;
+        final ms = (seconds * 1000).round();
+        if (ms > 0 && _playCtrl.duration?.inMilliseconds != ms) {
+          _playCtrl.duration = Duration(milliseconds: ms);
+        }
+      });
+      setState(() => _playing = true);
+      return;
+    }
+    _playCtrl.forward(from: 0);
+    setState(() => _playing = true);
   }
 
   // --- pointer handling (raw Listener so scrolling still works on empty
@@ -1152,36 +1289,11 @@ class _PianoRollState extends State<PianoRoll>
               ),
             ),
             const SizedBox(width: 14),
-            const Text(
-              'Zoom',
-              style: TextStyle(fontSize: 11, color: Color(0xFF8E94A7)),
-            ),
-            SizedBox(
-              width: 110,
-              child: SliderTheme(
-                data: SliderThemeData(
-                  trackHeight: 2,
-                  activeTrackColor: _purple2,
-                  inactiveTrackColor: const Color(0xFF303441),
-                  thumbColor: LiltColors.purple,
-                  overlayColor: const Color(0x337358E9),
-                  thumbShape: const RoundSliderThumbShape(
-                    enabledThumbRadius: 6,
-                  ),
-                  overlayShape: const RoundSliderOverlayShape(
-                    overlayRadius: 10,
-                  ),
-                ),
-                child: Slider(
-                  value: _zoomX.toDouble(),
-                  min: 60,
-                  max: 130,
-                  onChanged: (v) => _applyZoom(v.round(), _zoomY, _viewportCenter),
-                ),
-              ),
-            ),
-            // Reliable −/+ zoom buttons (pinch can lose the gesture arena
-            // to the scroll views on device).
+            // Zoom is pinch-driven; the −/+ buttons are the reliable
+            // fallback (pinch can lose the gesture arena to the scroll
+            // views on device). The X/Y sliders were removed — their
+            // fixed [min,max] asserted once a pinch drove the value past
+            // them (red screen), and pinch now covers both axes.
             IconButton(
               icon: const Icon(Icons.zoom_out_rounded, size: 18),
               visualDensity: VisualDensity.compact,
@@ -1197,19 +1309,6 @@ class _PianoRollState extends State<PianoRoll>
                 (_zoomX + 10).clamp(30, 300), _zoomY, _viewportCenter),
             ),
             const SizedBox(width: 8),
-            const Text(
-              'Y',
-              style: TextStyle(fontSize: 11, color: Color(0xFF8E94A7)),
-            ),
-            SizedBox(
-              width: 110,
-              child: Slider(
-                value: _zoomY.toDouble(),
-                min: 50,
-                max: 150,
-                onChanged: (v) => _applyZoom(_zoomX, v.round(), _viewportCenter),
-              ),
-            ),
             IconButton(
               icon: const Icon(Icons.zoom_out_rounded, size: 18),
               visualDensity: VisualDensity.compact,
@@ -1462,9 +1561,9 @@ class _PianoRollState extends State<PianoRoll>
               AnimatedBuilder(
                 animation: _playCtrl,
                 builder: (context, _) {
-                  final t = _playCtrl.value * _totalBeats * _secondsPerBeat;
+                  final t = _playCtrl.value * _totalBeats * widget.secondsPerBeat;
                   return Text(
-                    '${_fmtTime(t)} / ${_fmtTime(_totalBeats * _secondsPerBeat)}',
+                    '${_fmtTime(t)} / ${_fmtTime(_totalBeats * widget.secondsPerBeat)}',
                     style: const TextStyle(
                       fontSize: 12,
                       color: Color(0xFFD9DBEA),
@@ -1612,6 +1711,43 @@ class _KeysPainter extends CustomPainter {
 /// ([_CurvePainter]) as a separate overlay layer, and the selected-note
 /// outline in [_SelectionPainter] on top of that — mirroring the mock's
 /// z-order (selected note > curve layer > playhead).
+
+/// Resolve the phoneme labels for a note — SERVER phonemizer output first
+/// (the `phoneme` field is populated from `/phonemize`; the user asked
+/// for server-first so the real phonemizer wins over the painter's own
+/// parsing), then the lyric's `word[ph ph]` hint, and finally a
+/// letter→alias split of the lyric against the voicebank's oto alias set
+/// — NOT a raw copy of the lyric word ("มันแค่ copy lyric ไม่ใช่
+/// phoneme"). Top-level so tests can verify the priority directly.
+List<String> phonemesForLabel(Note n) {
+  final raw = n.phoneme.trim();
+  if (raw.isNotEmpty) {
+    return raw.split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList();
+  }
+  final m = RegExp(r'\[([^\]]+)\]').firstMatch(n.lyric);
+  final hint = m?.group(1)?.trim() ?? '';
+  if (hint.isNotEmpty) {
+    return hint.split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList();
+  }
+  // No server phoneme and no hint: split the lyric into its letters and
+  // keep only those that exist as single-phoneme aliases in the
+  // voicebank (case-normalized — 'a' → 'A', 'i' → 'I', ...). This is a
+  // real phoneme resolution, not a lyric copy. E.g. 'na' → n + A.
+  final word = n.lyric.replaceAll(RegExp(r'\[[^\]]*\]'), '').trim();
+  if (word.isNotEmpty) {
+    final resolved = <String>[];
+    for (final ch in word.split('')) {
+      final upper = ch.toUpperCase();
+      if (_RollPainter._otoAliases.contains(upper)) {
+        resolved.add(upper);
+      }
+    }
+    if (resolved.isNotEmpty) return resolved;
+    return [word]; // no resolvable letters → show the word as-is
+  }
+  return const [];
+}
+
 class _RollPainter extends CustomPainter {
   _RollPainter({
     required this.notes,
@@ -1640,43 +1776,9 @@ class _RollPainter extends CustomPainter {
   /// per segment) when the note carries phonemes. Mirrors ui-mock.
   final bool showPhonemes;
 
-  /// Phonemes for the label boxes: the lyric's `word[ph ph]` hint FIRST
-  /// (the painter must always reflect the CURRENT lyric — a stale
-  /// `phoneme` field would freeze the labels after lyric edits), falling
-  /// back to the note's `phoneme` field when the lyric has no hint (a
-  /// real phonemizer's output, e.g. future IPA support), and finally a
-  /// letter→alias split of the lyric against the voicebank's oto alias
-  /// set — NOT a raw copy of the lyric word ("มันแค่ copy lyric ไม่ใช่
-  /// phoneme"): 'na' resolves to `['n', 'A']` when both single-phoneme
-  /// aliases exist.
-  List<String> _phonemesOf(Note n) {
-    final m = RegExp(r'\[([^\]]+)\]').firstMatch(n.lyric);
-    final hint = m?.group(1)?.trim() ?? '';
-    if (hint.isNotEmpty) {
-      return hint.split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList();
-    }
-    final raw = n.phoneme.trim();
-    if (raw.isNotEmpty) {
-      return raw.split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList();
-    }
-    // No hint and no phoneme field: split the lyric into its letters and
-    // keep only those that exist as single-phoneme aliases in the
-    // voicebank (case-normalized — 'a' → 'A', 'i' → 'I', ...). This is a
-    // real phoneme resolution, not a lyric copy. E.g. 'na' → n + A.
-    final word = n.lyric.replaceAll(RegExp(r'\[[^\]]*\]'), '').trim();
-    if (word.isNotEmpty) {
-      final resolved = <String>[];
-      for (final ch in word.split('')) {
-        final upper = ch.toUpperCase();
-        if (_otoAliases.contains(upper)) {
-          resolved.add(upper);
-        }
-      }
-      if (resolved.isNotEmpty) return resolved;
-      return [word]; // no resolvable letters → show the word as-is
-    }
-    return const [];
-  }
+  /// Phonemes for the label boxes — delegates to the top-level
+  /// [phonemesForLabel] (server phonemizer → hint → letter-split).
+  List<String> _phonemesOf(Note n) => phonemesForLabel(n);
 
   /// Single-phoneme aliases present in the Teto English oto.ini (verified
   /// against the bank — EXACT set: 3 A b d D e E f g i I j k l m n N O p

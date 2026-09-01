@@ -13,10 +13,16 @@ library;
 import 'models.dart';
 
 /// Beats → ticks at 480 ticks/beat (quarter note = 480 ticks).
-int beatsToTicks(double beats) => (beats * 480).round();
+/// Beats → ticks at 480 ticks/beat (quarter note = 480 ticks) — the
+/// standard OpenUtau convention shared by the engine codec (`ustx-codec`
+/// TICKS_PER_BEAT) and the feed/dsdur ms-per-tick math. Keep all three
+/// in lockstep: a 192 experiment here desynced the dsdur's note
+/// positions (×0.4) and rushed every render.
+const TICKS_PER_BEAT = 480;
+int beatsToTicks(double beats) => (beats * TICKS_PER_BEAT).round();
 
 /// Ticks → beats.
-double ticksToBeats(int ticks) => ticks / 480;
+double ticksToBeats(int ticks) => ticks / TICKS_PER_BEAT;
 
 /// ms per beat at [bpm] (used to convert curve beat offsets to ustx ms).
 double msPerBeat(int bpm) => 60000 / bpm;
@@ -69,7 +75,12 @@ String buildUstx({
       ..writeln('  volume: 0')
       ..writeln('  pan: 0')
       ..writeln("  singer: ''")
-      ..writeln("  phonemizer: 'English'")
+      // IPA-first Universal (not the legacy 'English' path): the English
+      // CVVC phonemizer falls back to the lyric VERBATIM on unknown words
+      // ("shi" -> no oto alias -> the whole phrase skipped -> the song
+      // rendered only its first phrase). Universal letter-splits +
+      // NearestPhoneme-maps unknown words, so arbitrary lyrics render.
+      ..writeln("  phonemizer: 'Universal'")
       ..writeln('  voice_parts: []')
       ..writeln('  wave_parts: []')
       ..writeln('  track_expressions: []')

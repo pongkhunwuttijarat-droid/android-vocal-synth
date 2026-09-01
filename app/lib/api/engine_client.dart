@@ -35,6 +35,7 @@ abstract class EngineClient {
   Future<Uint8List> render({
     required String project,
     required String voicebank,
+    String engine = 'r1',
   });
 
   /// Hard Stop: abort the in-flight render on the server (the worker
@@ -48,6 +49,33 @@ abstract class EngineClient {
   Future<Uint8List> postFx({
     required Uint8List rawWav,
     required String paramsJson,
+  });
+
+  /// `POST /project` — save a project server-side. The app sends the
+  /// codec JSON view; the server encodes it to `.ustx` and stores the
+  /// file (ALL project data lives on the server).
+  Future<void> saveProject({
+    required String name,
+    required Map<String, dynamic> projectView,
+  });
+
+  /// `GET /projects` — list saved project names.
+  Future<List<String>> listProjects();
+
+  /// `GET /project/<name>` — load a project (server decodes .ustx back
+  /// to the JSON view; the app never touches .ustx bytes).
+  Future<Map<String, dynamic>?> loadProject(String name);
+
+  /// `DELETE /project/<name>` — remove a saved project.
+  Future<void> deleteProject(String name);
+
+  /// `POST /phonemize` — resolve a project track's lyrics to voicebank
+  /// phoneme aliases (the SynthV-style labels above notes come from the
+  /// Rust phonemizer, not a Dart letter-split).
+  Future<Map<String, dynamic>> phonemize({
+    required String project,
+    required String voicebank,
+    int track = 0,
   });
 }
 
@@ -216,13 +244,18 @@ class ApiClient implements EngineClient {
   Future<Uint8List> render({
     required String project,
     required String voicebank,
+    String engine = 'r1',
     int epoch = 0,
   }) async {
     final resp = await _guard(
       _http.post(
         Uri.parse('$baseUrl/render'),
         headers: _jsonHeaders,
-        body: jsonEncode({'project': project, 'voicebank': voicebank}),
+        body: jsonEncode({
+          'project': project,
+          'voicebank': voicebank,
+          'engine': engine,
+        }),
       ),
       renderTimeout,
       'render',
@@ -292,6 +325,82 @@ class ApiClient implements EngineClient {
     );
     _ensureOk(resp, 'post-fx');
     return Uint8List.fromList(resp.bodyBytes);
+  }
+
+  @override
+  Future<void> saveProject({
+    required String name,
+    required Map<String, dynamic> projectView,
+  }) async {
+    final resp = await _guard(
+      _http.post(
+        Uri.parse('$baseUrl/project'),
+        headers: _jsonHeaders,
+        body: jsonEncode({'name': name, 'project': projectView}),
+      ),
+      renderTimeout,
+      'save-project',
+    );
+    _ensureOk(resp, 'save-project');
+  }
+
+  @override
+  Future<List<String>> listProjects() async {
+    final resp = await _guard(
+      _http.get(Uri.parse('$baseUrl/projects')),
+      renderTimeout,
+      'list-projects',
+    );
+    _ensureOk(resp, 'list-projects');
+    final json = jsonDecode(resp.body) as Map<String, dynamic>;
+    return (json['projects'] as List? ?? const [])
+        .map((e) => e.toString())
+        .toList();
+  }
+
+  @override
+  Future<Map<String, dynamic>?> loadProject(String name) async {
+    final resp = await _guard(
+      _http.get(Uri.parse('$baseUrl/project/$name')),
+      renderTimeout,
+      'load-project',
+    );
+    if (resp.statusCode == 404) return null;
+    _ensureOk(resp, 'load-project');
+    return jsonDecode(resp.body) as Map<String, dynamic>;
+  }
+
+  @override
+  Future<void> deleteProject(String name) async {
+    final resp = await _guard(
+      _http.delete(Uri.parse('$baseUrl/project/$name')),
+      renderTimeout,
+      'delete-project',
+    );
+    _ensureOk(resp, 'delete-project');
+  }
+
+  @override
+  Future<Map<String, dynamic>> phonemize({
+    required String project,
+    required String voicebank,
+    int track = 0,
+  }) async {
+    final resp = await _guard(
+      _http.post(
+        Uri.parse('$baseUrl/phonemize'),
+        headers: _jsonHeaders,
+        body: jsonEncode({
+          'project': project,
+          'voicebank': voicebank,
+          'track': track,
+        }),
+      ),
+      renderTimeout,
+      'phonemize',
+    );
+    _ensureOk(resp, 'phonemize');
+    return jsonDecode(resp.body) as Map<String, dynamic>;
   }
 
   int renderEpoch = 0;

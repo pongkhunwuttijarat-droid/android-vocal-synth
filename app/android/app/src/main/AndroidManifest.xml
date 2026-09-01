@@ -1,4 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The bundled synth-server binds 127.0.0.1:18080 — Android 10+
+         blocks socket()/bind() with EPERM without INTERNET. Debug and
+         profile builds inherit it from their own manifests; release
+         needs it declared here (the previous release APK failed with
+         "bind 127.0.0.1:18080: Operation not permitted"). -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="lilt"
         android:name="${applicationName}"

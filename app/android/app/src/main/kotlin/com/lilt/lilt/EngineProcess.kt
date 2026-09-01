@@ -34,7 +34,13 @@ object EngineProcess {
     /** Extract bundled engine assets into [dir] (idempotent). */
     private fun extractAssets(context: Context, dir: File) {
         val assets = context.assets
-        for (name in listOf("engine/demo-song.ustx")) {
+        for (name in listOf(
+            "engine/demo-song.ustx",
+            // R2 neural engine models (mel.onnx + pc-nsf-hifigan). Skipped
+            // on older builds without the models (server then uses R1).
+            "engine/models/mel.onnx",
+            "engine/models/pc_nsf_hifigan.onnx",
+        )) {
             val target = File(dir, name.removePrefix("engine/"))
             if (target.exists() && target.length() > 0) {
                 continue // already extracted
@@ -44,6 +50,30 @@ object EngineProcess {
                 FileOutputStream(target).use { output -> input.copyTo(output) }
             }
             Log.i(TAG, "extracted $name -> ${target.absolutePath} (${target.length()} bytes)")
+        }
+        // DiffSinger bank (assets/engine/diffsinger/ — a directory tree).
+        val dsFiles = assets.list("engine/diffsinger")
+        if (!dsFiles.isNullOrEmpty()) {
+            extractDir(assets, "engine/diffsinger", File(dir, "diffsinger"))
+        }
+    }
+
+    /** Recursively extract an asset directory tree (idempotent). */
+    private fun extractDir(assets: android.content.res.AssetManager, prefix: String, target: File) {
+        for (child in assets.list(prefix) ?: return) {
+            val src = "$prefix/$child"
+            val dst = File(target, child)
+            val children = assets.list(src)
+            if (!children.isNullOrEmpty()) {
+                extractDir(assets, src, dst)
+            } else {
+                if (dst.exists() && dst.length() > 0) continue
+                dst.parentFile?.mkdirs()
+                assets.open(src).use { input ->
+                    FileOutputStream(dst).use { output -> input.copyTo(output) }
+                }
+                Log.i(TAG, "extracted $src -> ${dst.absolutePath} (${dst.length()} bytes)")
+            }
         }
     }
 
@@ -75,19 +105,45 @@ object EngineProcess {
             extractAssets(context, engineDataDir)
             val voicebanksDir = File(engineDataDir, "voicebanks")
             extractVoicebanks(context, voicebanksDir)
+            // Project storage: server-side (HTTP save/load). filesDir is
+            // app-writable — the server's default "projects" cwd is
+            // nativeLibraryDir (read-only on Android).
+            val projectsDir = File(context.filesDir, "projects")
+            projectsDir.mkdirs()
 
-            val cmd = listOf(
-                serverBin.absolutePath,
-                "--so", File(engineDir, "libworldline.so").absolutePath,
+            // R2 neural engine models (assets/engine/models/*.onnx): when
+            // both are present the server runs WORLDLINE-R2
+            // (SynthFeatures → mel → pc-nsf-hifigan) instead of the C++
+            // PhraseSynth path. extractAssets copies them read-only.
+            val melOnnx = File(engineDataDir, "models/mel.onnx")
+            val vocoderOnnx = File(engineDataDir, "models/pc_nsf_hifigan.onnx")
+
+            val cmd = buildList {
+                add(serverBin.absolutePath)
+                add("--so"); add(File(engineDir, "libworldline.so").absolutePath)
                 // Mixer FX plugin (libmixerfx.so, bundled with jniLibs):
                 // EQ/comp/softclip applied to the final mix. Params start
                 // at defaults (passthrough: clip disabled → 0 dB EQ).
-                "--mixer-so", File(engineDir, "libmixerfx.so").absolutePath,
-                "--mixer-params", """{"clip_enabled":0,"eq_enabled":1}""",
-                "--voicebanks", voicebanksDir.absolutePath,
-                "--port", PORT.toString(),
-                "--bind", "127.0.0.1",
-            )
+                add("--mixer-so"); add(File(engineDir, "libmixerfx.so").absolutePath)
+                add("--mixer-params"); add("""{"clip_enabled":0,"eq_enabled":1}""")
+                add("--voicebanks"); add(voicebanksDir.absolutePath)
+                add("--projects"); add(projectsDir.absolutePath)
+                // R2 neural engine: only when both ONNX models shipped —
+                // otherwise the server keeps the WORLDLINE-R path.
+                if (melOnnx.isFile() && vocoderOnnx.isFile()) {
+                    add("--mel-onnx"); add(melOnnx.absolutePath)
+                    add("--vocoder-onnx"); add(vocoderOnnx.absolutePath)
+                    Log.i(TAG, "R2 neural engine enabled (models present)")
+                }
+                // DiffSinger engine: the bundled bank enables "diffsinger".
+                val dsModel = File(engineDataDir, "diffsinger")
+                if (File(dsModel, "dsconfig.yaml").isFile()) {
+                    add("--ds-model"); add(dsModel.absolutePath)
+                    Log.i(TAG, "DiffSinger engine enabled (bank present)")
+                }
+                add("--port"); add(PORT.toString())
+                add("--bind"); add("127.0.0.1")
+            }
             Log.i(TAG, "starting engine: $cmd")
 
             try {
