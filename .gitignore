@@ -9,6 +9,9 @@ native/test-data/output/
 # === .NET / golden-renderer build ===
 test/golden/golden-renderer/bin/
 test/golden/golden-renderer/obj/
+# ref copy .NET build (parentheses need escaping but gitignore is glob)
+ref(openutau+openutau mobile)/core/**/bin/
+ref(openutau+openutau mobile)/core/**/obj/
 
 # === Large zip (voicebank archive) ===
 test/golden/teto-english-150401.zip
