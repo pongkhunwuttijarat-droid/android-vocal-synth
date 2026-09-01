@@ -40,14 +40,18 @@ Renderer ทั้งหมด + คุณภาพเสียง: classic mode
 
 ## Sprint 3.3 — DiffSinger
 
+**Plan:** `DIFFSINGER.md` (ในโฟลเดอร์นี้) — port จาก C# `ref-openutau-clean/.../DiffSinger/`
+
 | # | Task | Detail | Status |
 |---|---|---|---|
-| 3.3.1 | onnxruntime | vendored .so + ort crate (Android support) | ⬜ |
-| 3.3.2 | DsSinger | dsconfig.yaml + phonemes.txt + tokenizer | ⬜ |
-| 3.3.3 | Tensor feed | tokens/durations/f0 (+gender/velocity embeds) | ⬜ |
-| 3.3.4 | Variance/Pitch predictor | dsvariance + dspitch (optional) | ⬜ |
-| 3.3.5 | Renderer | acoustic + vocoder session run | ⬜ |
-| 3.3.6 | Test | ใช้ DiffSinger voicebank จริง (โหลด test bank) | ⬜ |
+| 3.3.1 | onnxruntime | vendored .so + ort crate (Android support) — ort มีอยู่แล้วจาก R2 | ✅ reuse |
+| 3.3.2 | DsSinger | dsconfig.yaml + phonemes.txt + tokenizer (**M1**) | ✅ — `crates/diffsinger` — 14 tests |
+| 3.3.3 | Tensor feed | tokens/durations/f0 (**M2**) — `tensors.rs` — round-half-even ตรง C# | ✅ |
+| 3.3.4 | Variance/Pitch predictor | dsvariance + dspitch (optional) (**M3**) | ⬜ |
+| 3.3.5 | Renderer | acoustic + vocoder session run (**M4**) — `model.rs` + mel base transform + shape checks | ✅ |
+| 3.3.6 | Engine + CLI (**M5**) | `DsEngine` + `--engine diffsinger --ds-model` + **fake-model E2E** (14.5s, regression test) | ✅ |
+| 3.3.7 | Golden (**M6**) | **C# golden harness ทำงานแล้ว** (bank + fake dsdur + nsf_hifigan — C# render 4040ms ✓); **token mapping EXACT** (dict-driven — case kept — 26 phonemes ตรง); **dsdur path ใน backend ของเรา** (OpenUtau architecture — linguistic+dur runs + stretch); **wav-level ยัง FAIL 15%**: pipeline split 2 phrases (gap) vs C# 1 phrase (cross-note consonant bridge) + timing — ต้อง adopt C# phonemizer timing | 🔨 timing gap |
+| 3.3.8 | Device + app dropdown (**M7**) | android server build ✓ + bank bundle ✓ + dropdown "DiffSinger" ✓ — **รอ device install + ฟังจริง** | 🔨 รอ device |
 
 **Done:** DiffSinger render ผ่าน (tensor → wav)
 

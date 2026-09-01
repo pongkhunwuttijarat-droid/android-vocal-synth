@@ -7,6 +7,21 @@
 
 ## ✅ เสร็จแล้ว (ล่าสุด)
 
+- [x] **Phonemizer wire เข้า app (labels เหนือ note = server จริง)** — editor เรียก `/phonemize` (debounce + load + track switch) → `phonemesByNote` → roll merge → painter **server ก่อน** (user: "server ก่อนซิ") → hint → letter-split; `/phonemize` route ตาม track phonemizer (Japanese→VCV かさ→か,a,さ,a) + **segment whole-word alias สำหรับ labels** ("la"→["l","A"] ไม่ลอก lyric — render path ยังใช้ direct alias ตาม golden); regression `phonemesForLabel` (top-level) 3 cases ✅
+- [x] **Unknown lyric ไม่ skip ทั้ง phrase (เพลงเหลือ 750ms)** — root cause: app ประกาศ `phonemizer: 'English'` → English CVVC path เจอคำไม่รู้จัก (g2p miss → "shi") → verbatim → oto ไม่มี alias → partial mapping → **skip ทั้ง phrase** → เพลง render แค่ phrase แรก 750ms ("เล่นไม่จบ"); แก้: app ใช้ **Universal** (letter-split + NearestPhoneme → shi→S/I) → 9 phrases 0 skipped — verified host + device (rendered raw 721668 = full 14.5s) ✅
+- [x] **Playhead duration จริง (เล่นไม่จบหลังสลับ engine)** — playhead clamp ใช้ `totalBeats×spb` (14.5s) แต่ wav แต่ละ engine ยาวต่างกัน → position ไปไม่ถึง 1.0 → playhead ค้าง/จบไม่ตรง; แก้: `onDurationChanged` → `playbackDuration` stream → `_playCtrl.duration` = duration จริง + `onPlayerComplete` push ตำแหน่งสุดท้าย ✅
+
+- [x] **Playback sync (playhead ตรงเสียงจริง)** — 2 bugs: (1) roll hardcode BPM 128 แต่ render ที่ 110 → playhead เร็ว 6% จบก่อน → ตัดท้าย ("not sync"); (2) audioplayers startup latency — playhead เริ่มก่อนเสียง. fix: `PianoRoll.secondsPerBeat` (editor ส่ง `60/_bpm`) + **position-driven playhead** (`player.onPositionChanged` → stream → `_playCtrl.value`) — immune ต่อ latency/tempo/drift — regression `playhead_sync_test` ✅
+- [x] **Dirty flag — ไม่เล่น audio เก่าหลัง edit** — เดิม `_playDemo` เล่น `_latestAudio` ทันทีที่ non-null (edit → debounce 500ms ยังไม่ทัน render → ได้ยินของเก่า "ใช้ old cache") — `_audioDirty` set บน edit/engine-switch, clear หลัง render → play ต้อง render ก่อนเสมอ; device log: edit → full re-render 5-6s → play cache 20-30ms ✅
+- [x] **Zoom red screen fix (pinch เกิน limit → จอแดง)** — pinch clamp 30-300 อยู่แล้ว แต่ **X/Y Sliders มี [min,max] แคบ (60-130 / 50-150)** — pinch ผลัก value ออกนอก range → `Slider` assert → red screen — **ลบ sliders ออก** (ย้ายเป็น pinch + ± buttons ตาม user) + `_applyZoom` hard clamp — regression pinch test ✅
+- [x] **Server chunk cache เปิดจริง** — `render_service.rs` ส่ง `cache = None` (dead code) → `RenderCache::new_in_dir(voicebank/cache, 64MB)` — device render 6.6s → 20-37ms ข้าม restart ✅
+- [x] **Pre-render ตอน load + engine switch rerender** — initState post-frame `_scheduleReRender` (play ไม่รอ render แรก); dropdown engine → clear audio + rerender (cache salt ต่อ engine — ถูกต้องที่ re-render เต็มครั้งแรก) ✅
+- [x] **Chunk pitch-curve rebase (scale demo ตอนลง pitch ผิด)** — chunking rebase position_ms แต่ pitches_cents/curves ยัง full-phrase → chunks หลังแรก sample pitch ผิด (ซ้ำ notes 0-7) → slice ตาม chunk origin — 4 chunks f0 ตรง note targets ทุกตัว ✅
+- [x] **v2↔r2 golden ปิด (auto_gain logistic sign)** — C# `Exp(5−10r)` vs Rust `Exp(10r−5)` กลับข้าง → s gain 1.86× → fix → **s 1.00 / l 1.03 / 3 0.94 / la 1.02** + mel powers identical กับ C# — golden report §3.7 ✅
+- [x] **v1↔r1 = official (AutoGain revert) + third_party กู้ครบ** — world @2bb515f + patches (apply จากใน repo), libgvps/libpyin/spline/libnpy; r1 match OpenUtau Mobile path (RMS 0.85-1.13); seam 2 chunks เนียน ✅
+- [x] **.so split v1/v2** — `WORLDLINE_FRAME_MS_DEFAULT` compile define: build-linux (11.61ms v2) + build-linux-v1 (10ms official) — รากฐาน engine select ✅
+- [x] **INTERNET permission (release)** — main manifest ไม่มี → Android 10+ bind EPERM ("Operation not permitted" บน 18080) — เพิ่ม + deploy ✅
+
 - [x] **Stop จริง (server-side cancel)** — `pipeline.rs` ตรวจ `cancel: Arc<AtomicBool>` ระหว่าง chunk loop → คืน `"render cancelled"`; `RenderService.cancel()` **set flag ตรงๆ** (ไม่ผ่าน channel — worker block ใน render รับ job ไม่ได้); `POST /cancel` — device verify: หยุดเสียงได้ ✅
 - [x] **Mixer post-synth (แยก rendering กับ playback)** — `POST /post-fx`: ส่ง raw wav + `x-mixer-params` header → server apply mixer chain → wav ใหม่ (**ไม่ synth ใหม่** — fader/EQ เปลี่ยนทันที); editor แยก `_rawAudio` (synth ล้วน) + `_mixerParams` + `_applyMixerFx()`; **dB→linear fix** (`10^(dB/20)` — เดิม `dB/20` ทำให้ 0dB=0 เงียบ/level ไม่ต่าง)
 - [x] **Stop playback ("graphic หยุดแต่เสียงไม่")** — `PianoRoll.onPlayStopped` hook (toggle-off + playhead-complete → editor `_stopPlayback()` หยุด AudioPlayer); menu `⋯` แสดง `⏹ Stop` ตอน `_renderActive || _isPlaying` (เดิมเฉพาะตอน render ซึ่งเร็วมาก); `_isPlaying` เคลียร์ด้วย `onPlayerComplete` (audioplayers `play()` คืนทันทีที่เริ่ม ไม่ใช่จบ)
@@ -34,13 +49,15 @@
 | # | งาน | ขนาด |
 |---|---|---|
 | 1 | **Per-track mixer FX** — design ตัดสินใจแล้ว (user: "แยก effect ต่อ track/ช่วงเวลาได้ไหม") — ตอนนี้ mixer ตัวเดียวบน final mix; ต้อง per-track `MixerFx` + params จาก ustx + time-based FX (pos_ms ว่าง) | กลาง |
-| 2 | **Phonemizer multi-layer (IPA)** — **plan เขียนแล้ว: `docs/.hermes/plans/2026-08-04_phonemizer-ipa.md`** — detect → IPA → voicebank phonemes + manifest + CapabilityManager + NearestPhoneme | ใหญ่ |
+| 2 | **Phonemizer multi-layer (IPA)** — **plan: `.hermes/plans/2026-08-04_phonemizer-ipa.md`** — **Tasks 1-7 เสร็จ 2026-08-06** (verified 9/9): L3 PhonemeManifest (derive จาก oto จริง), EngineCapabilities trait (domain — worldline implement, phonemizer ไม่ depend worldline), L1 IpaDictionary (ARPABET↔IPA) + detect ภาษา, L2 IpaAdapter + NearestPhoneme (a→A, r→r3, R→None) + CapabilityManager, UniversalPhonemizer (hint path ไม่ regression), pipeline PhonemizerKind::Universal (default ใหม่) — E2E render_real 4/4 + workspace 427 passed | ~~ใหญ่~~ **เสร็จ** |
 
 ### ตรวจ/รอ user
 | # | งาน | สถานะ |
 |---|---|---|
-| 3 | Golden re-run เต็ม (dotnet กลับมา — verify regression หลัง v2 default) | พร้อมทำ |
+| 3 | ~~Golden re-run เต็ม~~ — **เสร็จ 2026-08-08**: v2↔r2 ปิด (0.94-1.03 + mel identical), v1↔r1 = official path — golden report §3.7/§4 | done |
 | 4 | ~~Device deploy ตรวจ stop/mixer/phoneme~~ — **ผ่านแล้ว 2026-08-05**: stop ระหว่างเล่น ✅, mixer post-fx (fader เปลี่ยนเสียง) ✅, phoneme labels ✅ | done |
+| 5 | ~~Device deploy ตรวจ play UX~~ — **ผ่าน 2026-08-08**: pre-render + playhead sync + edit→rerender + pinch zoom (no red) — "ครบอยู่นะ" | done |
+| 6 | **Engine select per-phrase UI (ระหว่างท่อน)** — server รองรับแล้ว (`RenderRequest.engines[]` + render_service resolve per phrase); app มี dropdown engine เดียว (r1/r2/classic) — ยังไม่มี UI เลือก engine ต่อท่อน | ค้าง |
 
 ### MS3 — Renderers
 | # | งาน | สถานะ |

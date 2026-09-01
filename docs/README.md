@@ -22,6 +22,7 @@
 - [Rendering Systems](architecture/rendering-systems.md) — voicebank/model/experimental
 - [Runtime Engine Plugins](architecture/runtime-engine-plugins.md) — feasibility ราย engine
 - [Decision: Native .so](architecture/decision-native-so-engines.md) — Rust core + C++ kernel
+- [Model Training (MoE)](architecture/model-training-moe.md) — universal-phone training + 2-way conversion (Proposal)
 
 ## Reference
 

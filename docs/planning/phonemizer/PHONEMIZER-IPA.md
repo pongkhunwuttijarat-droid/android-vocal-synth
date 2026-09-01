@@ -6,7 +6,34 @@
 
 **Architecture:** 3 layers — (L1) G2p/detect ให้ IPA tokens กลาง, (L2) IPA→bank adapter ใช้ manifest, (L3) voicebank manifest (phoneme set + type + pair structure) derive จาก oto.ini — เลียนแบบ OpenUtau (G2p → phonemizer ต่อ singer)
 
-**Tech Stack:** Rust (crates/phonemizer), voicebank crate (oto), domain (UNote/UPhoneme)
+**Tech Stack:**
+
+**Status: COMPLETED (2026-08-06) — Tasks 1-7 ทั้งหมดเสร็จ + verified (9/9)**
+
+- **L3** `PhonemeManifest` (voicebank::manifest) derive จาก oto จริง —
+  phoneme_set single-token เท่านั้น (ไม่มี invented a/r), types ใช้ known
+  vowel set (oto consonant field unreliable สำหรับ CV bank), pairs จริง
+  ("- A", "A hA")
+- **Trait** `EngineCapabilities` ใน domain — worldline implement (worldline
+  ประกาศ capability list ตาม user กำชับ); phonemizer/adapter ไม่ depend
+  worldline (verified: zero reference)
+- **L1** `IpaDictionary` (ARPABET↔IPA bidirectional — reverse map bridge สู่
+  alias space) + `detect_language` (kana→JA, latin→EN)
+- **L2** `IpaAdapter` (IPA→alias ผ่าน manifest) + `NearestPhoneme` (feature
+  vectors + threshold 1.0 — a→A, r→r3, R→None) + `CapabilityManager`
+  (&dyn EngineCapabilities — fake engine ใน test)
+- **Task 5** `UniversalPhonemizer` — hint path byte-identical กับ EnglishCvvc;
+  unhinted: word dict (lilt_demo_g2p) → letter-split → IPA → adapter;
+  kana → verbatim (VCV adapter งานถัดไป); qq → verbatim
+- **Task 6** `Engine::capabilities() -> &dyn EngineCapabilities` (ไม่ใช่
+  concrete) + `PhonemizerKind::Universal` (default ใหม่; English/Japanese
+  คง legacy path)
+- **Task 7** E2E: render_real 4/4 (real .so), api_real 4/4, workspace
+  **427 passed 0 FAILED**, build 0 errors
+- Pitfalls: `?` ใน nearest loop return ทันทีเมื่อ candidate แรก feature
+  None → ต้อง continue; IPA↔ARPABET ต้อง reverse map (dict 2 ทิศ)
+
+ Rust (crates/phonemizer), voicebank crate (oto), domain (UNote/UPhoneme)
 
 ---
 
