@@ -24,27 +24,61 @@ pub fn load_moe<B: Backend>(
     depth: usize,
     device: &B::Device,
 ) -> Result<LoadedMoe<B>, String> {
-    use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
-    use burn::module::Module;
-    let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
-    // General = big (hidden/depth from the caller); per-group experts =
-    // always the small residual size — loading the big dummy against a
-    // small expert record would shape-mismatch (hiddens len).
-    let load = |path: &str, h: usize, d: usize| -> Result<ContextAcoustic<B>, String> {
-        let dummy = ContextAcoustic::<B>::new(set.vocab.len() + 1, h, d, device);
-        dummy
-            .load_file(path, &recorder, device)
-            .map_err(|e| format!("load {path}: {e}"))
-    };
-    let general = load(&format!("{prefix}-general"), hidden, depth)?;
+    let general = load_general::<B>(prefix, hidden, depth, device)?;
     let mut experts = Vec::new();
     for g in 0..crate::phoneme_groups::N_GROUPS {
         let path = format!("{prefix}-g{g}");
         experts.push(
-            load(&path, crate::baseline::EXPERT_HIDDEN, crate::baseline::EXPERT_DEPTH).ok(),
+            load_expert::<B>(&path, device).ok(),
         ); // missing expert → None
     }
     Ok(LoadedMoe { general, experts })
+}
+// Prevent dead-code warning when only the set-free path is used.
+#[allow(dead_code)]
+fn _moe_uses_load_general(_: &TrainSet) {}
+
+/// Load the general expert with a caller-specified size. `hidden`/`depth`
+/// come from the training run (the big general may be `--hidden 7680
+/// --depth 2`); the `.mpk` record carries the shapes, so a mismatch here
+/// fails at load.
+pub fn load_general<B: Backend>(
+    prefix: &str,
+    hidden: usize,
+    depth: usize,
+    device: &B::Device,
+) -> Result<ContextAcoustic<B>, String> {
+    use burn::module::Module;
+    use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
+    let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
+    // `ContextAcoustic::new` ignores `_vocab_size` (always EMBED_SLOTS) —
+    // a set-free load needs only the shapes (hidden/depth) to build the
+    // dummy. This is the POC engine path: the .mpk is loaded against a
+    // dummy whose size matches the TRAIN run, not any live train-set.
+    let dummy = ContextAcoustic::<B>::new(0, hidden, depth, device);
+    let path = format!("{prefix}-general");
+    dummy
+        .load_file(&path, &recorder, device)
+        .map_err(|e| format!("load {path}: {e}"))
+}
+
+/// Load one group expert (small, always EXPERT_HIDDEN/EXPERT_DEPTH).
+pub fn load_expert<B: Backend>(
+    path: &str,
+    device: &B::Device,
+) -> Result<ContextAcoustic<B>, String> {
+    use burn::module::Module;
+    use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
+    let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
+    let dummy = ContextAcoustic::<B>::new(
+        0,
+        crate::baseline::EXPERT_HIDDEN,
+        crate::baseline::EXPERT_DEPTH,
+        device,
+    );
+    dummy
+        .load_file(path, &recorder, device)
+        .map_err(|e| format!("load {path}: {e}"))
 }
 
 /// Predict the mel for one phrase (all its frames): general(x) +

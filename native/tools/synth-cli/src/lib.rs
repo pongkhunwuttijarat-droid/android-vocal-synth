@@ -10,4 +10,5 @@
 
 pub mod chunking;
 pub mod engine;
+pub mod moe;
 pub mod pipeline;

@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use synth_cli::engine::{DsEngine, WorldlineClassicEngine, WorldlineR2Engine};
+use synth_cli::moe::MoeEngine;
 use synth_cli::pipeline::{self, PhonemizerKind, SAMPLE_RATE};
 use wavwriter::{write_wav_16, write_wav_file};
 
@@ -82,6 +83,13 @@ struct RenderArgs {
     /// --engine diffsinger).
     #[arg(long)]
     ds_model: Option<PathBuf>,
+    /// MoE engine: checkpoint prefix (the general/experts .mpk prefix +
+    /// `{prefix}-phonemes.txt` sidecar) — only with --engine moe.
+    #[arg(long)]
+    moe_prefix: Option<PathBuf>,
+    /// MoE engine: pc-nsf-hifigan onnx (only with --engine moe).
+    #[arg(long)]
+    moe_vocoder: Option<PathBuf>,
     /// Print per-phrase progress.
     #[arg(long)]
     verbose: bool,
@@ -94,6 +102,8 @@ enum EngineArg {
     Classic,
     #[value(name = "diffsinger")]
     DiffSinger,
+    #[value(name = "moe")]
+    Moe,
 }
 
 #[derive(Args)]
@@ -168,6 +178,24 @@ fn cmd_render(args: RenderArgs) -> Result<(), String> {
             Box::new(
                 DsEngine::open(model, args.verbose)
                     .map_err(|e| format!("open diffsinger engine: {e}"))?,
+            )
+        }
+        EngineArg::Moe => {
+            let prefix = args
+                .moe_prefix
+                .ok_or("--engine moe requires --moe-prefix <checkpoint-prefix>")?;
+            let vocoder = args
+                .moe_vocoder
+                .ok_or("--engine moe requires --moe-vocoder <pc-nsf-hifigan.onnx>")?;
+            Box::new(
+                MoeEngine::open(
+                    prefix,
+                    vocoder,
+                    moe_train::baseline::DEFAULT_HIDDEN,
+                    moe_train::baseline::DEFAULT_DEPTH,
+                    args.verbose,
+                )
+                .map_err(|e| format!("open moe engine: {e}"))?,
             )
         }
     };

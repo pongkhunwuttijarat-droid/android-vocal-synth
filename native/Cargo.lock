@@ -6391,11 +6391,13 @@ dependencies = [
 name = "synth-cli"
 version = "0.1.0"
 dependencies = [
+ "burn",
  "clap",
  "diffsinger",
  "domain",
  "feed",
  "mixer-fx",
+ "moe-train",
  "ort",
  "phonemizer",
  "phrase",
@@ -6416,6 +6418,7 @@ dependencies = [
  "clap",
  "domain",
  "mixer-fx",
+ "moe-train",
  "phonemizer",
  "runtime",
  "serde",

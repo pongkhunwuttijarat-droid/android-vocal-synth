@@ -43,6 +43,14 @@ struct Cli {
     /// (switches /render to the DiffSinger engine).
     #[arg(long)]
     ds_model: Option<PathBuf>,
+    /// MoE student engine: checkpoint prefix (the general/experts .mpk
+    /// prefix + `{prefix}-phonemes.txt` sidecar). Enables the "moe" engine.
+    #[arg(long)]
+    moe_prefix: Option<PathBuf>,
+    /// MoE engine: pc-nsf-hifigan vocoder path (the same onnx the r2
+    /// chain uses, but the checkpoint prefix decides the model).
+    #[arg(long)]
+    moe_vocoder: Option<PathBuf>,
     /// Path to libmixerfx.so (optional FX chain on the final mix).
     #[arg(long)]
     mixer_so: Option<PathBuf>,
@@ -85,6 +93,8 @@ async fn run(cli: Cli) -> Result<(), String> {
                 cli.mel_onnx.clone(),
                 cli.vocoder_onnx.clone(),
                 cli.ds_model.clone(),
+                cli.moe_prefix.clone(),
+                cli.moe_vocoder.clone(),
             )
             .map_err(|e| format!("open {}: {e}", path.display()))?;
             println!("loaded renderer from {}", path.display());

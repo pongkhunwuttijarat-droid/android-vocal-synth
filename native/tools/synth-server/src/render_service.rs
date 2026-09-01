@@ -86,6 +86,8 @@ impl RenderService {
         mel_onnx: Option<PathBuf>,
         vocoder_onnx: Option<PathBuf>,
         ds_model: Option<PathBuf>,
+        moe_prefix: Option<PathBuf>,
+        moe_vocoder: Option<PathBuf>,
     ) -> Result<Self, String> {
         let (tx, rx) = mpsc::channel::<RenderJob>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
@@ -101,6 +103,8 @@ impl RenderService {
                     mel_onnx,
                     vocoder_onnx,
                     ds_model,
+                    moe_prefix,
+                    moe_vocoder,
                     rx,
                     ready_tx,
                     cancel_for_worker,
@@ -210,6 +214,8 @@ fn run_worker(
     mel_onnx: Option<PathBuf>,
     vocoder_onnx: Option<PathBuf>,
     ds_model: Option<PathBuf>,
+    moe_prefix: Option<PathBuf>,
+    moe_vocoder: Option<PathBuf>,
     rx: mpsc::Receiver<RenderJob>,
     ready: mpsc::Sender<Result<(), String>>,
     cancel: Arc<AtomicBool>,
@@ -274,6 +280,28 @@ fn run_worker(
         }
     }
 
+    // moe: MoE student acoustic (only when --moe-prefix given). The
+    // vocoder is the same pc-nsf-hifigan onnx the r2 chain uses; the
+    // checkpoint prefix decides the model. hidden/depth are the
+    // general-expert sizes from the train run (defaults from moe-train).
+    if let (Some(prefix), Some(vocoder)) = (moe_prefix, moe_vocoder) {
+        match synth_cli::moe::MoeEngine::open(
+            &prefix,
+            &vocoder,
+            moe_train::baseline::DEFAULT_HIDDEN,
+            moe_train::baseline::DEFAULT_DEPTH,
+            false,
+        ) {
+            Ok(e) => {
+                engines.insert("moe".to_string(), Box::new(e));
+            }
+            Err(e) => {
+                let _ = ready.send(Err(format!("open moe engine: {e}")));
+                return;
+            }
+        }
+    }
+
     let _ = ready.send(Ok(()));
 
     while let Ok(job) = rx.recv() {
@@ -316,6 +344,7 @@ fn run_worker(
                         "diffsinger" if engines.contains_key("diffsinger") => {
                             engines.get("diffsinger")
                         }
+                        "moe" if engines.contains_key("moe") => engines.get("moe"),
                         _ => engines.get("r1"),
                     }
                     .map(|b| b.as_ref() as &dyn pipeline::PhraseRenderer)

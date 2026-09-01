@@ -566,6 +566,13 @@ fn run_moe_cli(args: &[String]) -> i32 {
             for (g, before, after) in &report {
                 println!("  group {g}: residual {before:.4} -> {after:.4}");
             }
+            // Vocab sidecar: the render-time MoeEngine needs the phoneme
+            // id mapping the general/experts were trained on (the .mpk
+            // carries only weights, no vocab). Write the id-sorted vocab
+            // next to the checkpoints so the engine can build id tensors.
+            if let Err(e) = write_vocab_sidecar(prefix, &set) {
+                eprintln!("WARN: vocab sidecar: {e}");
+            }
             0
         }
         Err(e) => {
@@ -573,6 +580,19 @@ fn run_moe_cli(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// Write `{prefix}-phonemes.txt` — one phoneme per line (index order =
+/// `TrainSet.vocab`), so a render-time engine can map a phoneme symbol
+/// to the embedding id the checkpoints were trained with.
+fn write_vocab_sidecar(prefix: &str, set: &moe_train::data::TrainSet) -> Result<(), String> {
+    let path = format!("{prefix}-phonemes.txt");
+    let mut body = String::new();
+    for p in &set.vocab {
+        body.push_str(p);
+        body.push('\n');
+    }
+    std::fs::write(&path, body).map_err(|e| format!("write {path}: {e}"))
 }
 
 fn run(

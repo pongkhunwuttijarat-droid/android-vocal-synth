@@ -17,7 +17,7 @@ use crate::phoneme_groups::N_GROUPS;
 
 /// Context window (phonemes): current ±2.
 pub const WINDOW: usize = 5;
-pub(crate) const HALF: usize = 2;
+pub const HALF: usize = 2;
 
 /// Fixed embedding table size: phoneme vocab grows as banks are added,
 /// but checkpoints must stay loadable (resume/incremental training) —

@@ -16,6 +16,8 @@ worldline-plugin = { path = "../../crates/worldline-plugin", features = ["r2"] }
 ort = { version = "2.0.0-rc.13" }
 rayon = "1"
 mixer-fx = { path = "../../crates/mixer-fx" }
+moe-train = { path = "../../crates/moe-train" }
+burn = { version = "0.21", features = ["ndarray", "wgpu", "std", "train"] }
 wavwriter = { path = "../../crates/wavwriter" }
 storage = { path = "../../crates/storage" }
 serde_yaml = "0.9"
