@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>moe-train — trainer GUI</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; background: #14151a; color: #e8e8ef; margin: 0; padding: 24px; }
+  h1 { font-size: 18px; margin: 0 0 16px; }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .card { background: #1e2028; border: 1px solid #2c2f3a; border-radius: 10px; padding: 12px 16px; min-width: 130px; }
+  .card .label { font-size: 11px; color: #8b90a0; text-transform: uppercase; letter-spacing: .06em; }
+  .card .value { font-size: 20px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .card .value.warn { color: #f0b34e; } .card .value.bad { color: #e06c75; } .card .value.ok { color: #61c47a; }
+  canvas { background: #1e2028; border: 1px solid #2c2f3a; border-radius: 10px; width: 100%; max-width: 860px; height: 300px; }
+  form { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin: 16px 0; }
+  label { font-size: 11px; color: #8b90a0; display: flex; flex-direction: column; gap: 4px; }
+  input, select { background: #23252f; color: #e8e8ef; border: 1px solid #3a3d4b; border-radius: 6px; padding: 6px 8px; font-size: 13px; }
+  button { background: #4f6ef7; color: white; border: 0; border-radius: 8px; padding: 8px 18px; font-size: 13px; cursor: pointer; }
+  button.stop { background: #c05a63; }
+  button:disabled { opacity: .45; cursor: default; }
+  #moe table { border-collapse: collapse; margin: 8px 0 16px; font-size: 13px; }
+  #moe th, #moe td { border: 1px solid #3a3d4b; padding: 5px 12px; text-align: left; font-variant-numeric: tabular-nums; }
+  #moe th { background: #23252f; color: #8b90a0; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  #log { font-family: ui-monospace, monospace; font-size: 12px; color: #9aa0b2; white-space: pre-wrap; max-height: 140px; overflow: auto; }
+</style>
+</head>
+<body>
+<h1>🎤 moe-train — burn trainer (R2 teacher distillation)</h1>
+
+<div class="cards">
+  <div class="card"><div class="label">state</div><div class="value" id="st-state">—</div></div>
+  <div class="card"><div class="label">mode</div><div class="value" id="st-mode">—</div></div>
+  <div class="card"><div class="label">backend</div><div class="value" id="st-backend">—</div></div>
+  <div class="card"><div class="label">epoch</div><div class="value" id="st-epoch">—</div></div>
+  <div class="card"><div class="label">train loss</div><div class="value" id="st-train">—</div></div>
+  <div class="card"><div class="label">val loss</div><div class="value" id="st-val">—</div></div>
+  <div class="card"><div class="label">elapsed</div><div class="value" id="st-time">—</div></div>
+</div>
+
+<div class="cards" id="perf-cards">
+  <div class="card"><div class="label">gpu busy</div><div class="value" id="pf-gpu">—</div></div>
+  <div class="card"><div class="label">gpu mem</div><div class="value" id="pf-gpumem">—</div></div>
+  <div class="card"><div class="label">gpu temp</div><div class="value" id="pf-temp">—</div></div>
+  <div class="card"><div class="label">cpu</div><div class="value" id="pf-cpu">—</div></div>
+  <div class="card"><div class="label">ram</div><div class="value" id="pf-ram">—</div></div>
+</div>
+
+<div id="procs"></div>
+
+<canvas id="chart"></canvas>
+
+<form id="start-form">
+  <label>mode
+    <select name="mode"><option>moe</option><option>general</option></select>
+  </label>
+  <label>backend
+    <select name="backend"><option>wgpu</option><option>wgpu-f16</option><option>ndarray</option></select>
+  </label>
+  <label>epochs<input name="epochs" type="number" value="15" min="1" step="1"></label>
+  <label>expert epochs<input name="expert_epochs" type="number" value="10" min="1" step="1"></label>
+  <label>batch<input name="batch" type="number" value="512" min="16" step="16"></label>
+  <label>lr<input name="lr" type="number" value="0.001" step="0.0001"></label>
+  <label>eval frac<input name="eval_frac" type="number" value="0.1" min="0" max="0.5" step="0.05"></label>
+  <label style="flex-direction:row;align-items:center">resume<input name="resume" type="checkbox" style="accent-color:#4f6ef7"></label>
+  <button id="btn-start" type="submit">▶ train</button>
+  <button id="btn-stop" class="stop" type="button" disabled>■ stop</button>
+</form>
+
+<div id="moe"></div>
+
+<form id="render-form">
+  <label>phrase
+    <select id="phrase-select" name="phrase_idx" size="6" style="min-width:280px"></select>
+  </label>
+  <label>gain<input name="gain" type="number" value="1.3" step="0.1"></label>
+  <button id="btn-render" type="submit">▶ render</button>
+</form>
+<audio id="player" controls style="width:100%; max-width:860px; display:none"></audio>
+
+<div id="log" style="max-height:180px"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const cv = $('chart'), ctx = cv.getContext('2d');
+let lastHistory = [];
+
+function draw(hist) {
+  const dpr = devicePixelRatio || 1;
+  cv.width = cv.clientWidth * dpr; cv.height = cv.clientHeight * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const W = cv.clientWidth, H = cv.clientHeight;
+  ctx.clearRect(0, 0, W, H);
+  if (!hist.length) return;
+  // log-scale-ish y from min..max of val
+  const all = hist.flat();
+  let lo = Math.min(...all), hi = Math.max(...all);
+  if (hi - lo < 1e-6) hi = lo + 1;
+  const x = i => 8 + i * (W - 16) / Math.max(1, hist.length - 1);
+  const y = v => H - 10 - (v - lo) / (hi - lo) * (H - 20);
+  const line = (idx, color) => {
+    ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 1.6;
+    hist.forEach((p, i) => i ? ctx.lineTo(x(i), y(p[idx])) : ctx.moveTo(x(i), y(p[idx])));
+    ctx.stroke();
+  };
+  line(0, '#4f6ef7'); line(1, '#f0b34e');
+  ctx.fillStyle = '#8b90a0'; ctx.font = '11px system-ui';
+  ctx.fillText('train', 8, y(hist[0][0]) - 4); ctx.fillText('val', 8, y(hist[0][1]) - 4);
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    $('st-state').textContent = s.state;
+    $('st-state').className = 'value ' + (s.state === 'done' ? 'ok' : s.state === 'error' ? 'bad' : '');
+    $('st-mode').textContent = s.mode;
+    $('st-backend').textContent = s.backend;
+    $('st-epoch').textContent = `${s.epoch}/${s.epoch_total ?? s.epochs_total}`;
+    $('st-train').textContent = isFinite(s.train_loss) ? s.train_loss.toFixed(4) : '—';
+    $('st-val').textContent = isFinite(s.val_loss) ? s.val_loss.toFixed(4) : '—';
+    $('st-time').textContent = s.elapsed_s ? s.elapsed_s.toFixed(1) + 's' : '—';
+    const busy = s.state === 'running' || s.state === 'loading';
+    $('btn-start').disabled = busy;
+    $('btn-stop').disabled = !busy;
+    if (s.error) $('log').textContent = 'ERROR: ' + s.error;
+    const names = ['vowel', 'plosive', 'fricative', 'nasal', 'other'];
+    if (s.moe_report && s.moe_report.length) {
+      const rows = s.moe_report.map(r =>
+        `<tr><td>${names[r[0]] ?? r[0]}</td><td>${r[1].toFixed(4)}</td><td>${r[2].toFixed(4)}</td><td>${(100 * (1 - r[2] / r[1])).toFixed(1)}%</td></tr>`).join('');
+      $('moe').innerHTML = `<h3>MoE group experts (residual mel MSE)</h3><table style="border-collapse:collapse"><tr><th>group</th><th>before</th><th>after</th><th>gain</th></tr>${rows}</table>`;
+    }
+    if (JSON.stringify(s.history) !== JSON.stringify(lastHistory)) {
+      lastHistory = s.history;
+      draw(s.history);
+      $('log').textContent = 'epochs: ' + s.history.map((p, i) => `#${i} t=${p[0].toFixed(3)} v=${p[1].toFixed(3)}`).join('  ');
+    }
+  } catch (e) {
+    $('log').textContent = 'poll error: ' + e;
+  }
+}
+setInterval(poll, 800); poll();
+
+// Performance monitor (GPU/CPU/RAM/temp + per-process for our binaries).
+let lastProcJson = '';
+async function pollPerf() {
+  try {
+    const r = await fetch('/api/perf');
+    const p = await r.json();
+    $('pf-gpu').textContent = p.gpu_percent ? p.gpu_percent.toFixed(0) + '%' : '—';
+    $('pf-gpumem').textContent = p.gpu_mem_total_gb
+      ? `${p.gpu_mem_used_gb.toFixed(1)}/${p.gpu_mem_total_gb.toFixed(1)} GB (${p.gpu_mem_percent.toFixed(0)}%)` : '—';
+    $('pf-temp').textContent = p.gpu_temp_c ? p.gpu_temp_c.toFixed(0) + '°C' : '—';
+    $('pf-cpu').textContent = p.cpu_percent ? p.cpu_percent.toFixed(0) + '%' : '—';
+    $('pf-ram').textContent = `${p.mem_used_gb.toFixed(1)}/${p.mem_total_gb.toFixed(1)} GB`;
+    const pj = JSON.stringify(p.processes);
+    if (pj !== lastProcJson) {
+      lastProcJson = pj;
+      const rows = (p.processes || []).map(pr =>
+        `<tr><td>${pr.pid}</td><td>${pr.name}</td><td>${pr.cpu_percent.toFixed(0)}%</td><td>${pr.rss_mb.toFixed(0)} MB</td><td>${pr.threads} th</td><td title="${pr.cmd}">${(pr.cmd || '').slice(0, 40)}</td></tr>`).join('');
+      $('procs').innerHTML = `<h3>AI processes</h3><table style="border-collapse:collapse"><tr><th>pid</th><th>name</th><th>cpu</th><th>rss</th><th>threads</th><th>cmd</th></tr>${rows}</table>`;
+    }
+  } catch (e) { /* server starting */ }
+}
+setInterval(pollPerf, 1500); pollPerf();
+
+// Log tail (newest last; keep scrolled to bottom).
+let lastLog = '';
+async function pollLog() {
+  try {
+    const r = await fetch('/api/logs');
+    const lines = await r.json();
+    const txt = lines.join('\n');
+    if (txt !== lastLog) {
+      lastLog = txt;
+      $('log').textContent = txt;
+      $('log').scrollTop = $('log').scrollHeight;
+    }
+  } catch (e) { /* server starting */ }
+}
+setInterval(pollLog, 1500); pollLog();
+
+$('start-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const body = Object.fromEntries(f.entries());
+  body.epochs = +body.epochs; body.expert_epochs = +body.expert_epochs;
+  body.batch = +body.batch; body.lr = +body.lr; body.eval_frac = +body.eval_frac;
+  body.resume = !!body.resume;
+  const r = await fetch('/api/start', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  });
+  if (!r.ok) $('log').textContent = 'start failed: ' + (await r.text());
+});
+$('btn-stop').addEventListener('click', () => fetch('/api/stop', { method: 'POST' }));
+
+// Phrase lookup table → dropdown (select a phrase by its aliases).
+(async () => {
+  try {
+    const r = await fetch('/api/phrases');
+    const list = await r.json();
+    const sel = $('phrase-select');
+    sel.innerHTML = list.map(p =>
+      `<option value="${p.idx}">#${p.idx}  ${p.aliases.join(' ')}  (t${p.tone} ${p.duration_ms}ms, ${p.n_phonemes} ph)</option>`
+    ).join('');
+  } catch (e) {
+    $('log').textContent = 'phrase table error: ' + e;
+  }
+})();
+
+$('render-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const body = { phrase_idx: +f.get('phrase_idx'), gain: +f.get('gain') };
+  const r = await fetch('/api/render', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  });
+  if (!r.ok) { $('log').textContent = 'render failed: ' + (await r.text()); return; }
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const p = $('player');
+  p.src = url; p.style.display = 'block'; p.play();
+  $('log').textContent = `rendered phrase ${body.phrase_idx} (gain ${body.gain})`;
+});
+</script>
+</body>
+</html>

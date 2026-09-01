@@ -1,0 +1,21 @@
+[package]
+name = "moe-train"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+burn = { version = "0.21", features = ["ndarray", "wgpu", "std", "train"] }
+burn-ndarray = { version = "0.21", features = ["std"] }
+ort = { version = "2.0.0-rc.13", features = ["ndarray"] }
+ndarray = "0.17"
+wavwriter = { path = "../../crates/wavwriter" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lib]
+name = "moe_train"
+path = "src/lib.rs"
+
+[[bin]]
+name = "moe-train"
+path = "src/main.rs"

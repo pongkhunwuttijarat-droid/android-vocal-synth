@@ -1,0 +1,20 @@
+[package]
+name = "trainer-gui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+moe-train = { path = "../../crates/moe-train" }
+burn = { version = "0.21", features = ["ndarray", "wgpu", "std", "train"] }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lib]
+name = "trainer_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "trainer-gui"
+path = "src/main.rs"

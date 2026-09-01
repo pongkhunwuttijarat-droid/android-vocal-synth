@@ -27,3 +27,4 @@ app/android/app/build/
 
 # === Hermes ===
 .hermes/
+native/crates/*/target/

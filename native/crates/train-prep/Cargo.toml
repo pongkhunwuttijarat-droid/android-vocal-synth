@@ -1,0 +1,21 @@
+[package]
+name = "train-prep"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+synth-cli = { path = "../../tools/synth-cli", features = ["r2"] }
+worldline-plugin = { path = "../../crates/worldline-plugin" }
+voicebank = { path = "../../crates/voicebank" }
+domain = { path = "../../crates/domain" }
+wavwriter = { path = "../../crates/wavwriter" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lib]
+name = "train_prep"
+path = "src/lib.rs"
+
+[[bin]]
+name = "train-prep"
+path = "src/main.rs"
