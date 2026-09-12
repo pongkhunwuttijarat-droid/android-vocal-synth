@@ -61,11 +61,11 @@ void main() {
     final note = roll.tracks[roll.selectedTrackIndex.clamp(0, roll.tracks.length - 1)]
         .notes
         .first; // 'sa' beat 0.0 (G4 — pitch 9)
-    // The roll has two Scrollables (vertical content 2816px + horizontal);
-    // pick the vertical one (maxScrollExtent > 1000).
+    // The roll has two Scrollables (vertical content 2816px + horizontal
+    // for the long Bad Apple demo — pick the VERTICAL one).
     final vScroll = tester
         .stateList<ScrollableState>(find.byType(Scrollable))
-        .firstWhere((s) => s.position.maxScrollExtent > 1000);
+        .firstWhere((s) => s.position.axis == Axis.vertical);
     // Roll pitches are relative to C4 (topPitch 48 = C8, note.pitch 0 =
     // C4): the note row sits at (48 - pitch) rows from the top.
     final rowCenterY = (48 - note.pitch) * 32.0 + 16.0;
@@ -104,7 +104,7 @@ void main() {
     final rollTopLeft = tester.getTopLeft(rollFinder);
     final vScroll = tester
         .stateList<ScrollableState>(find.byType(Scrollable))
-        .firstWhere((s) => s.position.maxScrollExtent > 1000);
+        .firstWhere((s) => s.position.axis == Axis.vertical);
     final note = tester
         .widget<PianoRoll>(rollFinder)
         .tracks[tester
