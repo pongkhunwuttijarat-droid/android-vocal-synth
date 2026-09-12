@@ -1,0 +1,15 @@
+# Cargo config สำหรับ workspace นี้
+# (cargo จะอ่านไฟล์นี้เมื่อสั่งงานจาก native/ หรือโฟลเดอร์ย่อยข้างใน)
+#
+# เป้าหมาย: ไม่ให้ build cache บานปลาย — ดู docs/DISK-HYGIENE.md
+#
+# หมายเหตุ: ขนาด target ถูกคุมด้วย [profile.*] ใน native/Cargo.toml
+# ไม่ใช่ที่ไฟล์นี้ (profiles ต้องอยู่ใน workspace manifest)
+
+[alias]
+# cargo size — ดูว่า target กินพื้นที่เท่าไร
+size = "!du -sh target target/debug target/debug/deps 2>/dev/null | sort -h"
+
+# cargo clean-cache — ล้าง build cache (ค่า default = dry-run อย่างเดียว)
+# เติม --apply เพื่อลบจริง:  cargo clean-cache -- --apply
+clean-cache = "!../scripts/clean-cache.sh --rust --flutter --dotnet"

@@ -1,0 +1,11 @@
+[Unit]
+Description=ตรวจและล้าง build cache ของ android-voice-synth สัปดาห์ละครั้ง
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=1h
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=android-voice-synth: clean build cache when it grows past threshold
+Documentation=file:///run/media/seal/shared/project/android-voice-synth/docs/DISK-HYGIENE.md
+# ถ้าโปรเจกต์/ไดรฟ์ไม่พร้อม ให้ข้าม (ไม่ error)
+ConditionPathExists=/run/media/seal/shared/project/android-voice-synth/scripts/clean-cache.sh
+
+[Service]
+Type=oneshot
+WorkingDirectory=/run/media/seal/shared/project/android-voice-synth
+ExecStart=/run/media/seal/shared/project/android-voice-synth/scripts/clean-cache.sh --auto --threshold 20G --apply
+Nice=10
+IOSchedulingClass=idle
