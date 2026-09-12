@@ -1,0 +1,15 @@
+[package]
+name = "world-oracle"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+voicebank = { path = "../../crates/voicebank" }
+worldline-sys = { path = "../../crates/worldline-sys" }
+world-rs = { path = "../../crates/world-rs" }
+wavwriter = { path = "../../crates/wavwriter" }
+synth-cli = { path = "../synth-cli" }
+domain = { path = "../../crates/domain" }
+worldline-rs = { path = "../../crates/worldline-rs" }
+libloading = "0.8"
+worldline-plugin = { path = "../../crates/worldline-plugin", features = ["r2"] }

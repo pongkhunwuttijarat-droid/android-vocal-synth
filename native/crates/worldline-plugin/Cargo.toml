@@ -9,15 +9,23 @@ description = "Worldline renderer plugin: feed::RenderInput → SynthRequest →
 domain = { path = "../domain" }
 voicebank = { path = "../voicebank" }
 feed = { path = "../feed" }
-worldline-sys = { path = "../worldline-sys" }
 thiserror = "2"
+
+# `libworldline.so` FFI (dlopen). Only meaningful on native targets — the
+# wasm build of the engine uses the pure-Rust kernel (`worldline-rs`)
+# instead, so this dependency is optional and off for wasm.
+worldline-sys = { path = "../worldline-sys", optional = true }
 
 # R2 (WORLDLINE-R2) neural path: feature extraction (r2.rs) + ONNX mel /
 # HiFiGAN vocoder. Feature-gated so v1 builds never pull the ONNX
-# runtime (~20 MB download).
+# runtime (~20 MB download). `ort` is native-only.
 ort = { version = "2.0.0-rc.13", optional = true, features = ["ndarray"] }
 ndarray = "0.17"
 
 [features]
-default = []
-r2 = ["dep:ort"]
+# `ffi` = the dlopen'd `libworldline.so` renderer (native only). Native
+# builds enable it by default; `--no-default-features` gives the pure
+# conversion/curve code that compiles to wasm32-unknown-unknown.
+default = ["ffi"]
+ffi = ["dep:worldline-sys"]
+r2 = ["dep:ort", "ffi"]

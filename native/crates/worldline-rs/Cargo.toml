@@ -1,0 +1,15 @@
+[package]
+name = "worldline-rs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+voicebank = { path = "../voicebank" }
+feed = { path = "../feed" }
+world-rs = { path = "../world-rs" }
+# Pure conversion/curve code only — no dlopen'd .so, so this
+# crate stays wasm32-unknown-unknown compatible.
+worldline-plugin = { path = "../worldline-plugin", default-features = false }
+
+[dev-dependencies]
+wavwriter = { path = "../wavwriter" }

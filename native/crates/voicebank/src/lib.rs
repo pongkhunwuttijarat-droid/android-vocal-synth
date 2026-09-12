@@ -23,5 +23,6 @@ pub use text::{decode, decode_lines, detect_encoding, read_text};
 pub use tone::{name_to_tone, tone_to_name};
 pub use voicebank::{
     load_voicebank, load_voicebank_with_options, LoadOptions, Voicebank, VoicebankError,
+    VoicebankSample,
 };
 pub use wav::{parse_wav, read_wav, WavData, WavError};

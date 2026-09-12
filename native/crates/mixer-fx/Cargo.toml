@@ -4,4 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-libloading = "0.8"
+# dlopen'd `libmixerfx.so` (native only). The browser uses the pure-Rust
+# chain in `src/chain.rs` instead, which needs no loader.
+libloading = { version = "0.8", optional = true }
+
+[features]
+default = ["ffi"]
+ffi = ["dep:libloading"]

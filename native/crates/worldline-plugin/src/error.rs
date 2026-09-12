@@ -10,6 +10,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// `dlopen` / `PhraseSynthNew` failed (see `worldline-sys::Error`).
+    #[cfg(feature = "ffi")]
     #[error("worldline library error: {0}")]
     Worldline(#[from] worldline_sys::Error),
     /// The voicebank wav referenced by an oto entry could not be read.

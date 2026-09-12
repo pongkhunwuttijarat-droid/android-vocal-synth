@@ -1,0 +1,2 @@
+use std::{fs::File, io::Read};
+fn main(){let p=std::env::args().nth(1).unwrap();let f0: f64=std::env::args().nth(2).unwrap().parse().unwrap();let pos:f64=std::env::args().nth(3).unwrap().parse().unwrap();let mut f=File::open(p).unwrap();let mut b=Vec::new();f.read_to_end(&mut b).unwrap();let x=b.chunks_exact(4).map(|v|f32::from_le_bytes(v.try_into().unwrap())).collect::<Vec<_>>();let (a,b,c,d)=world_rs::d4c::probe_stages(&x,44100,f0,pos,2048);for i in 0..a.len(){println!("{:.17e} {:.17e} {:.17e}",a[i],b[i],c[i]);}eprintln!("coarse {:?}",d);}

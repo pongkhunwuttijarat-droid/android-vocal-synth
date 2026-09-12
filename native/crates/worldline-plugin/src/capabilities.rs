@@ -73,7 +73,7 @@ impl WorldlineCapabilities {
             expressions: &[
                 DYN, PITD, GENC, BREC, TENC, VOIC, VEL, VOL, MOD, CLR, SHFT, DIR,
             ],
-            sample_rate: crate::renderer::DEFAULT_SAMPLE_RATE,
+            sample_rate: crate::DEFAULT_SAMPLE_RATE,
             channels: 1,
         }
     }

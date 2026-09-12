@@ -11,6 +11,9 @@ members = [
     "crates/feed",
     "crates/runtime",
     "crates/worldline-plugin",
+    "crates/worldline-rs",
+    "crates/world-rs",
+    "crates/engine-wasm",
     "crates/phrase",
     "crates/diffsinger",
     "crates/wavwriter",
@@ -18,6 +21,7 @@ members = [
     "crates/moe-train",
     "crates/trainer-gui",
     "tools/audiocompare",
+    "tools/world-oracle",
     "tools/synth-cli",
     "tools/synth-server",
     "crates/ustx-codec",
@@ -28,5 +32,29 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+# ── Profiles: คุมขนาด build cache ────────────────────────────────────────
+# เดิมไม่มีการตั้งค่า [profile.dev] เลย → Cargo ใช้ default debug = true
+# (DWARF เต็มรูปแบบ) ผลคือ ~75% ของทุกไฟล์ใน target คือ debug info
+# และ native/target โต ~50 GB ต่อการ build หนึ่งรอบ
+# ค่าด้านล่างลดเหลือ ~1/4  → ดู docs/DISK-HYGIENE.md
+[profile.dev]
+# 1 = line tables only → backtrace ยังบอก "ไฟล์:บรรทัด" ได้
+# ถ้าต้องการเล็กที่สุดและยอมเสีย line number ให้เปลี่ยนเป็น false
+debug = 1
+
+# dependency ภายนอก (wgpu / ort / image / ndarray ฯลฯ) ไม่ต้องมี debug info
+# เลย — นี่คือก้อนใหญ่สุด (~41 GB ของ native/target/debug/deps)
+[profile.dev.package."*"]
+debug = false
+
+# cargo test ใช้ profile นี้ (inherit จาก dev แต่ระบุให้ชัดเพื่อไม่ให้หลุด)
+[profile.test]
+debug = 1
+
+[profile.test.package."*"]
+debug = false
+
 [profile.release]
 lto = true
+debug = false
+strip = "debuginfo"

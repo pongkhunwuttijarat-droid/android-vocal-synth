@@ -1,0 +1,14 @@
+[package]
+name = "world-rs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Rust reimplementation of mmorise/World synthesis DSP (wasm-capable)"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# `wasm_simd` is a no-op off wasm32 (rustfft cfg-gates the module).
+rustfft = { version = "6.4.1", features = ["wasm_simd"] }
+voicebank = { path = "../voicebank" }

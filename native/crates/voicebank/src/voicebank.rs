@@ -86,6 +86,109 @@ pub struct Voicebank {
     pub warnings: Vec<String>,
 }
 
+/// Fully resolved sample asset for a renderer.
+///
+/// Keeping oto metadata beside decoded audio prevents each engine backend from
+/// independently reimplementing path resolution and FRQ companion lookup.
+#[derive(Debug, Clone)]
+pub struct VoicebankSample {
+    pub oto: Oto,
+    pub wav: WavData,
+    pub frq: Option<FrqData>,
+}
+
+
+impl Voicebank {
+    /// Build a voicebank in memory from oto.ini bytes — no filesystem.
+    ///
+    /// The browser (wasm) build has no disk: the host reads `oto.ini` from
+    /// OPFS (or a fetched archive) and hands the bytes here. Sample audio is
+    /// resolved separately by the renderer's `SampleSource`, so this only
+    /// builds the alias table + metadata the pipeline needs.
+    ///
+    /// `base_path` / `path` are kept for parity with the disk loader (they
+    /// are display/debug values on this path); `id` is what the host uses to
+    /// address the bank.
+    pub fn from_oto_bytes(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        base_path: impl Into<PathBuf>,
+        path: impl Into<PathBuf>,
+        oto_ini_bytes: &[u8],
+    ) -> Self {
+        let id = id.into();
+        let path = path.into();
+        let ini = crate::oto::parse_oto_ini(oto_ini_bytes, None);
+        let mut otos = ini.otos;
+        // `use_filename_as_alias` defaults off here; the disk loader applies
+        // it from character.yaml, which the host can pass via `with_`
+        // setters if it needs the alias augmentation.
+        let mut oto_map: HashMap<String, Oto> = HashMap::new();
+        for (set_idx, oto) in otos.iter_mut().enumerate() {
+            oto.set_index = set_idx;
+            oto_map
+                .entry(oto.alias.clone())
+                .or_insert_with(|| oto.clone());
+        }
+        let name = {
+            let n = name.into();
+            if n.trim().is_empty() {
+                format!("No Name ({id})")
+            } else {
+                n
+            }
+        };
+        let warnings = ini
+            .errors
+            .iter()
+            .map(|e| format!("oto line {}: {}", e.line, e.message))
+            .collect::<Vec<_>>();
+        Voicebank {
+            name,
+            base_path: base_path.into(),
+            path: path.clone(),
+            id,
+            image: None,
+            portrait: None,
+            portrait_opacity: 1.0,
+            portrait_height: 0,
+            author: None,
+            voice: None,
+            web: None,
+            version: None,
+            sample: None,
+            default_phonemizer: None,
+            other_info: String::new(),
+            localized_names: HashMap::new(),
+            text_file_encoding: encoding_rs::UTF_8,
+            singer_type: "classic".to_string(),
+            use_filename_as_alias: None,
+            subbanks: vec![crate::config::Subbank::default()],
+            oto_sets: vec![OtoSet {
+                name: String::new(),
+                // `OtoSet::dir()` is `file.parent()`, so the wavs resolve as
+                // `<path>/<oto.wav>` — the same layout as a UTAU bank dir.
+                file: path.join("oto.ini"),
+                otos,
+            }],
+            otos: Vec::new(),
+            oto_map,
+            warnings,
+        }
+        .with_flattened_otos()
+    }
+
+    /// Populate `otos` from `oto_sets` (the disk loader does this inline).
+    fn with_flattened_otos(mut self) -> Self {
+        self.otos = self
+            .oto_sets
+            .iter()
+            .flat_map(|set| set.otos.iter().cloned())
+            .collect();
+        self
+    }
+}
+
 impl Voicebank {
     /// Look up a phoneme at a tone (note number, C4 = 60), applying
     /// prefix.map / subbank prefixes and suffixes, then falling back to the
@@ -152,6 +255,14 @@ impl Voicebank {
     /// Read the companion frq pitch file behind `oto`.
     pub fn read_frq(&self, oto: &Oto) -> Result<FrqData, FrqError> {
         read_frq_for_wav(&self.wav_path(oto))
+    }
+
+    /// Resolve one oto entry into the complete renderer input asset.
+    /// Missing FRQ is allowed because OpenUtau can estimate F0 at render time.
+    pub fn read_sample(&self, oto: &Oto) -> Result<VoicebankSample, WavError> {
+        let wav = self.read_wav(oto)?;
+        let frq = self.read_frq(oto).ok();
+        Ok(VoicebankSample { oto: oto.clone(), wav, frq })
     }
 }
 
