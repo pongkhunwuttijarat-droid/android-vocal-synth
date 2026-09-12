@@ -158,7 +158,20 @@ target-dir = "/home/seal/.cache/android-voice-synth-target"
 
 **ค. hard link / symlink ใช้ไม่ได้** — เครื่องมือที่เขียนไฟล์แบบ
 "เขียน temp แล้ว link ทับ" (รวมถึงไฟล์ writer บางตัว) จะได้ `EPERM`
-ให้เขียนไฟล์นั้นด้วยวิธีอื่นแทน
+ให้เขียนไฟล์นั้นด้วยวิธีอื่นแทน (เช่น symlink ของ C++ plugin
+`native/plugins/worldline/src/worldline` → `.` ที่ถูกลบไปแล้ว; กู้คืนได้บน
+ไฟล์ระบบปกติด้วย `ln -s . native/plugins/worldline/src/worldline`)
+
+**ง. `git status` โชว์ไฟล์ "แก้ไข" 3,000+ ไฟล์ทั้งที่เนื้อหาเดิม** — exfat ไม่เก็บ
+permission bit ไฟล์ทุกตัวจึงอ่านได้เป็น `0755` ขณะที่ index เป็น `100644` → git
+รายงาน mode change ทุกไฟล์ (`git diff --stat` ขึ้น `| 0`)
+
+```sh
+git config core.fileMode false     # ตั้งครั้งเดียวต่อ clone (อยู่ใน .git/config)
+```
+
+หลังตั้งแล้ว working tree ของ repo นี้เหลือเฉพาะการแก้จริง ~50 ไฟล์ (จาก 3,689)
+ค่านี้เป็น local config ไม่ถูก commit — clone ใหม่บน exfat ต้องตั้งซ้ำ
 
 
 ## 8. บันทึกการล้างรอบแรก
