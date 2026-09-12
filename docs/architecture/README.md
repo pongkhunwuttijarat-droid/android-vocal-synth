@@ -1,6 +1,18 @@
-# Android Voice Synth — Architecture v2
+# Lilt / Android Voice Synth — Architecture
 
-> Revised architecture — Global Scheduler + Chunker
+> Conceptual architecture: Global Scheduler + Chunker · อัปเดต 2026-09-12
+
+เอกสารนี้อธิบาย component model เดิม; ตัวอย่าง `Kotlin` ด้านล่างเป็น pseudocode
+เชิง interface ไม่ใช่ implementation ปัจจุบัน. ของจริงอยู่ใน Rust workspace
+(`native/crates/*`, `native/tools/*`) และมี host สองทาง: Flutter → LAN synth-server,
+กับ static HTML/Canvas → `engine-wasm` in-process.
+
+สถานะ/รายละเอียดล่าสุด:
+
+- [Worldline Rust Port](worldline-rust-port.md) — pure-Rust `r1-rs`
+- [WASM Target](wasm-target.md) — engine บน browser
+- [Runtime Engine Plugins](runtime-engine-plugins.md) — native renderer matrix
+- [Current Roadmap](../planning/roadmap/ROADMAP.md) — สิ่งที่เสร็จและงานค้าง
 
 ---
 
@@ -57,11 +69,11 @@ GLOBAL ORCHESTRATION
 RENDERER PLUGIN
 ════════════════════════════════════════════════════
 
- World Renderer Plugin
+ World Renderer Backend
  ┌────────────────────────────────────┐
  │ Voicebank Loader                   │
  │ Builder (→ SynthRequest)           │
- │ PhraseSynth / libworldline.so      │
+ │ libworldline.so or worldline-rs    │
  └────────────────────────────────────┘
 
  Neural Renderer Plugin

@@ -1,12 +1,15 @@
-# Android Voice Synth — Product Vision
+# Lilt / Android Voice Synth — Product Vision
 
-**สถานะ:** Draft v1 — 2026-08-02
+**สถานะ:** Revised — 2026-09-12
 
 ---
 
 ## Vision Statement
 
-สร้าง **singing synthesis app บน Android** ที่ใช้เสียงร้องจาก voicebank มาตรฐาน (OpenUtau/UTAU format) ได้โดยตรง แต่มี **engine ใหม่** ที่ออกแบบเพื่อ mobile-first — render เร็ว ใช้ RAM น้อย และ extensible ด้วยระบบ plugin renderer
+สร้าง **singing synthesis engine + pen-first editor** ที่ใช้ voicebank มาตรฐาน
+OpenUtau/UTAU ได้โดยตรง ทำงานได้ทั้ง native/Android และ static web โดยแชร์ Rust
+domain/feed/render pipeline เดียวกัน — render แบบ incremental, ใช้ทรัพยากรเหมาะกับ
+tablet และต่อ renderer ใหม่ได้.
 
 ## ปัญหาที่แก้
 
@@ -26,9 +29,9 @@
    ├─ Scheduler + Chunker (incremental/streaming render)
    └─ Mixer
 
-2. RENDERER = Plugin .so (C ABI)
-   ├─ libworldline.so (C++ WORLD kernel — vendor)
-   ├─ libdiffsinger.so / libvogen.so / libenunu.so (ONNX)
+2. RENDERER = native plugin หรือ pure-Rust backend
+   ├─ native: libworldline.so + ONNX renderers (R2/DiffSinger/MoE)
+   ├─ portable: worldline-rs + classic → wasm32 โดยไม่มี dlopen
    └─ capability declaration → core จับคู่ + เตรียม feed
 
 3. FEED ทั้งหมดอยู่ core (12 transformers)
@@ -40,9 +43,9 @@
    ├─ oto.ini / character.txt / config.yaml / prefix.map
    └─ project .ustx (YAML) — version 0.9
 
-5. STORAGE — Kotlin layer เดียว
-   ├─ sandbox-first (ทุกอย่างใน filesDir)
-   └─ SAF เฉพาะ import/export
+5. HOST ADAPTERS
+   ├─ Android: app storage + LAN synth-server (SAF import/export เป็น product gap)
+   └─ Web: OPFS/HTTP sample adapters + wasm-bindgen (product flow กำลังทำ)
 ```
 
 ## Rendering Systems
@@ -59,16 +62,21 @@
 - ผู้ที่ต้องการ AI singing (DiffSinger) บน Android
 - ผู้พัฒนา/นักวิจัยที่อยากต่อยอด plugin renderer
 
-## Success Criteria (MS1)
+## Proven foundation
 
-- [ ] libworldline.so รันบน Android (synth 1 note → .wav ได้ยิน)
-- [ ] Rust core skeleton + JNI bridge ทำงาน
-- [ ] ใช้ voicebank จริง (oto.ini + wav) ได้
+- [x] libworldline.so รันบน Android และ render/listen บน Mi Pad ผ่าน
+- [x] Rust core + commands/undo + phonemizer/feed/runtime ทำงาน
+- [x] ใช้ voicebank จริง (oto.ini + wav/frq) และ .ustx ได้
+- [x] pure-Rust WORLDLINE-R compile/run บน WASM และเทียบ native ผ่าน
+- [x] Flutter client และ browser editor vertical slice ใช้งานได้
 
-## Out of Scope (ตอนนี้)
+เกณฑ์ product completion ที่ยังเหลืออยู่ใน
+[Roadmap](../roadmap/ROADMAP.md): import/export/voicebank flow, multi-track/curves,
+tablet pen QA, PWA/deploy และ renderer acceptance ที่ยังไม่ครบ.
 
-- UI mobile (Flutter) — **deferred: user จะสั่งอีกทีเมื่อต้องการทำ**
-  - Design reference: **VocalSona** (UI สวยกว่าแนวทางอื่น — อ้างอิงตอนออกแบบ)
-  - Tablet target (Mi Pad 6/8) + pen-first (palm rejection = hardware ของ active pen)
-- neural enhancer — experimental lane
+## Out of scope / later
+
+- Cloud sync, collaboration, VST และ MIDI/recording
+- Training neural models ใน browser (ต้อง WebGPU spike แยก)
+- Neural enhancer — experimental lane
 - Voicevox engine (JP อย่างเดียว, ROI ต่ำ)

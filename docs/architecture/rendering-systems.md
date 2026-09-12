@@ -1,7 +1,7 @@
 # Rendering Systems
 
 > ระบบ render ทั้งหมดในโปรเจกต์ + สถานะ
-> อัปเดต: 2026-08-02
+> อัปเดต: 2026-09-12
 
 ---
 
@@ -28,7 +28,7 @@
 
 ---
 
-## Decision (2026-08-02)
+## Current decision (2026-09-12)
 
 | เรื่อง | สรุป |
 |---|---|
@@ -37,6 +37,11 @@
 | **Enhancer (neural param adjuster)** | **experimental — แยกไปอีก lane** ไม่ทำตอนนี้ |
 | **Main engine** | ทำใหม่เกือบหมด (Rust core) — plugin เหลือแค่ pure renderer |
 | **Model-based** | ทำทีหลัง (DiffSinger เริ่มก่อน) |
+
+สถานะ implementation ตอนนี้: native R1/R2 และ DiffSinger tensor→WAV ใช้งานได้,
+pure-Rust `worldline-rs`/Classic ใช้บน WASM ได้, MoE อยู่ experimental lane,
+Vogen ยังไม่เริ่ม และ browser editor ยังเป็น vertical slice. รายละเอียด acceptance
+อยู่ที่ [Roadmap](../planning/roadmap/ROADMAP.md).
 
 ---
 
@@ -50,23 +55,23 @@
 | `worldline` | PhraseSynth (WORLD analysis + synthesis) | default |
 | `worldline2` | PhraseSynth → mel (ONNX) → NSF-HiFiGAN → audio | **คุณภาพสูงสุด** |
 
-### v2 ต้องการเพิ่ม
+### v2 — implementation ปัจจุบัน
 
 ```
-- vocoder package (nsf-hifigan): vocoder.yaml + vocoder.onnx
-- core จัดหา path ให้ plugin (ผ่าน capability needs_vocoder)
-- mel model (world features → mel) — embedded ใน plugin
+- vocoder package (nsf-hifigan): โหลดผ่าน native R2
+- core จัดหา model path ให้ plugin (ผ่าน capability needs_vocoder)
+- mel model (world features → mel) + HiFi-GAN — golden v2 ผ่าน
 ```
 
 ---
 
-## 2. Model-Based (ทำทีหลัง)
+## 2. Model-Based
 
 | Engine | Models | หมายเหตุ |
 |---|---|---|
-| DiffSinger | acoustic + vocoder + (pitch/variance optional) | เริ่มตัวแรก |
-| Vogen | f0_man + singer model | 2 ภาษา |
-| Enunu | EnunuOnnx (ONNX) | ไม่ต้อง Python |
+| DiffSinger | acoustic + vocoder + (pitch/variance optional) | tensor→WAV ผ่าน; timing/device gate เหลือ |
+| Vogen | f0_man + singer model | ยังไม่เริ่ม |
+| Enunu | EnunuOnnx (ONNX) | ยังเป็น future lane |
 
 ---
 
@@ -84,7 +89,7 @@ pipeline:    RenderInput → enhancer.predict() → adjusted → worldline.rende
 
 ---
 
-## Roadmap ตามนี้
+## Roadmap / historical ordering
 
 ```
 Phase 1: libworldline.so v1 (WORLD synthesis)     ← พิสูจน์ core + FFI

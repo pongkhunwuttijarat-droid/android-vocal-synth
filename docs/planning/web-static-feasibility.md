@@ -3,6 +3,10 @@
 **สถานะ:** Feasibility study — 2026-08-10
 **คำถาม:** เปลี่ยนทุกอย่างที่ทำไว้ (Android voice synth) เป็น web-based ที่ใช้ static web เป็นหลัก ใช้ local web storage เก็บ voicebank/model และ train/render ด้วย Rust burn บน WebGPU ได้แค่ไหน?
 
+> เอกสารนี้เป็น baseline ก่อนมี `worldline-rs`/`engine-wasm`. สมมติฐานเดิมที่ว่า
+> worldline ต้องใช้ Emscripten ถูก supersede แล้ว; ดู [WASM Migration Status](wasm-migration-status.md)
+> และ [WASM Target](../architecture/wasm-target.md) สำหรับสถานะ implementation ปัจจุบัน.
+
 ---
 
 ## Verdict
@@ -14,11 +18,14 @@
 | ONNX → burn (ALL-BURN door) | ✅ `burn-import`/`burn-onnx` แปลง .onnx → native Rust module ตอน build (ModelGen) | **พร้อม (ต้อง verify op coverage ของ vocoder)** |
 | Local storage ใหญ่ (voicebank 93MB) | ✅ OPFS (Origin Private File System) — quota 60% ของ disk, ขอ persistent ได้ | **พร้อม** |
 | ort บน web | ✅ `ort-web` backend มีอยู่ (Emscripten ORT + wasm-bindgen bridge) — fallback ถ้า burn-import ไม่ครอบคลุม | fallback |
-| **worldline C++ (WORLD kernel) → wasm** | ⚠️ ต้อง Emscripten compile — WORLD เป็น C/C++ port ได้ แต่เป็นงานก้อนใหญ่ | **จุดเสี่ยงหลัก** |
+| **worldline C++ (WORLD kernel) → wasm** | ✅ ไม่ต้องทำในเส้นทางปัจจุบัน — `worldline-rs`/`world-rs` pure Rust ใช้แทนได้ | **ปิดความเสี่ยงหลัก** |
 | **train บน WebGPU ใน browser** | 🔶 burn autodiff เป็น backend-generic + cubecl รองรับ WebGPU — แต่**ไม่มี official browser-training example** ต้อง spike | **ต้องพิสูจน์** |
 | Plugin .so / dlopen | ❌ ไม่มี dlopen บน web → ต้อง static-link ทุก plugin เป็น wasm เดียว (build-time feature flags) หรือ dynamic wasm loading | เปลี่ยนสถาปัตยกรรม |
 
-**สรุป:** เป็นไปได้ — งานหลัก 3 ก้อน: (1) Rust engine compile เป็น `wasm32-unknown-unknown` + wasm-bindgen, (2) worldline C++ → Emscripten (หรือเลื่อน classic ออกก่อน), (3) spike train บน WebGPU สัก 1 รอบ พอร์ต UI เป็น static HTML/JS (มี ui-mock อยู่แล้ว) + เก็บ voicebank/model ใน OPFS
+**สรุปสถานะปัจจุบัน:** engine WASM และ browser editor vertical slice ทำแล้ว.
+งานหลักที่เหลือคือ (1) ต่อ editor กับ RenderPool/OPFS/multi-track/PWA, (2) ย้าย
+neural engines ถ้าต้องการ, และ (3) spike training บน WebGPU. Emscripten สำหรับ
+C++ เป็นเพียงทางเลือก legacy ไม่ใช่ dependency ของ classic/browser path แล้ว.
 
 ---
 
@@ -52,12 +59,13 @@
 - IndexedDB ใช้เก็บ metadata/checkpoint; OPFS เก็บ wav/model/frq
 - ล้าง site data = ลบ OPFS (เหมือน uninstall app) — ต้องมี export/backup UI
 
-## 5. worldline C++ → wasm — ⚠️ จุดเสี่ยงหลัก
+## 5. worldline C++ → wasm — superseded by pure Rust
 
 - worldline = vendored C++ (WORLD, libpyin, libgvps, spline, libnpy) ปกติ build ผ่าน CMake → `.so`
-- บน web ไม่มี .so/dlopen → ต้อง compile C++ ด้วย **Emscripten** → wasm, export C API (`PhraseSynthNew`...)
-- WORLD เป็น portable C/C++ — **port ได้** แต่ต้องทำ build system ใหม่ (emcc แทน cmake/ndk) + ระวัง alloc/thread
-- ทางเลือกเชิงกลยุทธ์: vision เดิมคือ **neural-first (r2/diffsinger/burn)** + classic เป็น fallback → เริ่ม web ด้วย neural ก่อน, classic (worldline) เป็น phase หลังก็ได้
+- บน web ไม่มี .so/dlopen แต่แก้ด้วย `world-rs` + `worldline-rs` pure Rust แล้ว
+  (`engine-wasm` ใช้เส้นทางนี้และเทียบ native ได้)
+- Emscripten C++ ยังทำได้เป็น legacy/compatibility option หากต้องการตรงกับ C++
+  binary โดยตรง แต่ไม่ใช่ dependency ของ browser editor ปัจจุบัน
 
 ## 6. Plugin architecture (dlopen mixerfx) — ❌ ต้อง redesign
 
@@ -110,7 +118,8 @@
 2. **Spike B — train ใน browser**: Autodiff<Wgpu> บน WebGPU 1 รอบเล็ก (ไม่ต้องทั้ง MoE) — เช็คว่า backward pass + optimizer ทำงานบน WebGPU backend จริง
 3. **Spike C — OPFS voicebank**: import Teto bank (93MB) ลง OPFS, อ่าน oto.ini/wav ผ่าน wasm-bindgen storage adapter
 4. ผ่านครบ 3 → port UI จาก ui-mock + ต่อ wasm engine → static deploy (Cloudflare Pages ไว้ก่อน เผื่อ threads)
-5. worldline C++ → Emscripten เป็น phase แยก (หรือเลื่อน classic ตาม vision neural-first)
+5. Emscripten worldline C++ เป็น optional legacy phase เท่านั้น; classic browser path
+   ใช้ pure-Rust port ที่ผ่าน parity แล้ว
 
 ## Risks / ต้องเช็คเพิ่ม
 

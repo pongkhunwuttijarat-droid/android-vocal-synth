@@ -1,7 +1,13 @@
 # Runtime Engine Plugin Possibilities
 
 > วิเคราะห์ความเป็นไปได้ในการ port แต่ละ engine มาลง Android app
-> วันที่: 2026-08-02
+> วันที่: 2026-08-02 · implementation update: 2026-09-12
+
+เอกสารนี้เป็น feasibility baseline เดิม. ปัจจุบัน core/renderer logic หลักอยู่ใน
+Rust แล้ว: `worldline-rs` และ `world-rs` ทำให้ R1/Classic ใช้บน WASM ได้โดยไม่ต้อง
+Emscripten; R2 และ DiffSinger มี native ONNX path; Flutter ใช้ bundled
+`synth-server` ผ่าน loopback HTTP. ใช้ [Roadmap](../planning/roadmap/ROADMAP.md)
+และ [WASM target](wasm-target.md) เป็นสถานะปัจจุบันแทนตัวเลข/แผนในตารางเก่า.
 
 ---
 

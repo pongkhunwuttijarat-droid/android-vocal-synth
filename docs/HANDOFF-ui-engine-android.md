@@ -3,6 +3,12 @@
 > **Status:** Engine side done. UI session owns `app/` — engine session will NOT touch `app/`.
 > Coordination point: **CONTRACT-v1.md** (transport = EngineClient interface).
 
+> **Status update 2026-09-12:** handoff details below are historical. The Flutter
+> client now has editor/render/play/save/open/autosave/mixer paths and the current
+> Android transport is bundled `synth-server` over loopback HTTP. See
+> [Roadmap](planning/roadmap/ROADMAP.md) and [CONTRACT-v1](CONTRACT-v1.md) for the
+> current boundaries; JNI remains a future optimization.
+
 ## What the engine session delivered (ready to consume)
 
 ### 1. In-app engine hosting pattern (Kotlin — `app/android/.../EngineProcess.kt`)

@@ -133,3 +133,21 @@ Phase 2: libdiffsinger.so (port tensor logic C# → C++)
 Phase 3: libclassic.so + libvogen.so (reuse WORLD)
 Phase 4: libenunu.so (port EnunuOnnx) + libvoicevox.so (voicevox_core)
 ```
+
+---
+
+## Update (2026-09-10) — Rust kernel พิสูจน์แล้ว
+
+สมมติฐานเดิม ("ทุก engine ต้องเป็น C++ .so") ถูกท้าทายแล้ว:
+มี **`r1-rs`** — WORLDLINE-R ที่รัน DSP ด้วย Rust ล้วน **ไม่ต้อง dlopen .so**
+และให้ผลตรงกับ `libworldline.so` ระดับ sample (relative RMS diff ~5e-5)
+
+ผลที่ตามมา:
+
+- `.so` ยังเป็น **default** (ไม่มีความเสี่ยงถดถอย)
+- แต่ถ้าต้องการรัน engine บน **wasm/browser** หรือตัด dlopen ออกจาก
+  Android build — มีเส้นทาง Rust ที่พิสูจน์แล้ว
+- release perf: Rust ช้ากว่า C++ ~1.5x (2.06 s vs 1.39 s บน scale demo)
+  และใช้ RAM น้อยกว่า (144 MB vs 172 MB)
+
+รายละเอียด: [worldline-rust-port.md](worldline-rust-port.md)

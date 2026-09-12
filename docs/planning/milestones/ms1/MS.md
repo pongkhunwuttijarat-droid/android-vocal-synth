@@ -1,6 +1,6 @@
 # MS1 — Main Engine Core (Rust, engine-first)
 
-**สถานะ:** In planning — engine เริ่มเป็นตัวแรก
+**สถานะ:** ✅ Complete
 **โครงสร้าง:** 5 sprints หลัก + plugin track คู่ขนาน
 
 ---
@@ -22,11 +22,11 @@ Plugin track (คู่):   prebuilt .so FFI → NDK build (ไม่บล็�
 
 | # | Task | Detail | Status |
 |---|---|---|---|
-| 1.1.1 | UProject structs | project/part/track/note/curve/expression/phoneme | ⬜ |
-| 1.1.2 | YAML serialization | save/load .ustx (v0.9 + migration hooks) | ⬜ |
-| 1.1.3 | TimeAxis | tick↔ms, tempo/time-sig segments | ⬜ |
-| 1.1.4 | Expression registry | abbr → range/flag map | ⬜ |
-| 1.1.5 | Unit tests | roundtrip + timeAxis | ⬜ |
+| 1.1.1 | UProject structs | project/part/track/note/curve/expression/phoneme | ✅ |
+| 1.1.2 | YAML serialization | save/load .ustx (v0.9 + migration hooks) | ✅ |
+| 1.1.3 | TimeAxis | tick↔ms, tempo/time-sig segments | ✅ |
+| 1.1.4 | Expression registry | abbr → range/flag map | ✅ |
+| 1.1.5 | Unit tests | roundtrip + timeAxis | ✅ |
 
 **Done:** cargo test ผ่าน — .ustx load/save ถูกต้อง
 
@@ -36,11 +36,11 @@ Plugin track (คู่):   prebuilt .so FFI → NDK build (ไม่บล็�
 
 | # | Task | Detail | Status |
 |---|---|---|---|
-| 1.2.1 | Command trait | execute/unexecute + validate | ⬜ |
-| 1.2.2 | Note/Track/Part commands | add/move/delete/resize | ⬜ |
-| 1.2.3 | Curve/Expression commands | set curve, change expression | ⬜ |
-| 1.2.4 | Undo/Redo stack | bounded + groups | ⬜ |
-| 1.2.5 | Unit tests | undo = redo inverse | ⬜ |
+| 1.2.1 | Command trait | execute/unexecute + validate | ✅ |
+| 1.2.2 | Note/Track/Part commands | add/move/delete/resize | ✅ |
+| 1.2.3 | Curve/Expression commands | set curve, change expression | ✅ |
+| 1.2.4 | Undo/Redo stack | bounded + groups | ✅ |
+| 1.2.5 | Unit tests | undo = redo inverse | ✅ |
 
 **Done:** command roundtrip tests ผ่าน
 
@@ -50,11 +50,11 @@ Plugin track (คู่):   prebuilt .so FFI → NDK build (ไม่บล็�
 
 | # | Task | Detail | Status |
 |---|---|---|---|
-| 1.3.1 | Phonemizer trait | process(notes, singer) → phonemes | ⬜ |
-| 1.3.2 | Japanese VCV | rule-based kana → VCV | ⬜ |
-| 1.3.3 | English CVVC | phonetic hints (test กับ Teto English) | ⬜ |
-| 1.3.4 | G2p base | dictionary lookup + SP/AP symbols | ⬜ |
-| 1.3.5 | Unit tests | ref test banks (ja_cv_integration ฯลฯ) | ⬜ |
+| 1.3.1 | Phonemizer trait | process(notes, singer) → phonemes | ✅ |
+| 1.3.2 | Japanese VCV | rule-based kana → VCV | ✅ |
+| 1.3.3 | English CVVC | phonetic hints (test กับ Teto English) | ✅ |
+| 1.3.4 | G2p base | dictionary lookup + SP/AP symbols | ✅ |
+| 1.3.5 | Unit tests | ref test banks (ja_cv_integration ฯลฯ) | ✅ |
 
 **Done:** phonemize ถูกต้อง + oto parser (Teto shift_jis)
 
@@ -85,7 +85,7 @@ Plugin track (คู่):   prebuilt .so FFI → NDK build (ไม่บล็�
 | 1.5.2 | Chunker | split → chunks (parallel-ready) | ✅ (runtime/chunker.rs) |
 | 1.5.3 | Cache | hash-based (XXH64) + LRU | ✅ (runtime/cache.rs + hash.rs) |
 | 1.5.4 | Mixer | align + sum + dynamics + fade | ✅ (runtime/mixer.rs) |
-| 1.5.5 | WAV writer | export 16/32-bit | ⬜ (MS2 — ผ่าน voicebank wav reader ย้อนกลับได้) |
+| 1.5.5 | WAV writer | export 16/32-bit | ✅ (CLI/server/WASM export paths) |
 | 1.5.6 | Unit tests | chunk/mix/cache logic | ✅ 54 tests |
 
 **Done:** runtime ครบ ✅
@@ -98,8 +98,8 @@ Plugin track (คู่):   prebuilt .so FFI → NDK build (ไม่บล็�
 |---|---|---|---|
 | P.1 | plugin_abi.h | capability struct + C ABI v1 | ✅ (worldline-sys + abi) |
 | P.2 | FFI smoke test | Rust โหลด prebuilt libworldline.so (linux + arm64) | ✅ (worldline-sys smoke — 13 symbols resolve) |
-| P.3 | NDK build | CMakeLists + build เอง — **linux .so ผ่านแล้ว + smoke test ผ่าน (behavior ตรง ref)** | ✅ linux / ⬜ android arm64 script พร้อม |
-| P.4 | golden reference | OpenUtau desktop render Teto → reference wav | ⬜ (ไม่มี dotnet บนเครื่อง — defer ไป MS2 2.3) |
+| P.3 | NDK build | CMakeLists + build เอง — linux + Android arm64 | ✅ |
+| P.4 | golden reference | OpenUtau desktop render Teto → reference wav | ✅ (ปิดใน MS2 2.3) |
 
 ---
 
@@ -112,4 +112,6 @@ Plugin track (คู่):   prebuilt .so FFI → NDK build (ไม่บล็�
 - [x] plugin_abi.h + FFI smoke test ผ่าน (prebuilt .so)
 - [x] **libworldline.so build เอง + synthesis smoke test ผ่าน (ตรง ref)** ← เพิ่ม
 
-**ผลรวม: 309 tests ผ่าน / clippy clean / .so รันได้บน linux**
+**ผลรวม:** acceptance ของ MS1 ปิดครบแล้ว; จำนวน test แบบ snapshot เดิมถูกถอดออก
+เพราะ workspace โตต่อเนื่อง. ใช้ผล verification ล่าสุดใน
+[WASM Migration Status](../../wasm-migration-status.md) และ milestone ถัดไปแทน.

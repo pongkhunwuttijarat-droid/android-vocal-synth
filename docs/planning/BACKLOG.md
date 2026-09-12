@@ -1,7 +1,9 @@
 # Lilt — Backlog / Task List
 
-> อัปเดตล่าสุด: 2026-08-05
-> สรุปงานค้างทั้งหมด — ใช้ต่อข้าม session
+> อัปเดตสถานะ: 2026-09-12
+> เอกสารนี้เก็บรายละเอียด/ประวัติ native backlog เดิม. ใช้
+> [Roadmap](roadmap/ROADMAP.md), [WASM Migration](wasm-migration-status.md) และ
+> [Web UI Design](web-ui-design.md) เป็น source of truth สำหรับลำดับงานปัจจุบัน.
 
 ---
 
@@ -62,9 +64,9 @@
 ### MS3 — Renderers
 | # | งาน | สถานะ |
 |---|---|---|
-| 8 | **MS3.1 Classic — merge เข้า worldline** (ไม่แยก engine): `Resample()` FFI มีแล้ว + `build_requests` ซ้ำได้ + **Wavtool port ใน Rust** (concat+crossfade+envelope — งานหลัก) + wire `WorldlineEngine` mode=Classic + golden classic — flags B/H เหลือเพิ่ม | เริ่มได้เลย |
-| 9 | **MS3.2 v2 neural** — nsf-hifigan (vocoder.yaml+onnx) + WORLD→mel (ONNX) + v2 pipeline + golden v2 — *v2 config ทำแล้ว = default* | ใหญ่ |
-| 10 | **MS3.3 DiffSinger** — onnxruntime vendored .so + DsSinger loader + tensor feed + variance/pitch predictor + renderer + test bank | ใหญ่ |
+| 8 | **MS3.1 Classic** — pure-Rust resampler + concat/crossfade/envelope และ oracle parity ทำแล้ว; เหลือ flags B/H/P กับ product-level song golden | 🟡 |
+| 9 | **MS3.2 v2 neural** — native R2, mel/vocoder pipeline และ v2↔r2 golden ทำแล้ว; WASM neural ยังไม่ทำ | ✅ Native / ⬜ WASM |
+| 10 | **MS3.3 DiffSinger** — loader/tensors/acoustic+vocoder/engine ถึง tensor→WAV แล้ว; เหลือ variance/pitch, timing gap และ device listening | 🟡 |
 | 11 | **MS3.4 Vogen** — model loader (.vogen) + tensor feed + VSVocoder (DecodeMgc/Bap + WORLD) + test (Mandarin/Cantonese) | ใหญ่ |
 | 12 | **MS3.5 Perf** — 3.5.2 tensor cache + 3.5.3 benchmark (1 note <1s, RAM <1GB) + 3.5.4 optimize + 3.5.5 stress 30-min — *3.5.1 cache ✅* | กลาง |
 
@@ -75,16 +77,16 @@
 - **Mock หลัก:** `ui-mock/index.html` — editor รวม: OM trackstrip + toolbar ตรง Flutter + mixer bottom sheet (⊞ Mixer) + FX overlay (⚡ FX) + SynthV phoneme เหนือ note + collapsible panel (◀) — **อ้างอิงหลักสำหรับ port ต่อ**
 - **Port แล้วใน Flutter:** MixerPanel (bottom, toggleable → post-fx), phoneme labels (painter derive), FX overlay, collapse panel, note-height scale, mixer scroll, stop playback
 - **Flutter ยังไม่มี (จาก mock):** undo/redo (ปุ่มมีแต่ no-op), BPM chip popup, snap-div popup, trackstrip แนวนอนจริง (ตอนนี้เป็น vertical track list), parts/guide track, singer portrait
-- **Plan UI:** docs/planning/milestones/ms4/MS.md (deferred)
+- **Plan UI:** `docs/planning/milestones/ms4/MS.md` (กำลังทำทั้ง Flutter และ Web)
 - หลัก: "trace ui-mock/index.html ก่อนแก้ Flutter" — port additive ห้ามแตะ roll logic เดิม
 
 ---
 
 ## 🔧 Environment (สำคัญข้าม session)
 
-- **Working dir:** `/home/seal/project/android-voice-synth` (app/ = Flutter, native/ = Rust crates)
+- **Working dir:** ใช้ repository root ปัจจุบัน (ไม่ผูกกับ absolute path เก่าที่เคยเป็น `/home/seal/project/...`)
 - **Device:** Mi Pad `d370854b` — USB หลุดบ่อย (มี reconnect ระหว่าง session); `flutter run -d d370854b` (debug keystore เดียวกัน); **ถ้า USB หลุด kill flutter run แล้ว rerun** (hot reload ไม่ได้เมื่อ stdin ปิด); **terminal guard มี bug กับ inline adb path** → ใช้ wrapper script `/tmp/adbw.sh` (`exec /home/seal/Android/Sdk/platform-tools/adb "$@"`) หรือ Python subprocess
 - **Env:** dotnet 8.0.423 @ ~/dotnet; Rust 1.97.1 @ ~/.cargo/bin; JDK21 @ ~/jdk21 (JAVA_HOME); cmake @ ~/cmake-3.31.6-linux-x86_64/bin; SDK @ ~/Android/Sdk (NDK 28.2.13676358); flutter @ ~/project/flutter/bin
 - **Android build:** `bash scripts/bundle-android.sh` (ตอนนี้ bundle libsynthserver + libworldline + **libmixerfx** + demo.ustx + voicebank subset 29 wavs) — **rm .so ก่อน bundle ถ้าแก้ Rust**
-- **Tests:** Flutter **36 passed + 4 skipped** (`test/mixer_features_test.dart` = phoneme/mixer/collapse/FX/params-emission; `engine_client_test.dart` = cancel/setMixerParams/postFx); cargo: api_real 4/4 (รวม cancel + mixer-params + post-fx), render_real 4/4, workspace 0 errors
+- **Historical test snapshot (2026-08-05):** Flutter **36 passed + 4 skipped**; cargo api/render suites ผ่าน. สำหรับ WASM/browser checkpoint ล่าสุดดู `wasm-migration-status.md`.
 - **Voicebank:** `test/golden/teto-english/` (library/) — golden render ผ่าน golden-renderer (OPENUTAU_REF=/home/seal/openutau-ref — copy ของ ref ที่ path ธรรมดา ไม่มีวงเล็บ)

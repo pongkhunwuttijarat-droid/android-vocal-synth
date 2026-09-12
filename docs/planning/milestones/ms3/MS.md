@@ -1,6 +1,6 @@
 # MS3 — Renderers เต็ม
 
-**สถานะ:** Not started
+**สถานะ:** 🟡 In progress
 **ระยะเวลา:** 5 sprints
 **Requires:** MS2 (feed + scheduler ทำงาน)
 
@@ -10,18 +10,29 @@
 
 Renderer ทั้งหมด + คุณภาพเสียง: classic mode, worldline v2 (neural vocoder), DiffSinger, Vogen — สลับ renderer ต่อ track ได้
 
+## Current checkpoint (2026-09-12)
+
+- Native R1/R2 ใช้งานผ่าน CLI/server/app และ golden v1↔r1 / v2↔r2 ผ่านแล้ว.
+- Pure-Rust `worldline-rs` และ Classic resampler เทียบ `.so` ผ่าน; Classic flags
+  และ product-level OpenUtau song golden ยังไม่ครบ.
+- DiffSinger ทำ loader/tensor/acoustic+vocoder/engine ได้ถึง tensor→WAV; timing
+  ระหว่าง phrase, variance/pitch predictor และ device listening gate ยังเหลือ.
+- MoE เป็น experimental renderer คู่ขนานและมี engine/training-prep แล้ว แต่ยังไม่ใช่
+  acceptance criterion แทน Vogen.
+- Vogen ยังไม่เริ่ม; การสลับ renderer ต่อ track และ stress/device benchmark ยังไม่ปิด.
+
 ---
 
 ## Sprint 3.1 — Worldline Classic Mode
 
 | # | Task | Detail | Status |
 |---|---|---|---|
-| 3.1.1 | Classic API export | Resample() per-phone + concat ใน worldline C++ | ⬜ |
-| 3.1.2 | Classic feeder (Rust) | ResamplerItem build + SharpWavtool port (crossfade/envelope) | ⬜ |
-| 3.1.3 | Flags compat | g/B/H/P/Mt/Mb/Mv full | ⬜ |
-| 3.1.4 | Golden test | เทียบกับ OpenUtau classic render | ⬜ |
+| 3.1.1 | Classic API export | Resample() per-phone + concat ใน worldline C++/Rust | ✅ Rust resampler path ทำงาน |
+| 3.1.2 | Classic feeder (Rust) | ResamplerItem build + concat/crossfade/envelope | ✅ parity kernel ผ่าน |
+| 3.1.3 | Flags compat | g/B/H/P/Mt/Mb/Mv full | 🟡 g/Mt/Mb/Mv มีแล้ว; B/H/P ยังไม่ครบ |
+| 3.1.4 | Golden test | เทียบกับ OpenUtau classic render | 🟡 Oracle parity ผ่าน; song/product golden ยังเหลือ |
 
-**Done:** classic mode เสียงเทียบ OpenUtau ได้
+**Exit target:** classic mode พร้อม flags และ song golden เทียบ OpenUtau ผ่าน
 
 ---
 
@@ -29,10 +40,10 @@ Renderer ทั้งหมด + คุณภาพเสียง: classic mode
 
 | # | Task | Detail | Status |
 |---|---|---|---|
-| 3.2.1 | Vocoder package | nsf-hifigan (vocoder.yaml + onnx) — dependency path | ⬜ |
-| 3.2.2 | Mel conversion | WORLD features → mel (ONNX) | ⬜ |
-| 3.2.3 | v2 pipeline | f0/sp/ap → mel → hifigan → audio (+ease in/out) | ⬜ |
-| 3.2.4 | Golden test | เทียบ OpenUtau worldline2 | ⬜ |
+| 3.2.1 | Vocoder package | nsf-hifigan (vocoder.yaml + onnx) — dependency path | ✅ |
+| 3.2.2 | Mel conversion | WORLD features → mel (ONNX) | ✅ mel powers ตรง C# |
+| 3.2.3 | v2 pipeline | f0/sp/ap → mel → hifigan → audio (+ease in/out) | ✅ Native R2 |
+| 3.2.4 | Golden test | เทียบ OpenUtau worldline2 | ✅ v2↔r2 ผ่าน |
 
 **Done:** v2 เสียงคุณภาพสูง เทียบ golden ผ่าน
 
@@ -66,7 +77,7 @@ Renderer ทั้งหมด + คุณภาพเสียง: classic mode
 | 3.4.3 | VSVocoder | DecodeMgc/DecodeBap + synthesis (WORLD-based) | ⬜ |
 | 3.4.4 | Test | Vogen voicebank (Mandarin/Cantonese) | ⬜ |
 
-**Done:** Vogen render ผ่าน
+**Exit target:** Vogen render ผ่าน
 
 ---
 
@@ -74,13 +85,13 @@ Renderer ทั้งหมด + คุณภาพเสียง: classic mode
 
 | # | Task | Detail | Status |
 |---|---|---|---|
-| 3.5.1 | Render cache เต็ม | src-/res-/cat- hash files (OpenUtau pattern) | ⬜ |
+| 3.5.1 | Render cache เต็ม | src-/res-/cat- hash files (OpenUtau pattern) | ✅ Native chunk/render cache ใช้งานจริง |
 | 3.5.2 | Tensor cache | DiffSinger mel cache | ⬜ |
-| 3.5.3 | Performance | benchmark: render time/note, peak RAM (Mi Pad) | ⬜ |
-| 3.5.4 | Optimize | chunk size, thread pool, memory limits | ⬜ |
+| 3.5.3 | Performance | benchmark: render time/note, peak RAM (Mi Pad) | 🟡 มี native/WASM desktop metrics; Mi Pad matrix ยังไม่ครบ |
+| 3.5.4 | Optimize | chunk size, thread pool, memory limits | 🟡 Chunking/cache/Web Worker pool มีแล้ว; product wiring ยังเหลือ |
 | 3.5.5 | เสถียรภาพ | 30-min stress test, crash-free | ⬜ |
 
-**Done:** benchmark ผ่านเป้าหมาย (1 note < 1s, RAM < 1GB)
+**Exit target:** benchmark ผ่านเป้าหมาย (1 note < 1s, RAM < 1GB)
 
 ---
 

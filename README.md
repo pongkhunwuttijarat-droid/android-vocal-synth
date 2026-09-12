@@ -1,12 +1,22 @@
-# Android Voice Synth
+# Lilt / Android Voice Synth
 
-> Singing synthesis engine for Android based on OpenUtau
+> Singing-synthesis engine and pen-first editor, derived from the OpenUtau
+> architecture and targeting native/Android as well as a static WASM web app.
 
 ---
 
 ## Overview
 
-This project implements a singing synthesis engine for Android, based on the OpenUtau reference implementation. It uses the WORLD vocoder for audio synthesis and supports OpenUtau voicebank format.
+The repository now contains three connected product paths:
+
+- a Rust engine/runtime with pluggable renderers and OpenUtau-compatible project
+  and voicebank handling;
+- a Flutter tablet client that talks to the native synth server; and
+- a static browser target whose pure-Rust WORLDLINE-R engine runs in-process as
+  WebAssembly, without a server or native `.so`.
+
+The active development branch is currently moving the proven native engine into
+the WASM editor while keeping the native render paths available for neural engines.
 
 ---
 
@@ -18,14 +28,20 @@ This project implements a singing synthesis engine for Android, based on the Ope
 - [Renderer](docs/architecture/renderer.md) — Synthesis backends
 - [Runtime](docs/architecture/runtime.md) — Orchestration
 - [Data Contracts](docs/architecture/data-contracts.md) — Data structures
+- [Current Roadmap](docs/planning/roadmap/ROADMAP.md) — Milestones and current status
+- [WASM Migration Status](docs/planning/wasm-migration-status.md) — Browser migration checkpoint
+- [Web UI Design](docs/planning/web-ui-design.md) — Editor implementation status and remaining work
+- [Disk Hygiene](docs/DISK-HYGIENE.md) — คุมขนาด build cache / ล้างพื้นที่ดิสก์
 
 ---
 
-## Architecture
+## Current architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  UI LAYER (Flutter)                                              │
+│  CLIENTS                                                         │
+│  ├─ Flutter tablet app ──LAN/HTTP──┐                             │
+│  └─ Static HTML/Canvas editor ─────┼─ in-process WASM            │
 └──────────────────────────┬───────────────────────────────────────┘
                            │
 ┌──────────────────────────▼───────────────────────────────────────┐
@@ -36,9 +52,10 @@ This project implements a singing synthesis engine for Android, based on the Ope
 └──────────────────────────┬───────────────────────────────────────┘
                            │
 ┌──────────────────────────▼───────────────────────────────────────┐
-│  RENDERER (Pluggable)                                            │
+│  RENDERERS (Pluggable)                                           │
 │  ├─ Voicebank (oto, wav, config)                                 │
-│  ├─ Synthesis Backend (WORLD, DiffSinger, Classic)               │
+│  ├─ Native: WORLDLINE R1/R2, DiffSinger, MoE                     │
+│  ├─ Pure Rust/WASM: WORLDLINE-R + Classic resampler              │
 │  └─ Audio Output                                                 │
 └──────────────────────────┬───────────────────────────────────────┘
                            │
@@ -52,11 +69,29 @@ This project implements a singing synthesis engine for Android, based on the Ope
 └──────────────────────────┬───────────────────────────────────────┘
                            │
 ┌──────────────────────────▼───────────────────────────────────────┐
-│  AUDIO SERVICE                                                   │
-│  ├─ Playback (AudioTrack/AAudio)                                 │
-│  └─ Export (WAV writer)                                          │
+│  HOST OUTPUT                                                     │
+│  ├─ Native synth-server / Flutter playback                       │
+│  └─ Browser Web Audio / WAV export                               │
 └──────────────────────────────────────────────────────────────────┘
 ```
+
+## Progress checkpoint (2026-09-12)
+
+- MS1 engine core is complete.
+- MS2 native WORLDLINE integration, CLI/server, Android device render, and
+  golden comparison are complete at the current acceptance level.
+- MS3 is in progress: R1/R2 and the DiffSinger tensor-to-WAV path work; classic
+  Rust parity is proven; Vogen and full cross-renderer/device acceptance remain.
+- MS4 is in progress on two fronts: the Flutter tablet client is functional, and
+  the browser editor now has a tested vertical slice for note editing, undo/redo,
+  rendering, playback, and viewport interaction.
+- The WASM engine and Web Worker render pool pass parity/incremental tests. The
+  browser editor still renders on the main thread; wiring the pool, OPFS project
+  flow, multi-track mix, expression lanes, PWA/offline packaging, and neural WASM
+  engines remain.
+
+See the [roadmap](docs/planning/roadmap/ROADMAP.md) for the evidence and blockers
+behind these labels.
 
 ---
 
@@ -70,9 +105,12 @@ OpenUtau reference implementation located in `ref(openutau+openutau mobile)/`:
 
 ---
 
-## WORLD Renderer
+## Render engine
 
-The WORLD renderer uses the WORLD vocoder (https://github.com/mmorise/World) for audio synthesis. Source files located in `ref(openutau+openutau mobile)/desktop-ref/cpp/worldline/`.
+The original native renderer uses the
+[WORLD vocoder](https://github.com/mmorise/World) through the OpenUtau worldline
+code. A pure-Rust port now provides the browser-compatible `r1-rs` path while the
+native `.so` path remains available for parity and neural renderers.
 
 ### Key Files
 - `worldline.h/cpp` — C API
@@ -92,19 +130,16 @@ The WORLD renderer uses the WORLD vocoder (https://github.com/mmorise/World) for
 
 ---
 
-## Build
+## Build and test entry points
 
-### Prerequisites
-- Android NDK
-- CMake 3.18+
-- Kotlin
-- Flutter
+- Rust workspace: `cd native && cargo test`
+- WASM engine: `cd native && cargo build --release --target wasm32-unknown-unknown -p engine-wasm`
+- Browser smoke test: `./web/run-smoke.sh`
+- Browser render-pool test: `./web/run-pool.sh`
+- Flutter client: `cd app && flutter test`
 
-### Build Steps
-1. Build WORLD vocoder C++ library
-2. Build JNI bridge
-3. Build Kotlin engine
-4. Build Flutter UI
+Native Android builds additionally require the Android NDK/CMake; browser builds
+require `wasm-bindgen` and a Chromium-compatible browser for the headless scripts.
 
 ---
 

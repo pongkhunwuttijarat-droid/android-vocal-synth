@@ -16,31 +16,40 @@
 
 | MS | ชื่อ | Sprints | สถานะ |
 |---|---|---|---|
-| [MS1](milestones/ms1/MS.md) | POC: worldline .so + Rust skeleton | 4 (1.1-1.4) | ⬜ In planning |
-| [MS2](milestones/ms2/MS.md) | Core Engine เต็ม | 6 (2.1-2.6) | ⬜ |
-| [MS3](milestones/ms3/MS.md) | Renderer เต็ม (v2/DiffSinger/Vogen) | 5 (3.1-3.5) | ⬜ |
-| [MS4](milestones/ms4/MS.md) | Productize (UI tablet pen-first) | 4 (4.1-4.4) | ⬜ Deferred |
+| [MS1](milestones/ms1/MS.md) | Main engine core | 5 + plugin track | ✅ Complete |
+| [MS2](milestones/ms2/MS.md) | WORLDLINE + golden + Android | 4 | ✅ Core acceptance complete |
+| [MS3](milestones/ms3/MS.md) | Renderer เต็ม (classic/v2/DiffSinger/Vogen) | 5 | 🟡 In progress |
+| [MS4](milestones/ms4/MS.md) | Productize (Flutter + Web, tablet pen-first) | 4 + web phases | 🟡 In progress |
+
+งาน WASM/Web เป็น migration track ที่พาดผ่าน MS3-MS4 ไม่ใช่ milestone ใหม่:
+pure-Rust WORLDLINE-R และ `engine-wasm` ผ่าน parity แล้ว ส่วน browser editor อยู่ระดับ
+vertical slice และยังต้องต่อ worker pool/OPFS/multi-track/PWA ให้ครบ product flow.
 
 ## Sprint Board
 
 | Sprint | เป้าหมาย | Status |
 |---|---|---|
-| **1.1** | Domain model (.ustx compat) — engine-first | ⬜ **ถัดไป** |
-| 1.2 | Command system + undo/redo | ⬜ |
-| 1.3 | Phonemizer + voicebank loading (Teto) | ⬜ |
-| 1.4 | Feed pipeline (12 transformers) | ⬜ |
-| 1.5 | Runtime: scheduler/chunker/cache/mixer | ⬜ |
-| P.1-P.4 | Plugin track คู่ขนาน (abi/FFI/NDK/golden ref) | ⬜ |
-| 2.1-2.4 | Worldline integration + golden + Android | ⬜ |
-| 3.1-3.5 | classic/v2/DiffSinger/Vogen/cache | ⬜ |
-| 4.1-4.4 | UI/wire/import/export/polish | ⬜ |
+| 1.1-1.5 | Domain, commands, phonemizer, feed, runtime | ✅ |
+| P.1-P.4 | Plugin ABI/FFI/NDK/golden reference | ✅ |
+| 2.1-2.4 | WORLDLINE integration + golden + Android | ✅ |
+| 3.1 | Classic mode | 🟡 Rust parity ผ่าน; flags/product integration ยังไม่ครบ |
+| 3.2 | WORLDLINE v2 | ✅ Native render + golden |
+| 3.3 | DiffSinger | 🟡 Tensor→WAV ผ่าน; timing/device acceptance ยังเหลือ |
+| 3.4 | Vogen | ⬜ |
+| 3.5 | Cache + performance | 🟡 Native cache และ WASM worker/cache พิสูจน์แล้ว; device/stress gate ยังเหลือ |
+| 4.1-4.4 | Flutter productization | 🟡 Editor/render path ใช้ได้; import/export/release acceptance ยังเหลือ |
+| Web P0-P8 | Static WASM editor | 🟡 P0 core ผ่าน (เหลือ phonemize API), editor vertical slice ผ่าน; P3-P8 ยังไม่ครบ |
 
 ## ความคืบหน้าปัจจุบัน
 
 ```
-✅ Design/Architecture — docs ครบ
-✅ Voicebank — Teto English CVVC (test/golden/teto-english)
-✅ Planning — MS1-MS4 + sprints (engine-first)
-✅ พิสูจน์ .so — OpenUtau Mobile prebuilt (arm64) พร้อมใช้
-⬜ Sprint 1.1 — เริ่มได้เลย
+✅ Rust engine core + command/undo + feed/runtime
+✅ Native R1/R2, synth-cli/server, Android device render และ golden comparison
+✅ Pure-Rust WORLDLINE-R + Classic kernel + wasm32 engine parity
+✅ Web smoke/pool tests และ browser editor vertical slice
+🟡 DiffSinger timing/device acceptance; Vogen ยังไม่เริ่ม
+🟡 Web product flow: ต่อ RenderPool, OPFS, multi-track, curves, PWA/deploy
 ```
+
+รายละเอียดล่าสุด: [Roadmap](roadmap/ROADMAP.md) ·
+[WASM migration](wasm-migration-status.md) · [Web UI](web-ui-design.md)
