@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use domain::capabilities::EngineCapabilities;
 use domain::UProject;
 use feed::render_input::RenderInput;
-use moe_train::baseline::{WINDOW, HALF};
+use moe_train::baseline::{EMBED_SLOTS, WINDOW, HALF};
 use moe_train::phoneme_groups::group_of;
 use moe_train::render::{run_vocoder_once, LoadedMoe};
 use voicebank::Voicebank;
@@ -56,7 +56,7 @@ impl MoeEngine {
         verbose: bool,
     ) -> Result<Self, String> {
         let prefix = prefix.as_ref().to_path_buf();
-        let device = burn::backend::wgpu::WgpuDevice::IntegratedGpu(0);
+        let device = burn::backend::wgpu::WgpuDevice::DefaultDevice;
         // Load checkpoints without a live TrainSet (set-free path).
         let general = moe_train::render::load_general::<MoeBackend>(
             &prefix.to_string_lossy(),
@@ -103,6 +103,10 @@ struct FrameFeats {
     groups: Vec<usize>,
     /// f0 denormalized (Hz) per frame — passed to the vocoder.
     f0_hz: Vec<f32>,
+    /// Universal phonemes that are absent from the checkpoint vocabulary.
+    /// These currently fall back to the pad embedding, so expose them in
+    /// verbose mode instead of making the mismatch invisible.
+    missing_symbols: Vec<String>,
 }
 
 /// Build per-frame features (ids/feats/groups/f0) from a `RenderInput`.
@@ -116,11 +120,12 @@ fn build_frame_features(
     let frame_ms = 11.61;
     let curves = sample_phrase_curves(input, frame_ms);
     let n = curves.f0.len();
-    let pad = vocab.len().min(511) as i64;
+    let pad = vocab.len().min(EMBED_SLOTS - 1) as i64;
     let mut ids = Vec::with_capacity(n * WINDOW);
     let mut feats = Vec::with_capacity(n * 2);
     let mut groups = Vec::with_capacity(n);
     let mut f0_hz = Vec::with_capacity(n);
+    let mut missing_symbols = Vec::new();
 
     for f in 0..n {
         let ms = input.phrase.position_ms - input.phrase.leading_ms + f as f64 * frame_ms;
@@ -139,10 +144,18 @@ fn build_frame_features(
             let di = k as i64 - HALF as i64;
             let pi = pidx.map(|i| i as i64 + di).unwrap_or(-1);
             let ctx_id = if pi < 0 || pi >= input.phonemes.len() as i64 {
-                pad
+            pad
             } else {
-                let ph = &input.phonemes[pi as usize];
-                vocab.get(&ph.phoneme).copied().unwrap_or(pad as usize).min(511) as i64
+            let ph = &input.phonemes[pi as usize];
+            match vocab.get(&ph.phoneme).copied() {
+                Some(id) => id.min(EMBED_SLOTS - 1) as i64,
+                None => {
+                    if !missing_symbols.contains(&ph.phoneme) {
+                        missing_symbols.push(ph.phoneme.clone());
+                    }
+                    pad
+                }
+            }
             };
             ids.push(ctx_id);
         }
@@ -167,6 +180,7 @@ fn build_frame_features(
         feats,
         groups,
         f0_hz,
+        missing_symbols,
     }
 }
 
@@ -200,6 +214,13 @@ impl pipeline::PhraseRenderer for MoeEngine {
     fn render_phrase(&self, input: &RenderInput) -> Result<Vec<f32>, String> {
         use burn::tensor::{Int, Tensor, TensorData};
         let ff = build_frame_features(input, &self.vocab);
+        if self.verbose && !ff.missing_symbols.is_empty() {
+            eprintln!(
+                "moe: {} input symbol(s) absent from checkpoint vocab; mapped to PAD: {:?}",
+                ff.missing_symbols.len(),
+                ff.missing_symbols
+            );
+        }
         let n = ff.ids.len() / WINDOW;
         if n == 0 {
             return Ok(Vec::new());

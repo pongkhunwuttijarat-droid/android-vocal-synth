@@ -4,24 +4,48 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"], optional = true }
 domain = { path = "../../crates/domain" }
 voicebank = { path = "../../crates/voicebank" }
 phonemizer = { path = "../../crates/phonemizer" }
 feed = { path = "../../crates/feed" }
 phrase = { path = "../../crates/phrase" }
-diffsinger = { path = "../../crates/diffsinger" }
 runtime = { path = "../../crates/runtime", features = ["feed-integration"] }
-worldline-plugin = { path = "../../crates/worldline-plugin", features = ["r2"] }
-ort = { version = "2.0.0-rc.13" }
-rayon = "1"
-mixer-fx = { path = "../../crates/mixer-fx" }
-moe-train = { path = "../../crates/moe-train" }
-burn = { version = "0.21", features = ["ndarray", "wgpu", "std", "train"] }
 wavwriter = { path = "../../crates/wavwriter" }
 storage = { path = "../../crates/storage" }
 serde_yaml = "0.9"
+worldline-rs = { path = "../../crates/worldline-rs" }
+mixer-fx = { path = "../../crates/mixer-fx", default-features = false }
+
+# Native-only: the dlopen'd `.so` renderer.
+worldline-plugin = { path = "../../crates/worldline-plugin", default-features = false }
+
+# Native-only heavy engines (ONNX runtime / burn). All optional so the
+# pipeline can be compiled for wasm32-unknown-unknown with
+# `--no-default-features`.
+ort = { version = "2.0.0-rc.13", optional = true }
+diffsinger = { path = "../../crates/diffsinger", optional = true }
+moe-train = { path = "../../crates/moe-train", optional = true }
+burn = { version = "0.21", features = ["ndarray", "wgpu", "std", "train"], optional = true }
+rayon = { version = "1", optional = true }
 
 [features]
-default = ["r2"]
-r2 = []
+# Native default: the `.so` renderer + the neural engines + parallel chunks.
+default = ["ffi", "r2", "parallel"]
+# `libworldline.so` (dlopen). Off for wasm — `r1-rs` uses `worldline-rs`.
+ffi = ["worldline-plugin/ffi", "mixer-fx/ffi"]
+# Parallel per-chunk rendering (rayon). Off for wasm: no thread pool.
+parallel = ["dep:rayon"]
+# Neural engines: r2 (mel→HiFiGAN), classic, DiffSinger, MoE.
+r2 = ["dep:ort", "dep:diffsinger", "dep:moe-train", "dep:burn", "worldline-plugin/r2"]
+# The CLI binary (clap). Off for wasm — the browser uses the wasm bindings.
+cli = ["dep:clap"]
+
+[[bin]]
+name = "synth-cli"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[dev-dependencies]
+libloading = "0.8"
+worldline-sys = { path = "../../crates/worldline-sys" }

@@ -12,9 +12,12 @@ use std::path::Path;
 
 use domain::capabilities::EngineCapabilities;
 use domain::UProject;
+#[cfg(feature = "ffi")]
 use runtime::RenderCache;
 use voicebank::Voicebank;
-use worldline_plugin::{WorldlineCapabilities, WorldlineRenderer};
+use worldline_plugin::WorldlineCapabilities;
+#[cfg(feature = "ffi")]
+use worldline_plugin::WorldlineRenderer;
 
 use crate::pipeline::{self, PhonemizerKind, RenderReport};
 
@@ -60,6 +63,7 @@ pub trait Engine {
 
     /// Attach a mixer FX plugin (dlopen'd libmixerfx.so). Default: no-op
     /// for engines without mixer support.
+    #[cfg(feature = "ffi")]
     fn set_mixer(&mut self, _mixer: mixer_fx::MixerFx) {}
 }
 
@@ -67,6 +71,10 @@ pub trait Engine {
 /// render cache, exposing the [`Engine`] interface. The renderer is
 /// `!Send` (owns C++ handles), so the adapter is created and used on the
 /// render worker thread — exactly like the previous `RenderService`.
+///
+/// Native-only (needs the dlopen'd `.so`); the wasm build uses
+/// [`WorldlineRsEngine`].
+#[cfg(feature = "ffi")]
 pub struct WorldlineEngine {
     renderer: WorldlineRenderer,
     /// Render cache (res-{hash} next to the voicebank), kept across
@@ -80,6 +88,7 @@ pub struct WorldlineEngine {
     verbose: bool,
 }
 
+#[cfg(feature = "ffi")]
 impl WorldlineEngine {
     /// dlopen `so_path` and wrap it. `verbose` mirrors the pipeline flag.
     pub fn open(so_path: impl AsRef<Path>, verbose: bool) -> Result<Self, String> {
@@ -239,6 +248,7 @@ impl Engine for WorldlineR2Engine {
     }
 }
 
+#[cfg(feature = "ffi")]
 impl Engine for WorldlineEngine {
     fn name(&self) -> &'static str {
         // This is the WORLD-resynthesis path (PhraseSynth.Synth()) —
@@ -266,7 +276,9 @@ impl Engine for WorldlineEngine {
             kind,
             self.verbose,
             &mut self.cache,
-            self.mixer.as_mut(),
+            self.mixer
+                .as_mut()
+                .map(|m| m as &mut dyn pipeline::PostMixFx),
             Some(&self.cancel),
         )
     }
@@ -285,6 +297,106 @@ impl Engine for WorldlineEngine {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("cache dir {}: {e}", dir.display()))?;
         self.cache = Some(RenderCache::new_in_dir(dir, max_bytes));
+        Ok(())
+    }
+}
+
+/// `WORLDLINE-R` with the pure-Rust kernel (`worldline-rs`) instead of the
+/// dlopen'd `libworldline.so`.
+///
+/// Same request conversion and curve sampling as [`WorldlineEngine`]; the
+/// WORLD analysis + resynthesis run in `world-rs` (no `.so` at all). Wired
+/// as a selectable engine — the C++ `.so` path stays the default until the
+/// comparison clears it.
+pub struct WorldlineRsEngine {
+    frame_ms: f64,
+    verbose: bool,
+}
+
+impl WorldlineRsEngine {
+    /// No `.so` is needed; `verbose` mirrors the pipeline flag.
+    pub fn open(verbose: bool) -> Result<Self, String> {
+        Ok(WorldlineRsEngine {
+            frame_ms: worldline_plugin::DEFAULT_FRAME_MS,
+            verbose,
+        })
+    }
+
+    /// Frame size the Rust phrase path uses (v2 default, overridable by
+    /// `WORLD_FRAME_MS` exactly like the `.so` renderer).
+    pub fn frame_ms(&self) -> f64 {
+        std::env::var_os("WORLD_FRAME_MS")
+            .and_then(|v| v.to_str().and_then(|s| s.parse::<f64>().ok()))
+            .unwrap_or(self.frame_ms)
+    }
+
+    fn phonemizer_kind(&self, project: &UProject, track_no: i32) -> Result<PhonemizerKind, String> {
+        let track = project
+            .tracks
+            .get(track_no as usize)
+            .ok_or_else(|| format!("track {track_no} not found"))?;
+        match track.phonemizer.as_deref().unwrap_or("English") {
+            "Japanese" => Ok(PhonemizerKind::Japanese),
+            _ => Ok(PhonemizerKind::English),
+        }
+    }
+}
+
+impl pipeline::PhraseRenderer for WorldlineRsEngine {
+    fn render_phrase(&self, input: &feed::render_input::RenderInput) -> Result<Vec<f32>, String> {
+        worldline_rs::render_phrase(input, self.frame_ms())
+    }
+    fn cache_salt(&self) -> u64 {
+        // "worldline-r-rs" — never share chunk caches with the .so r1 path.
+        0x726c31_7273_0004
+    }
+    // Pure Rust, no shared C++ randn state: verified deterministic under
+    // concurrent chunk renders (same class as the .so r1 path).
+    fn parallel_safe(&self) -> bool {
+        true
+    }
+}
+
+impl Engine for WorldlineRsEngine {
+    fn name(&self) -> &'static str {
+        "worldline-r-rs"
+    }
+
+    fn capabilities(&self) -> &dyn EngineCapabilities {
+        WorldlineCapabilities::get()
+    }
+
+    fn render_project(
+        &mut self,
+        project: &UProject,
+        voicebank: &Voicebank,
+        track_no: i32,
+    ) -> Result<RenderReport, String> {
+        let kind = self.phonemizer_kind(project, track_no)?;
+        pipeline::render_project(
+            project,
+            voicebank,
+            self,
+            track_no,
+            kind,
+            self.verbose,
+            &mut None,
+            None,
+            None,
+        )
+    }
+
+    fn synth_note(
+        &self,
+        voicebank: &Voicebank,
+        alias: &str,
+        tone: i32,
+        duration_ms: f64,
+    ) -> Result<Vec<f32>, String> {
+        pipeline::synth_note(voicebank, self, alias, tone, duration_ms)
+    }
+
+    fn set_cache_dir(&mut self, _dir: &Path, _max_bytes: usize) -> Result<(), String> {
         Ok(())
     }
 }

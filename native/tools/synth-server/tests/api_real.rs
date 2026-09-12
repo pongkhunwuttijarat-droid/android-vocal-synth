@@ -60,7 +60,10 @@ fn real_state() -> Arc<AppState> {
         mock_bank_path(),
         projects,
         scan.entries,
-        Some(RenderService::spawn(so_path(), None, "{}".to_string(), None, None, None).expect("spawn render service")),
+        Some(
+            RenderService::spawn(so_path(), None, "{}".to_string(), None, None, None, None, None)
+                .expect("spawn render service"),
+        ),
     ));
     state.projects.ensure().expect("projects dir");
     state

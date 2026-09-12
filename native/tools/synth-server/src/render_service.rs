@@ -243,6 +243,19 @@ fn run_worker(
     };
     engines.insert("r1".to_string(), Box::new(r1));
 
+    // r1-rs: the SAME WORLDLINE-R phrase path on the pure-Rust kernel
+    // (worldline-rs) — no dlopen'd .so for the DSP. Selectable via
+    // `engine: "r1-rs"`; the .so path stays the default.
+    match synth_cli::engine::WorldlineRsEngine::open(false) {
+        Ok(e) => {
+            engines.insert("r1-rs".to_string(), Box::new(e));
+        }
+        Err(e) => {
+            let _ = ready.send(Err(format!("open r1-rs engine: {e}")));
+            return;
+        }
+    }
+
     // classic: SynthFeatures → C++ WorldSynthesis (no neural vocoder).
     match synth_cli::engine::WorldlineClassicEngine::open(&so_path, false) {
         Ok(e) => {
@@ -339,6 +352,7 @@ fn run_worker(
                 // ("ระหว่างท่อน").
                 let resolve = |name: &str| -> Option<&dyn pipeline::PhraseRenderer> {
                     match name {
+                        "r1-rs" if engines.contains_key("r1-rs") => engines.get("r1-rs"),
                         "r2" if engines.contains_key("r2") => engines.get("r2"),
                         "classic" if engines.contains_key("classic") => engines.get("classic"),
                         "diffsinger" if engines.contains_key("diffsinger") => {

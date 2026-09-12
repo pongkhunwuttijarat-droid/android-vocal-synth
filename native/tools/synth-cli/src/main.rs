@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use synth_cli::engine::{DsEngine, WorldlineClassicEngine, WorldlineR2Engine};
+use synth_cli::engine::{DsEngine, WorldlineClassicEngine, WorldlineR2Engine, WorldlineRsEngine};
 use synth_cli::moe::MoeEngine;
 use synth_cli::pipeline::{self, PhonemizerKind, SAMPLE_RATE};
 use wavwriter::{write_wav_16, write_wav_file};
@@ -38,6 +38,7 @@ enum Command {
 enum PhonemizerArg {
     English,
     Japanese,
+    Universal,
 }
 
 #[derive(Args)]
@@ -70,6 +71,7 @@ struct RenderArgs {
     /// r2 = WORLDLINE-R2 (neural mel→HiFiGAN; needs --mel-onnx and
     /// --vocoder-onnx), classic = WORLDLINE-R Classic (SynthFeatures →
     /// C++ WorldSynthesis — the reference v1 feature path),
+    /// r1-rs = WORLDLINE-R on the pure-Rust kernel (worldline-rs, no .so),
     /// diffsinger = diffusion acoustic model (needs --ds-model).
     #[arg(long, value_enum, default_value_t = EngineArg::R1)]
     engine: EngineArg,
@@ -90,6 +92,13 @@ struct RenderArgs {
     /// MoE engine: pc-nsf-hifigan onnx (only with --engine moe).
     #[arg(long)]
     moe_vocoder: Option<PathBuf>,
+    /// MoE engine: general-expert hidden width (default 1024; match the
+    /// checkpoint's training --hidden or load fails).
+    #[arg(long, default_value_t = moe_train::baseline::DEFAULT_HIDDEN)]
+    moe_hidden: usize,
+    /// MoE engine: general-expert depth (default 1; match training).
+    #[arg(long, default_value_t = moe_train::baseline::DEFAULT_DEPTH)]
+    moe_depth: usize,
     /// Print per-phrase progress.
     #[arg(long)]
     verbose: bool,
@@ -98,6 +107,8 @@ struct RenderArgs {
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum EngineArg {
     R1,
+    #[value(name = "r1-rs")]
+    R1Rs,
     R2,
     Classic,
     #[value(name = "diffsinger")]
@@ -155,6 +166,10 @@ fn cmd_render(args: RenderArgs) -> Result<(), String> {
             worldline_plugin::WorldlineRenderer::open(&args.so)
                 .map_err(|e| format!("open {}: {e}", args.so.display()))?,
         ),
+        EngineArg::R1Rs => Box::new(
+            WorldlineRsEngine::open(args.verbose)
+                .map_err(|e| format!("open r1-rs engine: {e}"))?,
+        ),
         EngineArg::R2 => {
             let mel = args
                 .mel_onnx
@@ -191,8 +206,8 @@ fn cmd_render(args: RenderArgs) -> Result<(), String> {
                 MoeEngine::open(
                     prefix,
                     vocoder,
-                    moe_train::baseline::DEFAULT_HIDDEN,
-                    moe_train::baseline::DEFAULT_DEPTH,
+                    args.moe_hidden,
+                    args.moe_depth,
                     args.verbose,
                 )
                 .map_err(|e| format!("open moe engine: {e}"))?,
@@ -207,6 +222,7 @@ fn cmd_render(args: RenderArgs) -> Result<(), String> {
     let kind = match args.phonemizer {
         Some(PhonemizerArg::English) => PhonemizerKind::English,
         Some(PhonemizerArg::Japanese) => PhonemizerKind::Japanese,
+        Some(PhonemizerArg::Universal) => PhonemizerKind::Universal,
         None => PhonemizerKind::from_track(track),
     };
     if args.verbose {
@@ -245,7 +261,9 @@ fn cmd_render(args: RenderArgs) -> Result<(), String> {
             kind,
             args.verbose,
             &mut cache,
-            mixer.as_mut(),
+            mixer
+                .as_mut()
+                .map(|m| m as &mut dyn pipeline::PostMixFx),
             None,
         )?
     };

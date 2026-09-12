@@ -18,7 +18,7 @@
 
 use std::ops::Range;
 
-use feed::render_input::{RenderNote, RenderPhoneme};
+use feed::render_input::{RenderInput, RenderNote, RenderPhoneme};
 
 /// One renderable chunk: the phoneme range to render (`ctx_range`,
 /// includes context) and the audio span to keep (`start_ms..end_ms`).
@@ -34,25 +34,143 @@ pub struct Chunk {
     pub end_ms: f64,
 }
 
+
+/// Hash the `window` slice of `values`, clamped to the array.
+///
+/// Clamping matters: a chunk's time window can extend past the array the
+/// builder produced, and a naive `values[lo..hi]` then yields an EMPTY slice —
+/// which would silently make the cache key blind to edits in that curve. For a
+/// non-empty array this always hashes at least one element.
+fn hash_window<T: std::hash::Hash>(h: &mut impl std::hash::Hasher, values: &[T], window: &Range<usize>) {
+    use std::hash::Hash as _;
+    (values.len() as u64).hash(h);
+    if values.is_empty() {
+        return;
+    }
+    let last = values.len() - 1;
+    let lo = window.start.min(last);
+    let hi = window.end.clamp(lo + 1, values.len());
+    for v in &values[lo..hi] {
+        v.hash(h);
+    }
+}
+
+/// Same, for `f32` (hashed by bit pattern so the key is deterministic).
+fn hash_window_f32(h: &mut impl std::hash::Hasher, values: &[f32], window: &Range<usize>) {
+    use std::hash::Hash as _;
+    (values.len() as u64).hash(h);
+    if values.is_empty() {
+        return;
+    }
+    let last = values.len() - 1;
+    let lo = window.start.min(last);
+    let hi = window.end.clamp(lo + 1, values.len());
+    for v in &values[lo..hi] {
+        v.to_bits().hash(h);
+    }
+}
+
 impl Chunk {
-    /// Cache key: hash of the phonemes in the RENDERED range (own +
-    /// context), salted with the engine id so different engines (r1
-    /// WORLD vs r2 neural) never share cache entries. Editing any note
-    /// changes the chunks that own it and the chunks that use it as
-    /// context.
-    pub fn hash(&self, phonemes: &[RenderPhoneme], engine_salt: u64) -> u64 {
+    /// Cache key for the rendered audio of this chunk.
+    ///
+    /// Covers **everything that changes the PCM**: the engine salt, the phrase
+    /// frame (curve-sampling origin and interval), every field of the rendered
+    /// phonemes (own + context), the oto entries behind them, and the pitch /
+    /// expression-curve window the chunk samples.
+    ///
+    /// The curve/pitch part matters: DYN/GENC/TENC/BREC/VOIC are sampled into
+    /// `input.curves` and PITD into `input.pitches_cents`, and neither appears
+    /// in the phoneme records. Hashing only the phonemes (as this did before)
+    /// serves **stale PCM after any curve or pitch edit** — the edit changes
+    /// the audio but not the key. `runtime::feed_hash` already had complete
+    /// `HashKey` impls for these types; this is the key actually used by the
+    /// render pipeline and by the wasm engine's chunk cache.
+    pub fn hash(&self, input: &RenderInput, engine_salt: u64) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         engine_salt.hash(&mut h);
-        (self.ctx_range.len() as u64).hash(&mut h);
-        for ph in &phonemes[self.ctx_range.clone()] {
+
+        // Phrase frame: the curve origin is `position_ms - leading_ms` and the
+        // grid step derives from `leading_ticks`/`time_axis_hint`.
+        input.phrase.position_ms.to_bits().hash(&mut h);
+        input.phrase.duration_ms.to_bits().hash(&mut h);
+        input.phrase.leading_ms.to_bits().hash(&mut h);
+        input.phrase.leading_ticks.hash(&mut h);
+        input.phrase.time_axis_hint.hash(&mut h);
+
+        // Rendered phonemes (own + context): every field that reaches the
+        // renderer. `leading_ms`/`overlap_ms` were missing before and they
+        // shift the timing.
+        let phonemes = &input.phonemes[self.ctx_range.clone()];
+        (phonemes.len() as u64).hash(&mut h);
+        for ph in phonemes {
             ph.phoneme.hash(&mut h);
             ph.position_ms.to_bits().hash(&mut h);
             ph.duration_ms.to_bits().hash(&mut h);
+            ph.leading_ms.to_bits().hash(&mut h);
+            ph.overlap_ms.to_bits().hash(&mut h);
             ph.tone.hash(&mut h);
             ph.tone_shift.hash(&mut h);
+            ph.index.hash(&mut h);
+            ph.parent_note.hash(&mut h);
         }
+
+        // The oto entries behind those phonemes (offset/cutoff/envelope/flags
+        // all change the rendered audio).
+        if let Some(sb) = input.sample_based.as_ref() {
+            if let Some(otos) = sb.oto.get(self.ctx_range.clone()) {
+                (otos.len() as u64).hash(&mut h);
+                for oto in otos {
+                    oto.alias.hash(&mut h);
+                    oto.wav_path.hash(&mut h);
+                    oto.offset.to_bits().hash(&mut h);
+                    oto.consonant.to_bits().hash(&mut h);
+                    oto.cutoff.to_bits().hash(&mut h);
+                    oto.preutter.to_bits().hash(&mut h);
+                    oto.overlap.to_bits().hash(&mut h);
+                    oto.flags.hash(&mut h);
+                    (oto.envelope.len() as u64).hash(&mut h);
+                    for p in &oto.envelope {
+                        p.x_ms.to_bits().hash(&mut h);
+                        p.y.to_bits().hash(&mut h);
+                    }
+                }
+            }
+        }
+
+        // Pitch + expression curves over the window this chunk samples.
+        let window = self.curve_window(input);
+        hash_window(&mut h, &input.pitches_cents, &window);
+        hash_window_f32(&mut h, &input.curves.dynamics, &window);
+        hash_window_f32(&mut h, &input.curves.gender, &window);
+        hash_window_f32(&mut h, &input.curves.breathiness, &window);
+        hash_window_f32(&mut h, &input.curves.tension, &window);
+        hash_window_f32(&mut h, &input.curves.voicing, &window);
+        (input.curves.extra.len() as u64).hash(&mut h);
+        for named in &input.curves.extra {
+            named.abbr.hash(&mut h);
+            hash_window_f32(&mut h, &named.values, &window);
+        }
+
         h.finish()
+    }
+
+    /// Grid-index window this chunk samples, in the phrase's curve arrays.
+    ///
+    /// The arrays are stepped by [`worldline_plugin::ms_per_interval`] from the
+    /// phrase origin (`position_ms - leading_ms`). The window spans the
+    /// context range's time extent plus one interval of slack on each side,
+    /// because the renderer interpolates between neighbouring grid points.
+    pub fn curve_window(&self, input: &RenderInput) -> Range<usize> {
+        let origin_ms = input.phrase.position_ms - input.phrase.leading_ms;
+        let first = &input.phonemes[self.ctx_range.start];
+        let last = &input.phonemes[self.ctx_range.end - 1];
+        let start_ms = first.position_ms - first.leading_ms;
+        let end_ms = last.position_ms + last.duration_ms;
+        let interval = worldline_plugin::ms_per_interval(input).max(1e-9);
+        let lo = (((start_ms - origin_ms) / interval).floor() as i64 - 1).max(0) as usize;
+        let hi = ((((end_ms - origin_ms) / interval).ceil() as i64) + 2).max(0) as usize;
+        lo..hi.max(lo)
     }
 }
 
@@ -270,6 +388,86 @@ mod tests {
         let phonemes = vec![ph(0, 0.0, 100.0), ph(1, 1000.0, 100.0)];
         let chunks = plan_chunks(&phonemes, &notes, 100000.0, 0);
         assert_eq!(chunks.len(), 2, "rest should split into 2 chunks: {chunks:?}");
+    }
+
+    /// Build a minimal RenderInput whose curve/pitch arrays are the only
+    /// thing a test varies.
+    fn input_with_curves(tension: f32, pitch: i32) -> feed::render_input::RenderInput {
+        use feed::render_input::{Curves, PhraseInfo, RenderInput};
+        // Grid step here is leading_ms/leading_ticks*5 ≈ 1.04 ms over a
+        // ~1.1 s span, so the arrays need ~1100 entries — sized like the real
+        // builder produces them.
+        let n = 1200;
+        RenderInput {
+            phrase: PhraseInfo {
+                position_ms: 0.0,
+                duration_ms: 2000.0,
+                leading_ms: 100.0,
+                leading_ticks: 480,
+                time_axis_hint: None,
+            },
+            notes: vec![note(0.0, 500.0), note(500.0, 500.0)],
+            phonemes: vec![ph(0, 0.0, 500.0), ph(1, 500.0, 500.0)],
+            pitches_cents: vec![pitch; n],
+            curves: Curves {
+                dynamics: vec![1.0; n],
+                gender: vec![0.0; n],
+                breathiness: vec![0.0; n],
+                tension: vec![tension; n],
+                voicing: vec![100.0; n],
+                extra: Vec::new(),
+            },
+            sample_based: None,
+            neural: None,
+        }
+    }
+
+    fn one_chunk() -> Chunk {
+        Chunk {
+            ctx_range: 0..2,
+            own_range: 0..2,
+            start_ms: 0.0,
+            end_ms: 1000.0,
+        }
+    }
+
+    /// The cache key MUST change when an expression curve changes, otherwise
+    /// the render cache (native `res-{hash}.bin` and the wasm chunk cache)
+    /// serves stale PCM after a curve edit. Regression: the old key hashed
+    /// only the phoneme records, which do not carry the curves.
+    #[test]
+    fn hash_changes_when_curves_change() {
+        let chunk = one_chunk();
+        let a = chunk.hash(&input_with_curves(0.0, 6000), 7);
+        let b = chunk.hash(&input_with_curves(50.0, 6000), 7);
+        assert_ne!(a, b, "tension edit did not change the chunk hash");
+    }
+
+    /// Same for the pitch grid (PITD is not in the phoneme records either).
+    #[test]
+    fn hash_changes_when_pitch_changes() {
+        let chunk = one_chunk();
+        let a = chunk.hash(&input_with_curves(0.0, 6000), 7);
+        let b = chunk.hash(&input_with_curves(0.0, 6100), 7);
+        assert_ne!(a, b, "pitch edit did not change the chunk hash");
+    }
+
+    /// The engine salt must still discriminate engines.
+    #[test]
+    fn hash_changes_with_engine_salt() {
+        let chunk = one_chunk();
+        let input = input_with_curves(0.0, 6000);
+        assert_ne!(chunk.hash(&input, 1), chunk.hash(&input, 2));
+    }
+
+    /// ...and the same input must be stable (a cache is only useful then).
+    #[test]
+    fn hash_is_stable_for_identical_input() {
+        let chunk = one_chunk();
+        assert_eq!(
+            chunk.hash(&input_with_curves(10.0, 6000), 7),
+            chunk.hash(&input_with_curves(10.0, 6000), 7)
+        );
     }
 
     #[test]

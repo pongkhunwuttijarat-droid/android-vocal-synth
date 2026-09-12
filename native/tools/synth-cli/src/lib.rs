@@ -10,5 +10,6 @@
 
 pub mod chunking;
 pub mod engine;
+#[cfg(feature = "r2")]
 pub mod moe;
 pub mod pipeline;

@@ -24,6 +24,7 @@
 
 use std::path::Path;
 
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 use crate::chunking;
@@ -32,9 +33,33 @@ use feed::render_input::RenderInput;
 use phonemizer::{EnglishCvvcPhonemizer, JapaneseVcvPhonemizer, Phonemizer, TimingEngine};
 use phrase::{PhraseBuilder, PhraseGroup, PhraseGrouping};
 use runtime::mixer::{mix, AudioChunk, MixInput, TrackSpec};
+
+/// Post-mix FX applied to the final mixed stream.
+///
+/// Two implementations exist: the dlopen'd `libmixerfx.so` (native, `ffi`)
+/// and the pure-Rust chain [`mixer_fx::MixerChain`] (all targets, incl.
+/// wasm). The pipeline only needs "process this block".
+pub trait PostMixFx {
+    fn process(&mut self, samples: &mut [f32], pos_ms: f64) -> Result<(), String>;
+}
+
+#[cfg(feature = "ffi")]
+impl PostMixFx for mixer_fx::MixerFx {
+    fn process(&mut self, samples: &mut [f32], pos_ms: f64) -> Result<(), String> {
+        mixer_fx::MixerFx::process(self, samples, pos_ms)
+    }
+}
+
+impl PostMixFx for mixer_fx::MixerChain {
+    fn process(&mut self, samples: &mut [f32], pos_ms: f64) -> Result<(), String> {
+        mixer_fx::MixerChain::process(self, samples, pos_ms);
+        Ok(())
+    }
+}
 use runtime::RenderCache;
 use voicebank::load_voicebank as load_vb;
 use voicebank::Voicebank;
+#[cfg(feature = "ffi")]
 use worldline_plugin::WorldlineRenderer;
 
 /// Output sample rate of the whole pipeline (worldline + mixer).
@@ -88,8 +113,16 @@ impl PhonemizerKind {
 pub fn load_project(path: &Path) -> Result<UProject, String> {
     let yaml =
         std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    parse_project(&yaml).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Parse a `.ustx` project from YAML text (no filesystem).
+///
+/// The browser path loads the project text from storage (OPFS) and parses it
+/// here; the disk loader above is this plus the read.
+pub fn parse_project(yaml: &str) -> Result<UProject, String> {
     let mut project: UProject =
-        serde_yaml::from_str(&yaml).map_err(|e| format!("parse {}: {e}", path.display()))?;
+        serde_yaml::from_str(yaml).map_err(|e| format!("parse project: {e}"))?;
     project
         .after_load()
         .map_err(|e| format!("after_load: {e}"))?;
@@ -209,6 +242,7 @@ pub trait PhraseRenderer: Send + Sync {
     }
 }
 
+#[cfg(feature = "ffi")]
 impl PhraseRenderer for WorldlineRenderer {
     fn render_phrase(&self, input: &feed::render_input::RenderInput) -> Result<Vec<f32>, String> {
         WorldlineRenderer::render_phrase(self, input).map_err(|e| e.to_string())
@@ -225,6 +259,210 @@ impl PhraseRenderer for WorldlineRenderer {
     }
 }
 
+
+/// Build the per-chunk render input.
+///
+/// Slices the phrase's phonemes to the chunk's context range, rebases the
+/// phrase origin onto the first context phoneme, shifts the curve arrays to
+/// that origin and slices the oto list to match.
+///
+/// Extracted from [`render_project_with`] so a chunk renders identically
+/// whether it runs inside this pipeline (sequential or rayon-parallel) or in
+/// a wasm worker (`engine-wasm`), which fans chunks across Web Workers.
+pub fn chunk_render_input(phrase: &PhraseInput, chunk: &chunking::Chunk) -> RenderInput {
+    let mut sub = phrase.input.clone();
+    sub.phonemes = phrase.input.phonemes[chunk.ctx_range.clone()].to_vec();
+    // Point the phrase frame at the chunk's first context phoneme so the
+    // f0/expression curves start there — the renderer's curves are sampled
+    // from `phrase.position_ms - phrase.leading_ms`, and a stale full-phrase
+    // origin would prepend silence to the chunk.
+    let ctx_first = &phrase.input.phonemes[chunk.ctx_range.start];
+    let ctx_last = &phrase.input.phonemes[chunk.ctx_range.end - 1];
+    sub.phrase.position_ms = ctx_first.position_ms;
+    sub.phrase.leading_ms = ctx_first.leading_ms;
+    sub.phrase.duration_ms =
+        (ctx_last.position_ms + ctx_last.duration_ms) - ctx_first.position_ms;
+    // Rebasing `phrase.position_ms` above moved the curve sampling origin to
+    // the chunk's first context phoneme, but `pitches_cents`/`curves` are
+    // still FULL-phrase arrays indexed from the original phrase origin. A
+    // later chunk would sample the EARLIER notes' pitches (the scale demo's
+    // chunk 2 renders notes 0-7's pitches again — the descending scale
+    // "bounces back up"). Shift the arrays to the chunk origin (floor: the
+    // grid index floors anyway, and the grid is 5-tick steps — a
+    // sub-interval remainder matches the whole-phrase path).
+    let origin_old = phrase.input.phrase.position_ms - phrase.input.phrase.leading_ms;
+    let origin_new = ctx_first.position_ms - ctx_first.leading_ms;
+    if origin_new > origin_old + 0.001 {
+        let interval = worldline_plugin::ms_per_interval(&phrase.input);
+        let skip = ((origin_new - origin_old) / interval).floor() as usize;
+        if skip > 0 {
+            sub.pitches_cents.drain(..skip.min(sub.pitches_cents.len()));
+            for c in [
+                &mut sub.curves.dynamics,
+                &mut sub.curves.gender,
+                &mut sub.curves.breathiness,
+                &mut sub.curves.tension,
+                &mut sub.curves.voicing,
+            ] {
+                c.drain(..skip.min(c.len()));
+            }
+        }
+    }
+    // sample_based.oto is per-phoneme (1:1 with `phonemes` after the
+    // partial-mapping gate) — slice it to match the chunk's context range.
+    if let (Some(sb), Some(base)) = (sub.sample_based.as_mut(), phrase.input.sample_based.as_ref()) {
+        sb.oto = base.oto[chunk.ctx_range.clone()].to_vec();
+    }
+    sub
+}
+
+/// Trim a rendered (own+context) buffer back to the chunk's own span.
+///
+/// Returns `(samples, position_ms, leading_ms)`: the samples start at
+/// `position_ms - leading_ms` on the project timeline, which is what the
+/// mixer aligns by.
+pub fn trim_chunk_audio(
+    phrase: &PhraseInput,
+    chunk: &chunking::Chunk,
+    rendered: &[f32],
+) -> (Vec<f32>, f64, f64) {
+    let audio_start_ms = {
+        let ctx_first = &phrase.input.phonemes[chunk.ctx_range.start];
+        ctx_first.position_ms - ctx_first.leading_ms
+    };
+    let first_lead = phrase.input.phonemes[chunk.own_range.start].leading_ms;
+    let sr = f64::from(SAMPLE_RATE) / 1000.0;
+    let start_i = (((chunk.start_ms - first_lead) - audio_start_ms) * sr).max(0.0) as usize;
+    let end_i = ((chunk.end_ms - audio_start_ms) * sr) as usize;
+    let samples = if end_i > start_i && start_i < rendered.len() {
+        rendered[start_i..end_i.min(rendered.len())].to_vec()
+    } else {
+        Vec::new()
+    };
+    (samples, chunk.start_ms - first_lead, first_lead)
+}
+
+/// One entry of a track's chunk plan — the unit of parallel work.
+#[derive(Debug, Clone)]
+pub struct PlannedChunk {
+    /// Index into the track's phrase list.
+    pub phrase_index: usize,
+    /// The chunk (phoneme ranges + keep-span).
+    pub chunk: chunking::Chunk,
+    /// Where the trimmed audio starts on the project timeline.
+    pub position_ms: f64,
+    pub leading_ms: f64,
+}
+
+/// Plan every renderable chunk of `track_no`, in render order.
+///
+/// Phrases that cannot render (no/partial oto mapping) are reported in
+/// `skipped` and produce no chunks. A host can fan the plan out across
+/// workers and render one entry with [`render_planned_chunk`]; mixing the
+/// results in plan order with `runtime::mixer::mix` reproduces
+/// `render_project` exactly.
+pub fn plan_track_chunks(
+    project: &UProject,
+    voicebank: &Voicebank,
+    track_no: i32,
+    kind: PhonemizerKind,
+) -> Result<(Vec<PhraseInput>, Vec<PlannedChunk>, Vec<String>), String> {
+    let track = project.tracks.get(track_no as usize).ok_or_else(|| {
+        format!(
+            "track {track_no} not found (project has {} tracks)",
+            project.tracks.len()
+        )
+    })?;
+    let parts: Vec<&UVoicePart> = project
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            UPart::Voice(voice) if voice.track_no == track_no => Some(voice),
+            _ => None,
+        })
+        .collect();
+    if parts.is_empty() {
+        return Err(format!("no voice part found on track {track_no}"));
+    }
+
+    let mut phrases_all: Vec<PhraseInput> = Vec::new();
+    let mut planned: Vec<PlannedChunk> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for part in parts {
+        for phrase in build_phrase_inputs(project, track, part, voicebank, kind)? {
+            let phrase_index = phrases_all.len();
+            let names = |input: &RenderInput| -> String {
+                input
+                    .phonemes
+                    .iter()
+                    .map(|p| p.phoneme.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            if phrase.input.sample_based.is_none() {
+                skipped.push(format!(
+                    "part '{}' phrase @{:.0} ms: no phoneme maps to an oto alias ({})",
+                    part.name,
+                    phrase.group.position_ms,
+                    names(&phrase.input)
+                ));
+                continue;
+            }
+            let sb_oto_len = phrase
+                .input
+                .sample_based
+                .as_ref()
+                .map(|sb| sb.oto.len())
+                .unwrap_or(0);
+            if sb_oto_len != phrase.input.phonemes.len() {
+                skipped.push(format!(
+                    "part '{}' phrase @{:.0} ms: render failed — partial oto mapping ({} of {}) ({})",
+                    part.name,
+                    phrase.group.position_ms,
+                    sb_oto_len,
+                    phrase.input.phonemes.len(),
+                    names(&phrase.input)
+                ));
+                continue;
+            }
+            let chunks = chunking::plan_chunks(
+                &phrase.input.phonemes,
+                &phrase.input.notes,
+                CHUNK_TARGET_MS,
+                CHUNK_CONTEXT_NOTES,
+            );
+            let first_lead_of = |c: &chunking::Chunk| -> f64 {
+                phrase.input.phonemes[c.own_range.start].leading_ms
+            };
+            let entries: Vec<PlannedChunk> = chunks
+                .into_iter()
+                .map(|chunk| PlannedChunk {
+                    phrase_index,
+                    position_ms: chunk.start_ms - first_lead_of(&chunk),
+                    leading_ms: first_lead_of(&chunk),
+                    chunk,
+                })
+                .collect();
+            phrases_all.push(phrase);
+            planned.extend(entries);
+        }
+    }
+    Ok((phrases_all, planned, skipped))
+}
+
+/// Render one planned chunk (one unit of parallel work) → its trimmed PCM.
+pub fn render_planned_chunk(
+    phrases: &[PhraseInput],
+    planned: &PlannedChunk,
+    renderer: &dyn PhraseRenderer,
+) -> Result<Vec<f32>, String> {
+    let phrase = &phrases[planned.phrase_index];
+    let sub = chunk_render_input(phrase, &planned.chunk);
+    let rendered = renderer.render_phrase(&sub)?;
+    let (samples, _, _) = trim_chunk_audio(phrase, &planned.chunk, &rendered);
+    Ok(samples)
+}
+
 /// Render every voice part of `track_no` and mix the phrases in time.
 ///
 /// A phrase whose phonemes do not map to oto aliases is skipped (with a
@@ -239,7 +477,7 @@ pub fn render_project(
     kind: PhonemizerKind,
     verbose: bool,
     cache: &mut Option<RenderCache>,
-    mixer: Option<&mut mixer_fx::MixerFx>,
+    mixer: Option<&mut dyn PostMixFx>,
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<RenderReport, String> {
     render_project_with(
@@ -270,7 +508,7 @@ pub fn render_project_with(
     kind: PhonemizerKind,
     verbose: bool,
     cache: &mut Option<RenderCache>,
-    mixer: Option<&mut mixer_fx::MixerFx>,
+    mixer: Option<&mut dyn PostMixFx>,
     cancel: Option<&std::sync::atomic::AtomicBool>,
     engine_by_phrase: Option<&dyn Fn(usize) -> &'static dyn PhraseRenderer>,
 ) -> Result<RenderReport, String> {
@@ -385,58 +623,8 @@ if let Some(c) = cancel {
         return Err("render cancelled".to_string());
     }
 }
-let key = chunk.hash(&phrase.input.phonemes, phrase_renderer.cache_salt());
-let mut sub = phrase.input.clone();
-sub.phonemes = phrase.input.phonemes[chunk.ctx_range.clone()].to_vec();
-// Point the phrase frame at the chunk's first context
-// phoneme so the f0/expression curves start there — the
-// renderer's curves are sampled from
-// `phrase.position_ms - phrase.leading_ms`, and a stale
-// full-phrase origin would prepend silence to the chunk.
-let ctx_first = &phrase.input.phonemes[chunk.ctx_range.start];
-let ctx_last = &phrase.input.phonemes[chunk.ctx_range.end - 1];
-sub.phrase.position_ms = ctx_first.position_ms;
-sub.phrase.leading_ms = ctx_first.leading_ms;
-sub.phrase.duration_ms =
-    (ctx_last.position_ms + ctx_last.duration_ms) - ctx_first.position_ms;
-// Rebasing `phrase.position_ms` above moved the curve
-// sampling origin to the chunk's first context phoneme,
-// but `pitches_cents`/`curves` are still FULL-phrase
-// arrays indexed from the original phrase origin. A
-// later chunk would sample the EARLIER notes' pitches
-// (the scale demo's chunk 2 renders notes 0-7's pitches
-// again — the descending scale "bounces back up").
-// Shift the arrays to the chunk origin (floor: the grid
-// index floors anyway, and the grid is 5-tick steps — a
-// sub-interval remainder matches the whole-phrase path).
-let origin_old = phrase.input.phrase.position_ms
-    - phrase.input.phrase.leading_ms;
-let origin_new = ctx_first.position_ms - ctx_first.leading_ms;
-if origin_new > origin_old + 0.001 {
-    let interval = worldline_plugin::ms_per_interval(&phrase.input);
-    let skip = ((origin_new - origin_old) / interval).floor() as usize;
-    if skip > 0 {
-        sub.pitches_cents.drain(..skip.min(sub.pitches_cents.len()));
-        for c in [
-            &mut sub.curves.dynamics,
-            &mut sub.curves.gender,
-            &mut sub.curves.breathiness,
-            &mut sub.curves.tension,
-            &mut sub.curves.voicing,
-        ] {
-            c.drain(..skip.min(c.len()));
-        }
-    }
-}
-// sample_based.oto is per-phoneme (1:1 with `phonemes`
-// after the partial-mapping gate above) — slice it to
-// match the chunk's context range.
-if let (Some(sb), Some(base)) = (
-    sub.sample_based.as_mut(),
-    phrase.input.sample_based.as_ref(),
-) {
-    sb.oto = base.oto[chunk.ctx_range.clone()].to_vec();
-}
+let key = chunk.hash(&phrase.input, phrase_renderer.cache_salt());
+let sub = chunk_render_input(&phrase, chunk);
 // `get_or_compute`'s closure cannot return a Result, so
 // render first when missing and propagate errors; on a
 // cache hit the render is skipped. The cache is behind a
@@ -485,17 +673,7 @@ let rendered: Vec<f32> = match &cache_mutex {
 };
 // Trim the rendered (own+context) audio back to the chunk's
 // own span, keeping the first phoneme's leading.
-let ctx_first = &phrase.input.phonemes[chunk.ctx_range.start];
-let audio_start_ms = ctx_first.position_ms - ctx_first.leading_ms;
-let first_lead = phrase.input.phonemes[chunk.own_range.start].leading_ms;
-let sr = f64::from(SAMPLE_RATE) / 1000.0;
-let start_i = (((chunk.start_ms - first_lead) - audio_start_ms) * sr).max(0.0) as usize;
-let end_i = (((chunk.end_ms) - audio_start_ms) * sr) as usize;
-let samples = if end_i > start_i && start_i < rendered.len() {
-    rendered[start_i..end_i.min(rendered.len())].to_vec()
-} else {
-    Vec::new()
-};
+let (samples, position_ms, leading_ms) = trim_chunk_audio(&phrase, chunk, &rendered);
 if verbose {
     println!(
         "  phrase @{:.0} ms chunk {}-{} (own {}-{}): {} samples ({:.0} ms){}",
@@ -512,16 +690,31 @@ if verbose {
 Ok(Some(MixInput {
     chunk: AudioChunk {
         samples,
-        // samples[0] starts at (chunk.start - first lead).
-        position_ms: chunk.start_ms - first_lead,
-        leading_ms: first_lead,
+        // samples[0] starts at (position_ms - leading_ms).
+        position_ms,
+        leading_ms,
         hash: key,
     },
     track: TrackSpec::default(),
 }))
             };
-            let chunk_results: Result<Vec<Option<MixInput>>, String> = if phrase_renderer.parallel_safe() {
-                chunk_plan.par_iter().map(render_chunk).collect()
+            // Parallel (rayon) only where a thread pool exists and the
+            // engine verified determinism; wasm (no thread pool) renders
+            // sequentially, and a host can instead fan chunks out across
+            // Web Workers via `plan_track_chunks`/`render_planned_chunk`.
+            #[cfg(feature = "parallel")]
+            let parallel = phrase_renderer.parallel_safe();
+            #[cfg(not(feature = "parallel"))]
+            let parallel = false;
+            let chunk_results: Result<Vec<Option<MixInput>>, String> = if parallel {
+                #[cfg(feature = "parallel")]
+                {
+                    chunk_plan.par_iter().map(render_chunk).collect()
+                }
+                #[cfg(not(feature = "parallel"))]
+                {
+                    unreachable!("`parallel` is always false without the feature")
+                }
             } else {
                 chunk_plan.iter().map(render_chunk).collect()
             };

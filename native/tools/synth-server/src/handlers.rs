@@ -93,7 +93,8 @@ pub struct RenderRequest {
     /// Track index to render (default 0).
     #[serde(default)]
     pub track: Option<i32>,
-    /// Synthesis engine: "r1" (WORLDLINE-R, default), "r2" (WORLDLINE-R2
+    /// Synthesis engine: "r1" (WORLDLINE-R, default), "r1-rs"
+    /// (WORLDLINE-R on the pure-Rust kernel — no .so), "r2" (WORLDLINE-R2
     /// neural — needs both ONNX models), "classic" (WORLDLINE-R Classic:
     /// SynthFeatures → C++ WorldSynthesis).
     #[serde(default)]
