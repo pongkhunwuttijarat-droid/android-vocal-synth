@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>smoke</title></head>
+<body><pre id="out">running…</pre>
+<script type="module">
+import init, { Engine } from "./pkg/engine_wasm.js";
+// Every line is prefixed so the runner can pick results out of `--dump-dom`
+// (which echoes the inline <script> source too).
+// Built at runtime so the marker never appears verbatim in this source
+// (the runner greps the DOM dump, which includes the script text).
+const MARK = "SMOKE" + "| ";
+const out = (m) => { document.getElementById("out").textContent += "\n" + MARK + m; };
+try {
+  const oto = await (await fetch("/fixture/oto.ini")).text();
+  const project = await (await fetch("/fixture/demo-song.ustx")).text();
+  await init();
+  out("wasm loaded");
+  const engine = new Engine();
+  engine.set_voicebank("teto", "Teto", "voice", new TextEncoder().encode(oto));
+  const aliases = engine.alias_count();
+  out("aliases=" + aliases);
+  let loaded = 0, withFrq = 0;
+  for (const key of engine.wav_keys().split("\n").filter(Boolean)) {
+    const r = await fetch("/fixture/bank/" + key);
+    if (!r.ok) continue;
+    const wav = new Uint8Array(await r.arrayBuffer());
+    const fr = await fetch("/fixture/bank/" + key.replace(/\.wav$/i, "_wav.frq"));
+    if (fr.ok) { engine.add_sample_with_frq(key, wav, new Uint8Array(await fr.arrayBuffer())); withFrq++; }
+    else { engine.add_sample(key, wav); }
+    loaded++;
+  }
+  out(`samples=${loaded} withFrq=${withFrq}`);
+  const t0 = performance.now();
+  const pcm = engine.render_project(project, 0);
+  const ms = performance.now() - t0;
+  let peak = 0; for (const v of pcm) peak = Math.max(peak, Math.abs(v));
+  out(`render: ${pcm.length} samples in ${ms.toFixed(0)} ms, peak=${peak.toFixed(4)}`);
+  const wav = engine.render_project_wav(project, 0);
+  out(`wav bytes=${wav.length} magic=${String.fromCharCode(...wav.slice(0,4))}`);
+  const pass = aliases > 100 && loaded >= 6 && pcm.length > 44100 && peak > 1e-3;
+  out(pass ? "RESULT: PASS" : "RESULT: FAIL");
+} catch (e) {
+  out("RESULT: ERROR " + e);
+}
+</script></body></html>

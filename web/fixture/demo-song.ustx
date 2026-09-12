@@ -1,0 +1,100 @@
+# Demo song for the synth-cli first-sound milestone.
+# Same rhythm as mock-song.ustx (4 notes, 120 BPM, 4/4, quarter = 480 ticks
+# = 500 ms), but the phonetic hints use the Teto English bank's own CVVC
+# symbols (s i l e d 3 A — all single-token aliases in
+# test/golden/teto-english/library/voice/oto.ini). mock-song.ustx's ARPABET
+# hints (r iy d eh ae) do NOT exist in that bank, so this file exists for
+# the real render path; mock-song stays the phonemizer/grouping fixture.
+ustx_version: 0.9
+name: Demo Song
+comment: ''
+output_dir: ''
+cache_dir: ''
+bpm: 120
+beat_per_bar: 4
+beat_unit: 4
+resolution: 1
+expressions: {}
+time_signatures:
+- bar_position: 0
+  beat_per_bar: 4
+  beat_unit: 4
+tempos:
+- position: 0
+  bpm: 120
+tracks:
+- track_name: Track1
+  solo: false
+  mute: false
+  volume: 0
+  pan: 0
+  singer: ''
+  phonemizer: ''
+  voice_parts: []
+  wave_parts: []
+  track_expressions: []
+  track_curves: []
+voice_parts:
+- name: Part1
+  comment: ''
+  track_no: 0
+  position: 0
+  notes:
+  - position: 480
+    duration: 480
+    tone: 60
+    lyric: see[s i]
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 960
+    duration: 480
+    tone: 62
+    lyric: led[l e d]
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 1440
+    duration: 480
+    tone: 64
+    lyric: ah[3]
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 1920
+    duration: 960
+    tone: 65
+    lyric: la[l A]
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  curves: []
+wave_parts: []

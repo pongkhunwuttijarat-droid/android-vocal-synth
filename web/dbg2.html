@@ -1,0 +1,30 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><pre id="o">…</pre>
+<iframe id="f" src="./editor.html" style="width:900px;height:600px"></iframe>
+<script type="module">
+const o = (m) => { document.getElementById("o").textContent += "\nDBG| " + m;
+  fetch("/__progress", {method:"POST",body:m}).catch(()=>{}); };
+const f = document.getElementById("f");
+f.addEventListener("load", async () => {
+  const w = f.contentWindow, d = f.contentDocument;
+  o("iframe loaded");
+  await new Promise(r => setTimeout(r, 4000));
+  o("status = " + JSON.stringify(d.getElementById("status").textContent));
+  o("log    = " + JSON.stringify(d.getElementById("log").textContent.slice(0, 600)));
+  o("has __editor = " + !!w.__editor);
+  o("has driver   = " + !!(w.__editor && w.__editor.driver));
+  try { o("meta = " + JSON.stringify(w.__editor.driver.meta())); } catch (e) { o("meta err: " + e); }
+  try { o("tracks = " + JSON.stringify(w.__editor.driver.tracks())); } catch (e) { o("tracks err: " + e); }
+  o("canvas = " + d.getElementById("roll").width + "x" + d.getElementById("roll").height);
+  const eng = w.__editor.driver.engine;
+  o("alias_count = " + eng.alias_count());
+  o("sample_count = " + eng.sample_count());
+  o("oto bytes = " + (w.__editor.bank.otoBytes ? w.__editor.bank.otoBytes.byteLength : "none"));
+  o("bank.keys = " + w.__editor.bank.keys.length);
+  // Does the engine's voicebank resolve the lyric's aliases?
+  const oto = w.__editor.driver.engine;
+  o("try render_project: " + (() => { try { const r = eng.render_project(w.__editor.driver.yaml(), 0); return "ok " + r.length; } catch(e) { return "ERR " + e; } })());
+  o("try plan_project: " + (() => { try { return eng.plan_project(w.__editor.driver.yaml(), 0); } catch(e) { return "ERR " + e; } })());
+  o("skipped = " + JSON.stringify(eng.plan_skipped()));
+  o("RESULT: DONE");
+});
+</script></body></html>

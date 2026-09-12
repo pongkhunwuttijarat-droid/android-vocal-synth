@@ -1,0 +1,441 @@
+ustx_version: 0.9
+name: Scale Demo
+comment: ''
+output_dir: ''
+cache_dir: ''
+bpm: 120
+beat_per_bar: 4
+beat_unit: 4
+resolution: 1
+expressions: {}
+time_signatures:
+- bar_position: 0
+  beat_per_bar: 4
+  beat_unit: 4
+tempos:
+- position: 0
+  bpm: 120
+tracks:
+- track_name: Vocal Scale
+  solo: false
+  mute: false
+  volume: 0
+  pan: 0
+  singer: ''
+  phonemizer: 'Universal'
+  voice_parts: []
+  wave_parts: []
+  track_expressions: []
+  track_curves: []
+voice_parts:
+- name: Part1
+  comment: ''
+  track_no: 0
+  position: 0
+  notes:
+  - position: 0
+    duration: 480
+    tone: 60
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 480
+    duration: 480
+    tone: 62
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 960
+    duration: 480
+    tone: 64
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 1440
+    duration: 480
+    tone: 65
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 1920
+    duration: 480
+    tone: 67
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 2400
+    duration: 480
+    tone: 69
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 2880
+    duration: 480
+    tone: 71
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 3360
+    duration: 480
+    tone: 72
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 3840
+    duration: 480
+    tone: 74
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 4320
+    duration: 480
+    tone: 76
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 4800
+    duration: 480
+    tone: 77
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 5280
+    duration: 480
+    tone: 79
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 5760
+    duration: 480
+    tone: 81
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 6240
+    duration: 480
+    tone: 83
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 6720
+    duration: 480
+    tone: 84
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 7200
+    duration: 480
+    tone: 83
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 7680
+    duration: 480
+    tone: 81
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 8160
+    duration: 480
+    tone: 79
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 8640
+    duration: 480
+    tone: 77
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 9120
+    duration: 480
+    tone: 76
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 9600
+    duration: 480
+    tone: 74
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 10080
+    duration: 480
+    tone: 72
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 10560
+    duration: 480
+    tone: 71
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 11040
+    duration: 480
+    tone: 69
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 11520
+    duration: 480
+    tone: 67
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 12000
+    duration: 480
+    tone: 65
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 12480
+    duration: 480
+    tone: 64
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 12960
+    duration: 480
+    tone: 62
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}
+  - position: 13440
+    duration: 480
+    tone: 60
+    lyric: 'la[l A]'
+    pitch:
+      data:
+      - x: -1
+        y: 0
+        shape: io
+      - x: 1
+        y: 0
+        shape: io
+      snap_first: true
+    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0}

@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>editor test</title></head>
+<body>
+<iframe id="f" src="./editor.html" style="width:1280px;height:800px;border:0"></iframe>
+<pre id="out">running…</pre>
+<script type="module">
+const lines = [];
+const say = (m) => {
+  lines.push("EDIT| " + m);
+  document.getElementById("out").textContent = lines.join("\n");
+  fetch("/__progress", { method: "POST", body: m }).catch(() => {});
+};
+
+const f = document.getElementById("f");
+const ready = new Promise((res) => {
+  const done = () => res(f.contentWindow);
+  f.addEventListener("load", done, { once: true });
+  // The iframe can finish before this module executes (module scripts are
+  // deferred), in which case `load` has already fired and would never call
+  // back — poll `readyState` as a fallback.
+  const poll = setInterval(() => {
+    try {
+      if (f.contentDocument && f.contentDocument.readyState === "complete") {
+        clearInterval(poll);
+        done();
+      }
+    } catch {}
+  }, 100);
+  setTimeout(() => { clearInterval(poll); done(); }, 15000);
+});
+console.log("editor-test: waiting for iframe");
+
+function until(fn, timeout = 30000, every = 200, label = "condition") {
+  return new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const tick = () => {
+      try { const v = fn(); if (v) return resolve(v); } catch {}
+      if (Date.now() - t0 > timeout) {
+        return reject(new Error(`timeout waiting for ${label}`));
+      }
+      setTimeout(tick, every);
+    };
+    tick();
+  });
+}
+
+try {
+  const win = await ready;
+  const doc = win.document;
+  // NOTE: resolve the EDITOR (not `__editor.driver`) — returning the driver
+  // here made every later `ed.driver` access undefined.
+  const ed = await until(() => (win.__editor && win.__editor.driver ? win.__editor : null),
+                         30000, 200, "__editor with driver");
+  // `driver` exists as soon as `boot()` starts; wait for the boot to finish
+  // (status flips and the song is loaded) before asserting anything.
+  await until(() => {
+    const st = doc.getElementById("status").textContent;
+    return st !== "กำลังโหลด…" && ed.driver.meta().track_count > 0;
+  }, 60000, 200, "boot to finish (status + track)");
+  say(`status after boot: ${doc.getElementById("status").textContent}`);
+
+  // ---- 1. boot state ----
+  const meta = ed.driver.meta();
+  const notes = ed.driver.notes(0);
+  say(`boot: name="${meta.name}" bpm=${meta.bpm} tracks=${meta.track_count} notes=${notes.length}`);
+  say(`fft=${ed.driver.fftBackend()} chunks=${ed.driver.plan(0).length}`);
+  if (notes.length !== 29) throw new Error(`expected 29 notes, got ${notes.length}`);
+
+  // ---- 2. DOM chrome rendered ----
+  const checks = {
+    crumb: doc.getElementById("crumbName").textContent,
+    bpm: doc.getElementById("bpmChip").textContent,
+    meter: doc.getElementById("meterChip").textContent,
+    notes: doc.getElementById("noteCount").textContent,
+    trackRows: doc.querySelectorAll("#trackList .track").length,
+    canvasW: doc.getElementById("roll").width,
+    canvasH: doc.getElementById("roll").height,
+    keysW: doc.getElementById("keys").width,
+  };
+  say(`dom: crumb="${checks.crumb}" bpm="${checks.bpm}" meter="${checks.meter}" ${checks.notes}`);
+  say(`dom: trackRows=${checks.trackRows} rollCanvas=${checks.canvasW}x${checks.canvasH} keysCanvas=${checks.keysW}`);
+  if (checks.trackRows < 1) throw new Error("no track rows rendered");
+  if (checks.canvasW < 100) throw new Error("roll canvas has no size");
+
+  // ---- 3. canvas actually painted (non-uniform pixels) ----
+  const canvas = doc.getElementById("roll");
+  const ctx = canvas.getContext("2d");
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  const seen = new Set();
+  for (let i = 0; i < img.length; i += 4 * 997) {
+    seen.add(`${img[i]},${img[i + 1]},${img[i + 2]}`);
+  }
+  say(`canvas: ${seen.size} distinct colours sampled`);
+  if (seen.size < 3) throw new Error(`canvas looks blank (${seen.size} colours)`);
+
+  // ---- 4. note geometry: draw + hit-test round trip ----
+  const roll = ed.roll;
+  const r0 = roll.noteRect(notes[0]);
+  const hitIdx = roll.noteAt(r0.x + r0.w / 2, r0.y + r0.h / 2);
+  say(`hit-test: note0 at (${r0.x.toFixed(0)},${r0.y.toFixed(0)}) ${r0.w.toFixed(0)}x${r0.h.toFixed(0)} -> index ${hitIdx}`);
+  if (hitIdx !== 0) throw new Error(`hit-test mismatch: ${hitIdx}`);
+
+  // ---- 5. edit through the UI command path ----
+  const before = ed.driver.yaml();
+  const target = notes[3];
+  ed.onCommand({ cmd: "change_tone", part: target.part, note: target.index, tone: target.tone + 5 });
+  const after = ed.driver.yaml();
+  say(`edit change_tone: yaml ${before === after ? "UNCHANGED (bug)" : "changed"} canUndo=${ed.driver.canUndo()}`);
+  if (before === after) throw new Error("change_tone did not change the document");
+  const reNotes = ed.driver.notes(0);
+  if (reNotes[3].tone !== target.tone + 5) throw new Error(`tone not applied: ${reNotes[3].tone}`);
+  say(`edit applied: note3 tone ${target.tone} -> ${reNotes[3].tone}`);
+
+  // ---- 6. undo via UI button ----
+  doc.getElementById("undoBtn").click();
+  const undone = ed.driver.notes(0);
+  say(`undo: note3 tone back to ${undone[3].tone} (expect ${target.tone})`);
+  if (undone[3].tone !== target.tone) throw new Error("undo did not restore the tone");
+
+  // ---- 7. simulated pointer drawing with the Draw tool ----
+  doc.getElementById("toolDraw").click();
+  say(`tool: ${ed.roll.tool}`);
+  const rect = canvas.getBoundingClientRect();
+  const cx = rect.left + 300;
+  const cy = rect.top + 160;
+  const beforeCount = ed.driver.notes(0).length;
+  const ev = (type, extra = {}) => new win.PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId: 1, pointerType: "pen",
+    button: 0, buttons: 1, clientX: cx, clientY: cy, ...extra,
+  });
+  canvas.dispatchEvent(ev("pointerdown"));
+  canvas.dispatchEvent(ev("pointerup", { buttons: 0 }));
+  await new Promise((r) => setTimeout(r, 300));
+  const afterCount = ed.driver.notes(0).length;
+  say(`draw: notes ${beforeCount} -> ${afterCount} (expect +1)`);
+  if (afterCount !== beforeCount + 1) throw new Error("draw did not add a note");
+  const added = ed.driver.notes(0).find((n) => !notes.some((o) => o.index === n.index && o.part === n.part));
+  say(`drawn note: tone=${added.tone} pos=${added.position} dur=${added.duration} lyric="${added.lyric}"`);
+
+  // ---- 8. marquee multi-select ----
+  doc.getElementById("toolSelect").click();
+  const all = ed.driver.notes(0);
+  const first = roll.noteRect(all[0]);
+  const last = roll.noteRect(all[all.length - 1]);
+  const x0 = Math.min(first.x, last.x) - 5;
+  const x1 = Math.max(first.x + first.w, last.x + last.w) + 5;
+  roll.drag = { kind: "marquee", x0, y0: 0, x1, y1: canvas.getBoundingClientRect().height };
+  roll._applyMarquee();
+  roll.drag = null;
+  say(`marquee: selected ${roll.selection.size} of ${all.length}`);
+  if (roll.selection.size < all.length) throw new Error("marquee missed notes");
+
+  // ---- 9. render + status ----
+  await until(() => doc.getElementById("status").textContent.startsWith("render"), 90000, 250, "render to finish");
+  say(`status: ${doc.getElementById("status").textContent}`);
+  const buf = ed.audio.buffer;
+  let peak = 0;
+  for (let i = 0; i < buf.length; i += 137) peak = Math.max(peak, Math.abs(buf[i]));
+  say(`audio: ${buf.length} samples peak≈${peak.toFixed(3)}`);
+  if (!buf || buf.length < 44100) throw new Error("no rendered audio");
+
+  // ---- 10. zoom keeps the cursor's musical position fixed ----
+  const vp = roll.viewport;
+  const xProbe = 400;
+  const tickBefore = vp.tick(xProbe);
+  vp.zoomAt(xProbe, 200, 1.5, "x");
+  const tickAfter = vp.tick(xProbe);
+  say(`zoom: tick under cursor ${tickBefore.toFixed(1)} -> ${tickAfter.toFixed(1)} (drift ${Math.abs(tickAfter - tickBefore).toFixed(3)})`);
+  if (Math.abs(tickAfter - tickBefore) > 0.5) throw new Error("zoom does not anchor the cursor");
+
+  say("RESULT: PASS");
+} catch (e) {
+  say("RESULT: FAIL " + (e && e.stack ? e.stack : e));
+}
+fetch("/__result", { method: "POST", body: lines.join("\n") });
+</script>
+</body></html>

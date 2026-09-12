@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="th">
+<head><meta charset="utf-8"><title>RenderPool test</title>
+<style>
+ body { margin:0; font:14px/1.55 system-ui,sans-serif; background:#14161a; color:#e6e8eb; }
+ header { padding:12px 16px; border-bottom:1px solid #2a2e36; }
+ h1 { font-size:15px; margin:0; }
+ main { padding:16px; max-width:1000px; display:grid; gap:14px; }
+ section { border:1px solid #2a2e36; border-radius:8px; padding:12px; }
+ h2 { font-size:12px; margin:0 0 8px; color:#9aa4b2; text-transform:uppercase; letter-spacing:.05em; }
+ pre { font-family:ui-monospace,monospace; font-size:12px; white-space:pre-wrap; margin:0; color:#9aa4b2; }
+ button { background:#2b6cb0; color:#fff; border:0; border-radius:6px; padding:8px 14px; font:inherit; cursor:pointer; }
+ button:disabled { background:#3a3f48; color:#7d8794; cursor:not-allowed; }
+ audio { width:100%; margin-top:8px; }
+ .ok { color:#68d391; } .bad { color:#fc8181; }
+</style></head>
+<body>
+<header><h1>RenderPool — per-chunk loading + chunk cache</h1></header>
+<main>
+  <section>
+    <h2>Run</h2>
+    <div class="row" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <button id="run" disabled>เริ่มทดสอบ</button>
+      <span id="status">กำลังโหลด…</span>
+    </div>
+  </section>
+  <section><h2>ผล</h2><pre id="out"></pre><audio id="player" controls></audio></section>
+</main>
+<script type="module">
+import init, { Engine } from "./pkg/engine_wasm.js";
+import { HttpBank } from "./samples.js";
+import { RenderPool } from "./pool.js";
+
+const report = [];
+const say = (m) => {
+  report.push(m);
+  document.getElementById("out").textContent = report.join("\n");
+  // Stream progress so a hang is attributable to a step.
+  fetch("/__progress", { method: "POST", body: m }).catch(() => {});
+};
+const setStatus = (t, cls = "") => { const s = document.getElementById("status"); s.textContent = t; s.className = cls; };
+
+// Bank dir is self-contained, like a real UTAU library:
+//   bank/voice/oto.ini + bank/voice/*.wav + bank/voice/*_wav.frq
+const BANK = "./fixture/bank";
+const OTO_PATH = "voice/oto.ini";
+const OTO_DIR = "voice";
+const PROJECT = "./fixture/scale-demo.ustx";
+const WORKERS = 4;
+
+let bank = null;
+let baseYaml = null;
+let refEngine = null;
+
+/** Render the whole project single-threaded on the main thread (reference). */
+function renderReference(yaml) {
+  const e = new Engine();
+  e.set_voicebank("ref", "ref", OTO_DIR, new Uint8Array(bank.otoBytes));
+  e.plan_project(yaml, 0);
+  // Only the samples the project references exist in the fixture.
+  const needed = new Set();
+  for (let i = 0; i < JSON.parse(e.chunk_meta_json()).length; i++) {
+    for (const k of e.chunk_wav_keys(i).split("\n")) if (k) needed.add(k);
+  }
+  for (const k of needed) {
+    const hit = bank.cache.get(k);
+    if (!hit) throw new Error(`reference missing ${k}`);
+    if (hit.frq) e.add_sample_with_frq(k, new Uint8Array(hit.wav), new Uint8Array(hit.frq));
+    else e.add_sample(k, new Uint8Array(hit.wav));
+  }
+  return e.render_project(yaml, 0);
+}
+
+function compare(label, a, b) {
+  const lenOk = a.length === b.length;
+  let maxDiff = 0;
+  for (let i = 0; i < Math.min(a.length, b.length); i++) maxDiff = Math.max(maxDiff, Math.abs(a[i] - b[i]));
+  const ok = lenOk && maxDiff === 0;
+  say(`   ${label}: ${ok ? "bit-identical ✔" : "MISMATCH ✘"}  (len ${a.length} vs ${b.length}, max|diff| ${maxDiff.toExponential(1)})`);
+  return ok;
+}
+
+/** Edit one note's tone so only the chunks covering it change. */
+function editNote(yaml, occurrence, newTone) {
+  let n = 0;
+  return yaml.replace(/^(\s*)tone: (\d+)$/gm, (m, indent, oldTone) => {
+    n += 1;
+    return n === occurrence ? `${indent}tone: ${newTone}` : m;
+  });
+}
+
+(async () => {
+  await init();
+  bank = new HttpBank({ baseUrl: BANK });
+  const keys = await bank.openOto({ otoPath: OTO_PATH, otoDir: OTO_DIR });
+  const t0 = performance.now();
+  // The fixture is a self-contained subset bank (oto.ini lists only the
+  // aliases whose wavs ship with it), so every key exists.
+  await bank.prefetch(keys);
+  say(`bank: ${keys.length} samples, ${(bank.cachedBytes / 1048576).toFixed(1)} MB (fetch ${(performance.now() - t0).toFixed(0)} ms)`);
+  baseYaml = await (await fetch(PROJECT)).text();
+  setStatus("พร้อม", "ok");
+  document.getElementById("run").disabled = false;
+  if (new URLSearchParams(location.search).has("run")) document.getElementById("run").click();
+})();
+
+async function run() {
+  let allOk = true;
+  const pool = await RenderPool.create({
+    workerCount: WORKERS,
+    bank,
+    otoPath: OTO_PATH,
+    otoDir: OTO_DIR,
+    projectYaml: baseYaml,
+    track: 0,
+  });
+
+  // ---- 1. cold render vs single-threaded reference ----
+  say("");
+  say(`1) render แรก (cold) — workers=${WORKERS}`);
+  const t1 = performance.now();
+  const first = await pool.render();
+  const firstMs = performance.now() - t1;
+  const ref1 = renderReference(baseYaml);
+  say(`   pool ${firstMs.toFixed(0)} ms | chunks rendered ${first.stats.chunksRendered} | samples โหลด ${first.stats.samplesLoaded} | per-worker keys ${pool.perWorkerKeys.join(",")}`);
+  say(`   plain sequential: ${ref1.length} samples`);
+  allOk = compare("   pool vs sequential", first.samples, ref1) && allOk;
+
+  // ---- 2. second render, nothing changed → all chunks reused ----
+  say("");
+  say("2) render ซ้ำ (ไม่มีอะไรเปลี่ยน) — ควรได้ cache ทั้งหมด");
+  const t2 = performance.now();
+  const second = await pool.render();
+  say(`   ${(performance.now() - t2).toFixed(0)} ms | chunks rendered ใหม่ ${second.stats.lastRendered} | reused ${second.stats.lastReused} | mix ${second.stats.lastMixMs.toFixed(1)} ms`);
+  allOk = compare("   pool vs sequential", second.samples, ref1) && allOk;
+
+  // ---- 3. edit one note → only the chunks covering it re-render ----
+  const noteIndex = 20; // late in the song → not the first chunk
+  const edited = editNote(baseYaml, noteIndex, 72);
+  if (edited === baseYaml) { say("   (แก้ note ไม่สำเร็จ — ข้ามข้อ 3)"); }
+  else {
+    say("");
+    say(`3) แก้ note ที่ ${noteIndex} (tone → 72) แล้ว render ใหม่`);
+    const before = pool.stats.chunksRendered;
+    const t3 = performance.now();
+    await pool.setProject(edited);
+    const inc = await pool.render();
+    const incMs = performance.now() - t3;
+    say(`   ${incMs.toFixed(0)} ms | chunks rendered ใหม่ ${inc.stats.lastRendered} จาก ${pool.plan.length} | reused ${inc.stats.lastReused} | samples โหลดเพิ่ม ${inc.stats.samplesLoaded - second.stats.samplesLoaded}`);
+    const ref2 = renderReference(edited);
+    say(`   (อ้างอิง: render ทั้งเพลงแบบ sequential ${ref2.length} samples)`);
+    allOk = compare("   incremental vs full render", inc.samples, ref2) && allOk;
+    // sanity: the edit must actually have changed the audio
+    let diff = 0;
+    for (let i = 0; i < Math.min(ref1.length, ref2.length); i++) diff = Math.max(diff, Math.abs(ref1[i] - ref2[i]));
+    say(`   (แก้มีผลจริงไหม: max|diff| ระหว่าง v1 กับ v2 = ${diff.toExponential(2)} → ${diff > 0 ? "ใช่" : "ไม่เปลี่ยน!"})`);
+  }
+
+  // ---- 4. audio out — from the chunk cache, no re-render ----
+  say("");
+  say("4) export WAV จาก chunk cache (ไม่ render ซ้ำ)");
+  const t4 = performance.now();
+  const wav = pool.toWav();
+  say(`   ${wav.length} bytes ใน ${(performance.now() - t4).toFixed(1)} ms`);
+  document.getElementById("player").src = URL.createObjectURL(new Blob([wav], { type: "audio/wav" }));
+
+  say("");
+  say(allOk ? "RESULT: PASS" : "RESULT: FAIL");
+  setStatus(allOk ? "ผ่าน" : "ไม่ผ่าน", allOk ? "ok" : "bad");
+  pool.terminate();
+  await fetch("/__result", { method: "POST", body: report.join("\n") });
+}
+
+document.getElementById("run").addEventListener("click", async () => {
+  const btn = document.getElementById("run");
+  btn.disabled = true;
+  report.length = 0;
+  document.getElementById("out").textContent = "";
+  try { await run(); }
+  catch (e) { say("ERROR " + (e && e.stack ? e.stack : e)); setStatus("ล้มเหลว", "bad"); }
+  finally { btn.disabled = false; }
+});
+</script>
+</body></html>

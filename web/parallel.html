@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="th">
+<head><meta charset="utf-8"><title>wasm Web-Worker parallel render</title>
+<style>
+ body { margin:0; font:14px/1.55 system-ui,sans-serif; background:#14161a; color:#e6e8eb; }
+ header { padding:12px 16px; border-bottom:1px solid #2a2e36; }
+ h1 { font-size:15px; margin:0; }
+ main { padding:16px; max-width:940px; display:grid; gap:14px; }
+ section { border:1px solid #2a2e36; border-radius:8px; padding:12px; }
+ h2 { font-size:12px; margin:0 0 8px; color:#9aa4b2; text-transform:uppercase; letter-spacing:.05em; }
+ pre { font-family:ui-monospace,monospace; font-size:12px; white-space:pre-wrap; margin:0; color:#9aa4b2; }
+ button { background:#2b6cb0; color:#fff; border:0; border-radius:6px; padding:8px 14px; font:inherit; cursor:pointer; }
+ button:disabled { background:#3a3f48; color:#7d8794; cursor:not-allowed; }
+ .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+ .ok { color:#68d391; } .bad { color:#fc8181; }
+</style></head>
+<body>
+<header><h1>wasm Web-Worker parallel render</h1></header>
+<main>
+  <section>
+    <h2>Run</h2>
+    <div class="row">
+      <button id="run" disabled>เริ่มทดสอบ</button>
+      <span id="status">กำลังโหลด…</span>
+    </div>
+    <p style="color:#7d8794;font-size:12px;margin:8px 0 0">
+      เทียบ render แบบ single-threaded กับแบบแบ่ง chunk ให้ Web Worker
+      แล้วตรวจว่า result เหมือนกันทุก bit
+    </p>
+  </section>
+  <section><h2>ผล</h2><pre id="out"></pre></section>
+</main>
+<script type="module">
+import init, { Engine, Mixer } from "./pkg/engine_wasm.js";
+
+const report = [];
+const say = (m) => {
+  report.push(m);
+  document.getElementById("out").textContent = report.join("\n");
+};
+const setStatus = (t, cls = "") => {
+  const s = document.getElementById("status");
+  s.textContent = t;
+  s.className = cls;
+};
+
+const PROJECT = "./fixture/scale-demo.ustx"; // ~14.5s → 4 chunks
+const TRACK = 0;
+const OTO_DIR = "voice";
+
+/** Fixture voicebank bytes, loaded once and reused by every worker. */
+async function loadFixture() {
+  const otoRes = await fetch("./fixture/oto.ini");
+  const otoBuf = await otoRes.arrayBuffer();
+  const text = new TextDecoder().decode(new Uint8Array(otoBuf));
+  const wavs = new Set();
+  for (const line of text.split("\n")) {
+    const eq = line.indexOf("=");
+    if (eq > 0) wavs.add(line.slice(0, eq).trim());
+  }
+  const files = [];
+  for (const wav of [...wavs].sort()) {
+    const key = `${OTO_DIR}/${wav}`;
+    const r = await fetch("./fixture/bank/" + key);
+    if (!r.ok) continue;
+    const wavBuf = await r.arrayBuffer();
+    const fr = await fetch("./fixture/bank/" + key.replace(/\.wav$/i, "_wav.frq"));
+    files.push({ key, wav: wavBuf, frq: fr.ok ? await fr.arrayBuffer() : null });
+  }
+  return { id: "demo", name: "demo", otoDir: OTO_DIR, oto: otoBuf, files };
+}
+
+/** Install voicebank bytes into an Engine. */
+function install(engine, samples) {
+  engine.set_voicebank(samples.id, samples.name, samples.otoDir, new Uint8Array(samples.oto));
+  for (const f of samples.files) {
+    const wav = new Uint8Array(f.wav);
+    if (f.frq) engine.add_sample_with_frq(f.key, wav, new Uint8Array(f.frq));
+    else engine.add_sample(f.key, wav);
+  }
+}
+
+/** Promise-based worker wrapper (init once, then one render request). */
+function spawnWorker(samples, projectYaml) {
+  const w = new Worker("./worker.js", { type: "module" });
+  let seq = 1;
+  const pending = new Map();
+  const ready = new Promise((resolve, reject) => {
+    w.onmessage = (ev) => {
+      const m = ev.data;
+      if (m.type === "ready") return resolve();
+      if (m.type === "error") return reject(new Error(m.message));
+      const p = pending.get(m.id);
+      if (!p) return;
+      pending.delete(m.id);
+      if (m.type === "done") p.resolve(m.chunks);
+    };
+    w.onerror = (e) => reject(new Error("worker error: " + (e.message || e)));
+  });
+  w.postMessage({ type: "init", id: 0, samples, projectYaml, track: TRACK });
+  return {
+    ready,
+    render(indices) {
+      const id = seq++;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        w.postMessage({ type: "render", id, indices, samples, projectYaml, track: TRACK });
+      });
+    },
+    terminate: () => w.terminate(),
+  };
+}
+
+/** Render `chunkCount` chunks across `workerCount` workers, mixed in order. */
+async function renderParallel(samples, projectYaml, chunkCount, workerCount, meta) {
+  const assigned = Array.from({ length: workerCount }, () => []);
+  for (let i = 0; i < chunkCount; i++) assigned[i % workerCount].push(i);
+
+  const workers = assigned.map(() => spawnWorker(samples, projectYaml));
+  await Promise.all(workers.map((w) => w.ready));
+  const batches = await Promise.all(workers.map((w, i) => w.render(assigned[i])));
+  workers.forEach((w) => w.terminate());
+
+  const byIndex = new Map();
+  for (const batch of batches) {
+    for (const c of batch) byIndex.set(c.index, new Float32Array(c.pcm));
+  }
+
+  // Mix on the main thread, in chunk order — identical to the pipeline's mix.
+  const mixer = new Mixer();
+  for (let i = 0; i < chunkCount; i++) {
+    const pcm = byIndex.get(i);
+    if (!pcm) throw new Error("missing chunk " + i);
+    mixer.add_chunk(pcm, meta[i].position_ms, meta[i].leading_ms);
+  }
+  return mixer.finish();
+}
+
+let samples = null;
+let projectYaml = null;
+let engine = null;
+
+(async () => {
+  await init();
+  engine = new Engine();
+  projectYaml = await (await fetch(PROJECT)).text();
+  samples = await loadFixture();
+  install(engine, samples);
+
+  const n = engine.plan_project(projectYaml, TRACK);
+  say(`fft backend : ${engine.fft_backend()}`);
+  say(`chunk plan  : ${n} chunks`);
+  say(`skipped     : ${engine.plan_skipped() || "(none)"}`);
+  say(`chunks      : ${engine.chunk_meta_json()}`);
+  say("");
+  setStatus("พร้อม", "ok");
+  document.getElementById("run").disabled = false;
+  // `?run=1` (or `#run`) auto-starts — used by run-parallel.sh.
+  const params = new URLSearchParams(location.search);
+  if (params.has("run") || location.hash === "#run") {
+    document.getElementById("run").click();
+  }
+})();
+
+async function run() {
+  const chunkCount = engine.plan_project(projectYaml, TRACK);
+  const meta = JSON.parse(engine.chunk_meta_json());
+
+  // ---- 1. single-threaded baseline (same chunk plan) ----
+  let t0 = performance.now();
+  const seq = engine.render_planned_sequential();
+  const seqMs = performance.now() - t0;
+  const audioSec = seq.length / 44100;
+  say(`sequential      : ${seqMs.toFixed(0)} ms  (${(audioSec / (seqMs / 1000)).toFixed(2)}x realtime)`);
+
+  // ---- 2. across N Web Workers ----
+  const hw = navigator.hardwareConcurrency || 4;
+  const counts = [...new Set([2, 4, Math.min(hw, 8)])].filter((n) => n >= 1 && n <= chunkCount);
+  for (const workerCount of counts) {
+    const t1 = performance.now();
+    const mixed = await renderParallel(samples, projectYaml, chunkCount, workerCount, meta);
+    const ms = performance.now() - t1;
+
+    const lenOk = mixed.length === seq.length;
+    let maxDiff = 0;
+    const n = Math.min(mixed.length, seq.length);
+    for (let i = 0; i < n; i++) maxDiff = Math.max(maxDiff, Math.abs(mixed[i] - seq[i]));
+    const identical = lenOk && maxDiff === 0;
+
+    say(
+      `workers=${String(workerCount).padEnd(2)}      : ${ms.toFixed(0).padStart(5)} ms  ` +
+        `(${(audioSec / (ms / 1000)).toFixed(2)}x realtime)  speedup ${(seqMs / ms).toFixed(2)}x  ` +
+        `max|diff| ${maxDiff.toExponential(1)}  ${identical ? "bit-identical ✔" : "MISMATCH ✘"}`,
+    );
+    if (!identical) setStatus("ผลไม่ตรงกัน", "bad");
+  }
+
+  say("");
+  say(`hardwareConcurrency = ${hw}`);
+  if (document.getElementById("status").className !== "bad") setStatus("เสร็จ", "ok");
+  await fetch("/__result", { method: "POST", body: report.join("\n") });
+}
+
+document.getElementById("run").addEventListener("click", async () => {
+  const btn = document.getElementById("run");
+  btn.disabled = true;
+  report.length = 0;
+  document.getElementById("out").textContent = "";
+  try {
+    await run();
+  } catch (e) {
+    say("ERROR " + e);
+    setStatus("ล้มเหลว", "bad");
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body></html>

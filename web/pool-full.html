@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="th">
+<head><meta charset="utf-8"><title>worker pool — full voicebank</title>
+<style>
+ body { margin:0; font:14px/1.55 system-ui,sans-serif; background:#14161a; color:#e6e8eb; }
+ header { padding:12px 16px; border-bottom:1px solid #2a2e36; }
+ h1 { font-size:15px; margin:0; }
+ main { padding:16px; max-width:1000px; display:grid; gap:14px; }
+ section { border:1px solid #2a2e36; border-radius:8px; padding:12px; }
+ h2 { font-size:12px; margin:0 0 8px; color:#9aa4b2; text-transform:uppercase; letter-spacing:.05em; }
+ pre { font-family:ui-monospace,monospace; font-size:12px; white-space:pre-wrap; margin:0; color:#9aa4b2; }
+ button { background:#2b6cb0; color:#fff; border:0; border-radius:6px; padding:8px 14px; font:inherit; cursor:pointer; }
+ button:disabled { background:#3a3f48; color:#7d8794; cursor:not-allowed; }
+ .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+ .ok { color:#68d391; } .bad { color:#fc8181; }
+</style></head>
+<body>
+<header><h1>worker pool vs spawn — voicebank จริง (558 wav, 198 MB)</h1></header>
+<main>
+  <section>
+    <h2>Run</h2>
+    <div class="row">
+      <button id="run" disabled>เริ่มทดสอบ</button>
+      <span id="status">กำลังโหลด…</span>
+    </div>
+    <p style="color:#7d8794;font-size:12px;margin:8px 0 0">
+      4 โหมด: spawn/pool × โหลดทั้ง bank / โหลดเฉพาะ chunk — render อย่างละ 2 ครั้ง
+    </p>
+  </section>
+  <section><h2>ผล</h2><pre id="out"></pre></section>
+</main>
+<script type="module">
+import init, { Engine, Mixer } from "./pkg/engine_wasm.js";
+
+const report = [];
+const say = (m) => { report.push(m); document.getElementById("out").textContent = report.join("\n"); };
+const setStatus = (t, cls = "") => { const s = document.getElementById("status"); s.textContent = t; s.className = cls; };
+
+const PROJECT = "./fixture/scale-demo.ustx";
+const TRACK = 0;
+const OTO_DIR = "voice";
+const BASE = "./fixture/full";
+const W = 4;
+const RENDERS = 2;
+
+// key -> { wav: ArrayBuffer, frq: ArrayBuffer|null }
+const bank = new Map();
+
+async function fetchBank() {
+  const otoBuf = await (await fetch(`${BASE}/oto.ini`)).arrayBuffer();
+  const text = new TextDecoder().decode(new Uint8Array(otoBuf));
+  const wavs = new Set();
+  for (const line of text.split("\n")) {
+    const eq = line.indexOf("=");
+    if (eq > 0) wavs.add(line.slice(0, eq).trim());
+  }
+  const names = [...wavs].sort();
+  // Fetch in parallel batches; the local server is threaded.
+  const CONC = 24;
+  for (let i = 0; i < names.length; i += CONC) {
+    await Promise.all(names.slice(i, i + CONC).map(async (wav) => {
+      const key = `${OTO_DIR}/${wav}`;
+      const r = await fetch(`${BASE}/${key}`);
+      if (!r.ok) return;
+      const wavBuf = await r.arrayBuffer();
+      const fr = await fetch(`${BASE}/${key.replace(/\.wav$/i, "_wav.frq")}`);
+      bank.set(key, { wav: wavBuf, frq: fr.ok ? await fr.arrayBuffer() : null });
+    }));
+  }
+  return { oto: otoBuf, count: bank.size };
+}
+
+function samplesFor(keys) {
+  return {
+    id: "teto", name: "teto", otoDir: OTO_DIR,
+    oto: bankOto,
+    files: keys.map((k) => ({ key: k, wav: bank.get(k).wav, frq: bank.get(k).frq })),
+  };
+}
+
+/** Worker wrapper. `ready` resolves with { wallMs, voicebankLoadMs }. */
+function connect(samples, projectYaml) {
+  const w = new Worker("./worker.js", { type: "module" });
+  const t0 = performance.now();
+  let seq = 1;
+  const pending = new Map();
+  let readyResolve, readyReject;
+  const ready = new Promise((res, rej) => { readyResolve = res; readyReject = rej; });
+  w.onmessage = (ev) => {
+    const m = ev.data;
+    if (m.type === "ready") return readyResolve({ wallMs: performance.now() - t0, voicebankLoadMs: m.voicebankLoadMs, wasmInitMs: m.wasmInitMs });
+    if (m.type === "error") return readyReject(new Error(m.message));
+    const p = pending.get(m.id);
+    if (!p) return;
+    pending.delete(m.id);
+    if (m.type === "done") p.resolve(m.chunks);
+  };
+  w.onerror = (e) => readyReject(new Error("worker error: " + (e.message || e)));
+  w.postMessage({ type: "init", id: 0, samples, projectYaml, track: TRACK });
+  return {
+    ready,
+    render(indices) {
+      const id = seq++;
+      return new Promise((resolve) => {
+        pending.set(id, { resolve });
+        w.postMessage({ type: "render", id, indices, samples, projectYaml, track: TRACK });
+      });
+    },
+    terminate: () => w.terminate(),
+  };
+}
+
+async function renderWith(conns, chunkCount, meta) {
+  const batches = await Promise.all(conns.map((c, i) => {
+    const indices = [];
+    for (let k = i; k < chunkCount; k += conns.length) indices.push(k);
+    return c.render(indices);
+  }));
+  const byIndex = new Map();
+  for (const b of batches) for (const c of b) byIndex.set(c.index, new Float32Array(c.pcm));
+  const mixer = new Mixer();
+  for (let i = 0; i < chunkCount; i++) {
+    const pcm = byIndex.get(i);
+    if (!pcm) throw new Error("missing chunk " + i);
+    mixer.add_chunk(pcm, meta[i].position_ms, meta[i].leading_ms);
+  }
+  return mixer.finish();
+}
+
+let bankOto = null;
+let projectYaml = null;
+let engine = null;
+let allKeys = [];
+
+(async () => {
+  await init();
+  engine = new Engine();
+  projectYaml = await (await fetch(PROJECT)).text();
+
+  const t0 = performance.now();
+  const info = await fetchBank();
+  const fetchMs = performance.now() - t0;
+  bankOto = await (await fetch(`${BASE}/oto.ini`)).arrayBuffer();
+  allKeys = [...bank.keys()].sort();
+
+  engine.set_voicebank("teto", "teto", OTO_DIR, new Uint8Array(bankOto));
+  const n = engine.plan_project(projectYaml, TRACK);
+  say(`fft=${engine.fft_backend()}  bank=${info.count} samples (${(JSON.stringify([...bank.values()].reduce((a,v)=>a+v.wav.byteLength,0))/1048576).toFixed(0)} MB wav)  chunks=${n}  workers=${W}`);
+  say(`fetch ทั้ง bank (main thread, ครั้งเดียว): ${fetchMs.toFixed(0)} ms`);
+  const perChunk = [];
+  for (let i = 0; i < n; i++) perChunk.push(engine.chunk_wav_keys(i).split("\n").filter(Boolean).length);
+  say(`sample ที่แต่ละ chunk ต้องใช้: ${perChunk.join(", ")} (จาก ${allKeys.length})`);
+  say("");
+  setStatus("พร้อม", "ok");
+  document.getElementById("run").disabled = false;
+  if (new URLSearchParams(location.search).has("run")) document.getElementById("run").click();
+})();
+
+async function run() {
+  const chunkCount = engine.plan_project(projectYaml, TRACK);
+  const meta = JSON.parse(engine.chunk_meta_json());
+  const audioSec = 14.5;
+
+  // install all samples on the main engine for the sequential baseline
+  engine.set_voicebank("teto", "teto", OTO_DIR, new Uint8Array(bankOto));
+  for (const k of allKeys) {
+    const b = bank.get(k);
+    if (b.frq) engine.add_sample_with_frq(k, new Uint8Array(b.wav), new Uint8Array(b.frq));
+    else engine.add_sample(k, new Uint8Array(b.wav));
+  }
+
+  const t0 = performance.now();
+  const seq = engine.render_planned_sequential();
+  const seqMs = performance.now() - t0;
+  say(`sequential (มี sample อยู่แล้ว)   : ${seqMs.toFixed(0)} ms  (${(audioSec/(seqMs/1000)).toFixed(2)}x realtime)`);
+  say("");
+
+  const allSamples = samplesFor(allKeys);
+
+  // ---- A: spawn per render, โหลดทั้ง bank ----
+  await mode("A. spawn ×4, โหลดทั้ง bank    ", () => Array.from({ length: W }, () => connect(allSamples, projectYaml)), seq, chunkCount, meta);
+
+  // ---- B: pool, โหลดทั้ง bank ----
+  await mode("B. pool ×4, โหลดทั้ง bank     ", () => Array.from({ length: W }, () => connect(allSamples, projectYaml)), seq, chunkCount, meta, true);
+
+  // ---- C: spawn per render, โหลดเฉพาะ chunk ----
+  const perChunkSamples = () => Array.from({ length: W }, (_, i) => {
+    const keys = new Set();
+    for (let k = i; k < chunkCount; k += W) {
+      for (const key of engine.chunk_wav_keys(k).split("\n").filter(Boolean)) keys.add(key);
+    }
+    return connect(samplesFor([...keys].sort()), projectYaml);
+  });
+  await mode("C. spawn ×4, เฉพาะ chunk      ", perChunkSamples, seq, chunkCount, meta);
+
+  // ---- D: pool, โหลดเฉพาะ chunk ----
+  await mode("D. pool ×4, เฉพาะ chunk       ", perChunkSamples, seq, chunkCount, meta, true);
+
+  // ---- E: incremental — pool (เฉพาะ chunk) render ใหม่ทีละ chunk ----
+  {
+    const conns = perChunkSamples();
+    await Promise.all(conns.map((c) => c.ready));
+    // warm
+    await renderWith(conns, chunkCount, meta);
+    const one = [];
+    for (let k = 0; k < chunkCount; k++) {
+      const t0 = performance.now();
+      await conns[0].render([k]);          // worker 0 โหลด sample ของทุก chunk อยู่แล้ว
+      one.push(performance.now() - t0);
+    }
+    const full = [];
+    for (let r = 0; r < 2; r++) {
+      const t0 = performance.now();
+      await renderWith(conns, chunkCount, meta);
+      full.push(performance.now() - t0);
+    }
+    conns.forEach((c) => c.terminate());
+    say("");
+    say(`E. pool warm — render ทีละ chunk : ${one.map((t) => t.toFixed(0)).join(" / ")} ms  (chunk 0..${chunkCount - 1})`);
+    say(`   pool warm — render ทั้งเพลง   : ${full.map((t) => t.toFixed(0)).join(" / ")} ms`);
+    say(`   => แก้ note เดียว (re-render 1 chunk) เร็วกว่า render ทั้งเพลง ${(full[0] / Math.max(1, one[0])).toFixed(0)}x`);
+  }
+
+  setStatus("เสร็จ", "ok");
+  await fetch("/__result", { method: "POST", body: report.join("\n") });
+}
+
+async function mode(label, makeConns, seq, chunkCount, meta, pool = false) {
+  const times = [];
+  let loadMax = 0;
+  let conns = pool ? makeConns() : null;
+  if (pool) {
+    const reads = await Promise.all(conns.map((c) => c.ready));
+    loadMax = Math.max(...reads.map((r) => r.wallMs));
+  }
+  for (let r = 0; r < RENDERS; r++) {
+    const t0 = performance.now();
+    const cs = pool ? conns : makeConns();
+    if (!pool) {
+      const reads = await Promise.all(cs.map((c) => c.ready));
+      loadMax = Math.max(...reads.map((x) => x.wallMs));
+    }
+    const mixed = await renderWith(cs, chunkCount, meta);
+    times.push(performance.now() - t0);
+    if (!pool) cs.forEach((c) => c.terminate());
+    if (r === 0) {
+      const lenOk = mixed.length === seq.length;
+      let maxDiff = 0;
+      for (let i = 0; i < Math.min(mixed.length, seq.length); i++) maxDiff = Math.max(maxDiff, Math.abs(mixed[i] - seq[i]));
+      label += `  ${lenOk && maxDiff === 0 ? "bit-identical ✔" : "MISMATCH ✘"}`;
+    }
+  }
+  if (pool) conns.forEach((c) => c.terminate());
+  say(`${label} : ${times.map((t) => t.toFixed(0)).join(" / ")} ms  (worker พร้อมใน ${loadMax.toFixed(0)} ms)`);
+}
+
+document.getElementById("run").addEventListener("click", async () => {
+  const btn = document.getElementById("run");
+  btn.disabled = true;
+  report.length = 0;
+  document.getElementById("out").textContent = "";
+  try { await run(); }
+  catch (e) { say("ERROR " + e); setStatus("ล้มเหลว", "bad"); }
+  finally { btn.disabled = false; }
+});
+</script>
+</body></html>

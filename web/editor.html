@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lilt — Editor (wasm)</title>
+<style>
+/* Palette from ui-mock/index.html (OM DarkThemeColors + ours). */
+:root{--bg:#1f1f1f;--bar:#262626;--strip:#2C2C2C;--timeline-bg:#101010;--line:#4a4a4a;--muted:#9a9a9a;--text:#e8e8e8;--primary:#fe71a3;--key-pink:#CC2A63;--sel:#fff;--card:#2e2e2e;--cyan:#55d7de;--green:#7be3a8;--orange:#ffc16d;--purple:#a98cff;}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:#111;color:var(--text);font:13px/1.45 Inter,ui-sans-serif,system-ui,sans-serif;overflow:hidden}
+button,input,select{font:inherit;color:inherit}
+button{border:0;cursor:pointer;background:none}
+button:disabled{opacity:.4;cursor:not-allowed}
+
+#app{height:100vh;display:grid;grid-template-rows:48px 44px 1fr 28px 48px;grid-template-columns:64px 1fr}
+.rail{grid-row:1/6;background:#15151a;border-right:1px solid var(--line);display:flex;align-items:center;flex-direction:column;padding:14px 10px;gap:14px}
+.logo{width:36px;height:36px;border-radius:12px;background:linear-gradient(135deg,var(--primary),var(--key-pink));display:grid;place-items:center;color:#111;font-weight:900;font-size:17px}
+.rail button{width:40px;height:38px;color:#777d91;border-radius:10px;font-size:16px}
+.rail button.active,.rail button:hover{background:#292536;color:var(--primary)}
+
+.topbar{grid-column:2;background:var(--bar);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 12px;gap:10px}
+.crumb{display:flex;align-items:baseline;gap:8px;min-width:220px;font-size:12px;color:var(--muted)}
+.crumb strong{font-size:13px;color:var(--text)}
+.chip{border:1px solid var(--line);border-radius:999px;padding:3px 9px;font-size:11px;color:var(--muted)}
+.spacer{flex:1}
+.tb-btn{width:30px;height:30px;border-radius:6px;color:#b6bbcc;font-size:14px}
+.tb-btn:hover:not(:disabled){background:#333}
+.tb-btn.active{background:#3a2f45;color:var(--primary)}
+.btn{background:#2b2b2b;border:1px solid #3a3a3a;padding:6px 12px;border-radius:7px;color:#cdd1df;font-size:12px}
+.btn:hover:not(:disabled){background:#363636}
+.btn.primary{background:var(--primary);border:0;color:#111;font-weight:600}
+
+.tools{grid-column:2;height:44px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:4px;padding:0 10px;background:var(--bar)}
+.tools .sep{width:1px;height:20px;background:var(--line);margin:0 6px}
+.tools label{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:5px}
+.tools input[type=range]{width:88px}
+.tools select{background:#2b2b2b;border:1px solid #3a3a3a;border-radius:6px;padding:4px 6px;font-size:12px}
+
+.main{grid-column:2;display:grid;grid-template-columns:220px 1fr 300px;min-height:0;background:#141416}
+.left{background:#171719;border-right:1px solid var(--line);padding:12px 10px;overflow:auto}
+.right{background:#171719;border-left:1px solid var(--line);padding:12px;overflow:auto}
+.section-title{display:flex;justify-content:space-between;align-items:center;color:#b5b9c8;font-weight:700;font-size:11px;letter-spacing:.04em;text-transform:uppercase;margin:2px 2px 8px}
+.section-title small{color:var(--muted);font-weight:500;text-transform:none;letter-spacing:0}
+.track{display:flex;align-items:center;gap:8px;padding:8px;border-radius:8px;color:#bdc1ce;margin:2px 0;cursor:pointer}
+.track.selected{background:#2a263a;color:#fff}
+.track .swatch{width:8px;height:24px;border-radius:5px;background:var(--primary)}
+.track .tname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mini{width:22px;height:20px;border-radius:5px;background:#2b2b2b;color:#9a9a9a;font-size:11px;line-height:1}
+.mini:hover{background:#3a3a3a}
+
+.rollwrap{position:relative;min-width:0;display:grid;grid-template-columns:60px 1fr}
+#keys{border-right:1px solid var(--line);display:block}
+#roll{display:block;touch-action:none}
+.rollhost{position:relative;min-width:0;min-height:0}
+.rollhost canvas{position:absolute;inset:0}
+#keys{position:relative}
+
+.field{display:flex;flex-direction:column;gap:3px;margin-bottom:10px}
+.field label{font-size:11px;color:var(--muted)}
+.field input{background:#232326;border:1px solid #3a3a3a;border-radius:6px;padding:5px 7px;font-size:12px}
+.muted{color:var(--muted)}
+.small{font-size:11px}
+
+.statusbar{grid-column:2;display:flex;align-items:center;gap:12px;padding:0 12px;border-top:1px solid var(--line);background:var(--bar);font-size:11px;color:var(--muted);overflow:hidden}
+.statusbar #log{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,monospace}
+.transport{grid-column:2;display:flex;align-items:center;gap:10px;padding:0 12px;border-top:1px solid var(--line);background:var(--strip)}
+.transport .btn{min-width:40px}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="rail">
+    <div class="logo">L</div>
+    <button class="active" title="Editor">✎</button>
+    <button title="Voicebanks">♪</button>
+    <button title="Projects">🗀</button>
+    <button title="Settings">⚙</button>
+  </div>
+
+  <div class="topbar">
+    <div class="crumb"><strong id="crumbName">—</strong><span id="trackCount"></span></div>
+    <span class="chip" id="bpmChip">—</span>
+    <span class="chip" id="meterChip">—</span>
+    <span class="chip" id="noteCount"></span>
+    <div class="spacer"></div>
+    <button class="tb-btn" id="undoBtn" title="Undo">↺</button>
+    <button class="tb-btn" id="redoBtn" title="Redo">↻</button>
+    <button class="btn" id="renderBtn">Render</button>
+  </div>
+
+  <div class="tools">
+    <button class="tb-btn active" id="toolSelect" title="Select">▣</button>
+    <button class="tb-btn" id="toolDraw" title="Draw">✏</button>
+    <button class="tb-btn" id="toolSplit" title="Split">✂</button>
+    <button class="tb-btn" id="toolErase" title="Erase">⌫</button>
+    <div class="sep"></div>
+    <label>Snap
+      <select id="snapSel">
+        <option value="4">1/4</option>
+        <option value="8">1/8</option>
+        <option value="16">1/16</option>
+        <option value="off">off</option>
+      </select>
+    </label>
+    <div class="sep"></div>
+    <label>X<input type="range" id="zoomX" min="24" max="420" value="96"></label>
+    <label>Y<input type="range" id="zoomY" min="8" max="42" value="18"></label>
+    <div class="sep"></div>
+    <button class="tb-btn" id="fxBtn" title="Chunk overlay">⚡</button>
+  </div>
+
+  <div class="main">
+    <div class="left">
+      <div class="section-title">Tracks <small id="chunkInfo"></small></div>
+      <div id="trackList"></div>
+    </div>
+
+    <div class="rollwrap">
+      <canvas id="keys"></canvas>
+      <div class="rollhost"><canvas id="roll"></canvas></div>
+    </div>
+
+    <div class="right">
+      <div class="section-title">Inspector</div>
+      <div id="inspector"></div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span id="status">กำลังโหลด…</span>
+    <span id="log"></span>
+  </div>
+
+  <div class="transport">
+    <button class="btn primary" id="playBtn">▶</button>
+    <button class="btn" id="stopBtn">⏹</button>
+    <span class="muted small">wasm engine · ไม่มี server</span>
+  </div>
+</div>
+
+<script type="module">
+import { Editor } from "./app/editor.js";
+const ed = new Editor();
+window.__editor = ed; // for headless tests
+ed.boot().catch((e) => {
+  document.getElementById("status").textContent = "โหลดไม่สำเร็จ";
+  document.getElementById("log").textContent = String(e && e.stack ? e.stack : e);
+  console.error(e);
+});
+</script>
+</body>
+</html>

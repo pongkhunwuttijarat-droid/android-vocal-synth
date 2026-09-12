@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lilt — web engine (wasm)</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: #14161a; color: #e6e8eb; }
+  header { padding: 12px 16px; border-bottom: 1px solid #2a2e36; display: flex; gap: 12px; align-items: baseline; }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  main { padding: 16px; display: grid; gap: 16px; max-width: 780px; }
+  section { border: 1px solid #2a2e36; border-radius: 8px; padding: 12px; }
+  h2 { font-size: 12px; margin: 0 0 10px; color: #9aa4b2; text-transform: uppercase; letter-spacing: .05em; }
+  button, input[type=file] { font: inherit; }
+  button { background: #2b6cb0; color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+  button:hover:not(:disabled) { background: #3182ce; }
+  button:disabled { background: #3a3f48; color: #7d8794; cursor: not-allowed; }
+  button.primary { background: #2f855a; }
+  button.primary:hover:not(:disabled) { background: #38a169; }
+  #log { font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; max-height: 240px; overflow: auto; color: #9aa4b2; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  audio { width: 100%; margin-top: 10px; }
+  .hint { color: #7d8794; font-size: 12px; }
+  #status { margin-left: auto; color: #7d8794; font-size: 12px; }
+  #status.ok { color: #68d391; }
+  #status.err { color: #fc8181; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Lilt — web engine (wasm)</h1>
+  <span id="status">กำลังโหลด…</span>
+</header>
+
+<main>
+  <section>
+    <h2>0. เดโมสำเร็จรูป</h2>
+    <div class="row">
+      <button id="demoBtn" class="primary" disabled>▶ โหลดเดโมแล้วเล่นเลย</button>
+      <span class="hint">ใช้ voicebank + เพลงที่แนบมาใน <code>fixture/</code> — ไม่ต้องเลือกไฟล์</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>1. Voicebank ของคุณ (OPFS)</h2>
+    <div class="row">
+      <input type="file" id="vbFiles" webkitdirectory directory multiple>
+      <button id="importBtn" disabled>Import เข้า OPFS</button>
+    </div>
+    <p class="hint">เลือกโฟลเดอร์ voicebank (ต้องมี <code>voice/oto.ini</code> + <code>*.wav</code> + <code>*_wav.frq</code>)</p>
+  </section>
+
+  <section>
+    <h2>2. Project (.ustx)</h2>
+    <div class="row">
+      <input type="file" id="projFile" accept=".ustx,.yaml,.yml,.txt">
+      <button id="renderBtn" disabled>Render</button>
+    </div>
+    <audio id="player" controls></audio>
+  </section>
+
+  <section>
+    <h2>Log</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script type="module">
+import {
+  loadEngine, attachVoicebankFromOpfs, importVoicebankFiles,
+  renderToUrl, opfsAvailable,
+} from "./engine.js";
+
+const $ = (id) => document.getElementById(id);
+const logEl = $("log");
+const log = (m) => { logEl.textContent += m + "\n"; logEl.scrollTop = logEl.scrollHeight; };
+const setStatus = (t, cls = "") => { const s = $("status"); s.textContent = t; s.className = cls; };
+
+let engine = null;
+let projectYaml = null;
+
+function enableInputs() {
+  $("demoBtn").disabled = !engine;
+  $("importBtn").disabled = !engine;
+  $("renderBtn").disabled = !(engine && projectYaml);
+}
+
+/** Load the bundled demo voicebank straight from ./fixture (no OPFS, no picker). */
+async function attachFixtureVoicebank() {
+  const oto = await (await fetch("./fixture/oto.ini")).text();
+  engine.set_voicebank("demo", "Teto (demo)", "voice", new TextEncoder().encode(oto));
+  let loaded = 0;
+  let withFrq = 0;
+  for (const key of engine.wav_keys().split("\n").filter(Boolean)) {
+    const wavRes = await fetch("./fixture/bank/" + key);
+    if (!wavRes.ok) continue;
+    const wav = new Uint8Array(await wavRes.arrayBuffer());
+    // `<stem>_wav.frq` — the reference always prefers it; without it the
+    // pitch track (and the audio) differs from the native render.
+    const frqRes = await fetch("./fixture/bank/" + key.replace(/\.wav$/i, "_wav.frq"));
+    if (frqRes.ok) {
+      engine.add_sample_with_frq(key, wav, new Uint8Array(await frqRes.arrayBuffer()));
+      withFrq += 1;
+    } else {
+      engine.add_sample(key, wav);
+    }
+    loaded += 1;
+  }
+  return { aliases: engine.alias_count(), samples: loaded, withFrq };
+}
+
+(async () => {
+  try {
+    engine = await loadEngine();
+    setStatus("engine พร้อม", "ok");
+    log("wasm engine loaded");
+    if (!(await opfsAvailable())) {
+      log("WARN: OPFS ไม่พร้อม (ต้องเสิร์ฟผ่าน http(s) ไม่ใช่ file://)");
+    }
+    // Auto-attach a voicebank already stored in OPFS from a previous visit.
+    try {
+      const info = await attachVoicebankFromOpfs(engine);
+      log(`OPFS voicebank: aliases=${info.aliases} samples=${info.samples} withFrq=${info.withFrq}`);
+    } catch {
+      log("ยังไม่มี voicebank ใน OPFS — กดปุ่มเดโมด้านบน หรือ import โฟลเดอร์ของคุณ");
+    }
+    enableInputs();
+    // `?demo=1` (or `#demo`) auto-runs the bundled demo — convenient for
+    // sharing a link and for the headless smoke check.
+    const params = new URLSearchParams(location.search);
+    if (params.has("demo") || location.hash === "#demo") {
+      $("demoBtn").click();
+    }
+  } catch (e) {
+    setStatus("โหลดไม่สำเร็จ", "err");
+    log("ERROR: " + e);
+  }
+})();
+
+$("demoBtn").addEventListener("click", async () => {
+  if (!engine) return;
+  $("demoBtn").disabled = true;
+  try {
+    const info = await attachFixtureVoicebank();
+    log(`demo voicebank: aliases=${info.aliases} samples=${info.samples} withFrq=${info.withFrq}`);
+    projectYaml = await (await fetch("./fixture/demo-song.ustx")).text();
+    log(`demo project: ${projectYaml.length} bytes`);
+
+    const t0 = performance.now();
+    const url = renderToUrl(engine, projectYaml, 0);
+    const ms = performance.now() - t0;
+    $("player").src = url;
+    await $("player").play().catch(() => {});
+    log(`rendered in ${ms.toFixed(0)} ms — กด play ที่เครื่องเล่นถ้าไม่ดังอัตโนมัติ`);
+    setStatus("พร้อม", "ok");
+  } catch (e) {
+    log("DEMO ERROR: " + e);
+    setStatus("เดโมล้มเหลว", "err");
+  } finally {
+    enableInputs();
+  }
+});
+
+$("importBtn").addEventListener("click", async () => {
+  const files = [...$("vbFiles").files];
+  if (!files.length) return log("ยังไม่ได้เลือกไฟล์");
+  $("importBtn").disabled = true;
+  try {
+    const n = await importVoicebankFiles(files);
+    log(`imported ${n} files เข้า OPFS`);
+    const info = await attachVoicebankFromOpfs(engine);
+    log(`voicebank: aliases=${info.aliases} samples=${info.samples} withFrq=${info.withFrq}`);
+  } catch (e) {
+    log("ERROR: " + e);
+  } finally {
+    enableInputs();
+  }
+});
+
+$("projFile").addEventListener("change", async (ev) => {
+  const f = ev.target.files[0];
+  if (!f) return;
+  projectYaml = await f.text();
+  log(`project: ${f.name} (${projectYaml.length} bytes)`);
+  enableInputs();
+});
+
+$("renderBtn").addEventListener("click", async () => {
+  if (!engine || !projectYaml) return;
+  $("renderBtn").disabled = true;
+  const t0 = performance.now();
+  try {
+    const url = renderToUrl(engine, projectYaml, 0);
+    $("player").src = url;
+    log(`rendered in ${(performance.now() - t0).toFixed(0)} ms`);
+  } catch (e) {
+    log("RENDER ERROR: " + e);
+  } finally {
+    enableInputs();
+  }
+});
+</script>
+</body>
+</html>
