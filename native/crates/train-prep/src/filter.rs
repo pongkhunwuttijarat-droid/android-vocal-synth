@@ -6,7 +6,8 @@ use crate::TrainEntry;
 
 /// Filter criteria (plan defaults):
 /// - frames >= 30 (≥ ~350 ms of audio — too-short phrases carry nothing)
-/// - voiced ratio >= 0.3 (unvoiced-only phrases are useless for singing)
+/// - unvoiced-only phrases are retained: fricatives are valid singing
+///   phonemes and their f0=0 frames are part of the acoustic target
 /// - mel not flat (std > 0.05 — a flat mel means silence/noise)
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FilterStats {
@@ -22,10 +23,7 @@ pub fn passes(entry: &TrainEntry) -> bool {
     if entry.frames < 30 {
         return false;
     }
-    let voiced = entry.f0_hz.iter().filter(|&&f| f > 0.0).count();
-    if (voiced as f64 / entry.frames as f64) < 0.3 {
-        return false;
-    }
+
     // mel std across all bins — flat → silence/noise.
     let n = entry.mel.len() * 128;
     if n == 0 {
@@ -54,11 +52,9 @@ pub fn apply(entries: &[TrainEntry]) -> (Vec<TrainEntry>, FilterStats) {
             stats.too_short += 1;
             continue;
         }
-        let voiced = e.f0_hz.iter().filter(|&&f| f > 0.0).count();
-        if (voiced as f64 / e.frames as f64) < 0.3 {
-            stats.unvoiced += 1;
-            continue;
-        }
+        // Keep unvoiced consonants (e.g. /s/, /sh/) in the Universal
+        // vocabulary. Their zero-f0 frames teach the student the noise
+        // envelope instead of collapsing the symbol to PAD at inference.
         let n = e.mel.len() * 128;
         let mean: f64 = e.mel.iter().flatten().map(|&v| v as f64).sum::<f64>() / n as f64;
         let var: f64 = e

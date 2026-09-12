@@ -230,6 +230,13 @@ pub fn load_train_set(path: &str) -> Result<TrainSet, String> {
         });
         phrase_id += 1;
     }
+    if vocab.len() >= crate::baseline::EMBED_SLOTS {
+        return Err(format!(
+            "{path}: vocab has {} symbols but embedding capacity is {}",
+            vocab.len(),
+            crate::baseline::EMBED_SLOTS - 1
+        ));
+    }
     if samples.is_empty() {
         return Err(format!("{path}: no samples loaded"));
     }

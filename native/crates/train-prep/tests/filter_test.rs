@@ -42,10 +42,14 @@ fn too_short_rejected() {
     assert!(!passes(&e));
 }
 
+/// Unvoiced-only entries are KEPT: fricatives (/s/, /sh/) are valid singing
+/// phonemes and their f0=0 frames are part of the acoustic target. Dropping
+/// them collapsed those symbols to PAD at inference. (The gate used to
+/// require a voiced ratio >= 0.3.)
 #[test]
-fn unvoiced_rejected() {
-    let e = entry(60, 0.1, 1.0); // voiced ratio < 0.3
-    assert!(!passes(&e));
+fn unvoiced_entry_passes() {
+    let e = entry(60, 0.1, 1.0); // low voiced ratio, but valid audio
+    assert!(passes(&e));
 }
 
 #[test]
@@ -62,10 +66,11 @@ fn apply_counts_each_reason() {
     let flat = entry(60, 0.98, 0.001);
     let entries = vec![good, short, unvoiced, flat];
     let (out, stats) = apply(&entries);
-    assert_eq!(out.len(), 1);
+    // good + unvoiced survive (fricatives are kept); short + flat are cut.
+    assert_eq!(out.len(), 2);
     assert_eq!(stats.total, 4);
-    assert_eq!(stats.passed, 1);
+    assert_eq!(stats.passed, 2);
     assert_eq!(stats.too_short, 1);
-    assert_eq!(stats.unvoiced, 1);
+    assert_eq!(stats.unvoiced, 0, "unvoiced entries are no longer filtered");
     assert_eq!(stats.flat_mel, 1);
 }

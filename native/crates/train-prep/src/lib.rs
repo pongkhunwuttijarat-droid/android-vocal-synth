@@ -18,6 +18,7 @@
 pub mod extract;
 pub mod filter;
 pub mod phrase_gen;
+pub mod project_extract;
 
 use serde::Serialize;
 

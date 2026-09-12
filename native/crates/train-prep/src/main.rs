@@ -28,12 +28,17 @@ fn main() {
     let vocoder = PathBuf::from(&args[4]);
     let out = PathBuf::from(&args[5]);
 
-    let mut max_singles: Option<usize> = Some(300);
+    // The production Universal path may emit any valid bank alias.  Keep
+    // every alias by default so the student's vocab cannot miss a valid
+    // project symbol; --max-singles remains an explicit smoke-test knob.
+    let mut max_singles: Option<usize> = None;
     let mut chain = 20usize;
     let mut chain_max = 12usize;
     let mut tones = vec![60i32];
     let mut durs = vec![500.0f64];
     let mut dump_wav: Option<PathBuf> = None;
+    let mut only_aliases: Option<Vec<String>> = None;
+    let mut project_path: Option<PathBuf> = None;
     let mut i = 6;
     while i < args.len() {
         match args[i].as_str() {
@@ -79,6 +84,21 @@ fn main() {
                 i += 1;
                 dump_wav = args.get(i).map(PathBuf::from);
             }
+            "--only-aliases" => {
+                i += 1;
+                if let Some(raw) = args.get(i) {
+                    only_aliases = Some(
+                        raw.split(',')
+                            .map(|v| v.trim().to_string())
+                            .filter(|v| !v.is_empty())
+                            .collect(),
+                    );
+                }
+            }
+            "--project" => {
+                i += 1;
+                project_path = args.get(i).map(PathBuf::from);
+            }
             other => {
                 eprintln!("unknown arg: {other}");
                 std::process::exit(2);
@@ -99,6 +119,8 @@ fn main() {
         &tones,
         &durs,
         dump_wav.as_deref(),
+        only_aliases.as_deref(),
+        project_path.as_deref(),
     ) {
         Ok((passed, filtered, skipped)) => {
             println!(
@@ -125,9 +147,64 @@ fn run(
     tones: &[i32],
     durs: &[f64],
     dump_wav: Option<&Path>,
+    only_aliases: Option<&[String]>,
+    project_path: Option<&Path>,
 ) -> Result<(usize, usize, usize), String> {
+    use std::io::Write;
     let vb = load_voicebank(bank_dir).map_err(|e| format!("load bank: {e}"))?;
-    let specs = phrases_for_bank(&vb, tones, durs, max_singles, chain, chain_max);
+    // Real-project mode: extract phrases from a composed .ustx project.
+    if let Some(proj) = project_path {
+        let dump_dir = std::env::temp_dir().join("train-prep-dump");
+        let pairs = train_prep::project_extract::extract_project(
+            // Training must use the same Universal phonemizer as production,
+            // regardless of the track's legacy phonemizer label.
+            proj,
+            so,
+            mel,
+            vocoder,
+            &vb,
+            Some(synth_cli::pipeline::PhonemizerKind::Universal),
+            &dump_dir,
+            dump_wav,
+        )?;
+        let entries: Vec<train_prep::TrainEntry> =
+            pairs.iter().map(|(e, _)| e.clone()).collect();
+        let (passed_entries, stats) = train_prep::filter::apply(&entries);
+        eprintln!(
+            "[filter] total={} passed={} too_short={} unvoiced={} flat_mel={}",
+            stats.total, stats.passed, stats.too_short, stats.unvoiced,
+            stats.flat_mel
+        );
+        let mut file = std::io::BufWriter::new(
+            std::fs::File::create(out)
+                .map_err(|e| format!("create {}: {e}", out.display()))?,
+        );
+        let mut k = 0usize;
+        for (entry, audio) in pairs.iter() {
+            if !train_prep::filter::passes(entry) {
+                continue;
+            }
+            if let Some(w) = dump_wav {
+                let wav = wavwriter::write_wav_16(audio, 44100);
+                let p = w.join(format!("{k:05}.wav"));
+                wavwriter::write_wav_file(&p, &wav)
+                    .map_err(|e| format!("write {}: {e}", p.display()))?;
+            }
+            let line = serde_json::to_string(entry)
+                .map_err(|e| format!("json: {e}"))?;
+            file.write_all(line.as_bytes())
+                .and_then(|_| file.write_all(b"\n"))
+                .map_err(|e| format!("write: {e}"))?;
+            k += 1;
+        }
+        file.flush().map_err(|e| format!("flush: {e}"))?;
+        train_prep::extract::write_tsbin(
+            &out.with_extension("tsbin"),
+            &passed_entries,
+        )?;
+        return Ok((passed_entries.len(), stats.total - passed_entries.len(), 0));
+    }
+    let specs = phrases_for_bank(&vb, tones, durs, max_singles, chain, chain_max, only_aliases);
     eprintln!(
         "bank {}: {} oto entries -> {} phrase specs",
         bank_dir.display(),

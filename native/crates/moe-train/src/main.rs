@@ -81,6 +81,18 @@ fn main() {
                 i += 1;
                 backend = args.get(i).cloned().unwrap_or(backend);
             }
+            "--gpu-cap" => {
+                i += 1;
+                gpu_cap = args.get(i).and_then(|v| v.parse().ok());
+            }
+            "--hidden" => {
+                i += 1;
+                hidden = args.get(i).and_then(|v| v.parse().ok()).unwrap_or(hidden);
+            }
+            "--depth" => {
+                i += 1;
+                depth = args.get(i).and_then(|v| v.parse().ok()).unwrap_or(depth);
+            }
             "--resume" => resume = true,
             other => {
                 eprintln!("unknown arg: {other}");
@@ -494,7 +506,7 @@ fn run_moe_cli(args: &[String]) -> i32 {
         "wgpu" => {
             type Backend = burn::backend::Wgpu;
             type AB = burn::backend::Autodiff<Backend>;
-            let device = burn::backend::wgpu::WgpuDevice::IntegratedGpu(0);
+            let device = burn::backend::wgpu::WgpuDevice::DefaultDevice;
             train_moe::<AB>(
                 &set,
                 epochs,
@@ -515,7 +527,7 @@ fn run_moe_cli(args: &[String]) -> i32 {
         "wgpu-f16" => {
             type Backend = burn::backend::Wgpu<burn::tensor::f16, i32>;
             type AB = burn::backend::Autodiff<Backend>;
-            let device = burn::backend::wgpu::WgpuDevice::IntegratedGpu(0);
+            let device = burn::backend::wgpu::WgpuDevice::DefaultDevice;
             train_moe::<AB>(
                 &set,
                 epochs,
@@ -621,7 +633,7 @@ fn run(
             // portable path; same code as the ndarray fallback.
             type Backend = burn::backend::Wgpu;
             type AB = burn::backend::Autodiff<Backend>;
-            let device = burn::backend::wgpu::WgpuDevice::IntegratedGpu(0);
+            let device = burn::backend::wgpu::WgpuDevice::DefaultDevice;
             let init = if resume {
                 moe_train::baseline::try_load_model::<AB>(out_path, hidden, depth, &device)?
             } else {
@@ -638,7 +650,7 @@ fn run(
             // (burn 0.21 + cubecl 0.10 — f16 finally supported on wgpu.)
             type Backend = burn::backend::Wgpu<burn::tensor::f16, i32>;
             type AB = burn::backend::Autodiff<Backend>;
-            let device = burn::backend::wgpu::WgpuDevice::IntegratedGpu(0);
+            let device = burn::backend::wgpu::WgpuDevice::DefaultDevice;
             let init = if resume {
                 moe_train::baseline::try_load_model::<AB>(out_path, hidden, depth, &device)?
             } else {

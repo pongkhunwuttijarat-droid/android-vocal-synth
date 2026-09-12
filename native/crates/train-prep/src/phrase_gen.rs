@@ -21,10 +21,16 @@ pub fn phrases_for_bank(
     max_singles: Option<usize>,
     n_chain: usize,
     chain_max: usize,
+    only_aliases: Option<&[String]>,
 ) -> Vec<PhraseSpec> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut singles: Vec<PhraseSpec> = Vec::new();
     for oto in &vb.otos {
+        if let Some(only) = only_aliases {
+            if !only.iter().any(|a| a == &oto.alias) {
+                continue;
+            }
+        }
         if seen.insert(oto.alias.clone()) {
             for &tone in tones {
                 for &dur in durs {

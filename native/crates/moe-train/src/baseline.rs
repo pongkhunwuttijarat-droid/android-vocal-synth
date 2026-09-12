@@ -15,14 +15,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::data::{FrameSample, TrainSet};
 use crate::phoneme_groups::N_GROUPS;
 
-/// Context window (phonemes): current ±2.
-pub const WINDOW: usize = 5;
-pub const HALF: usize = 2;
+/// Context window (phonemes): current ±4 (9-wide) — wider context so
+/// consonant clusters (k l-, T@, - aU) see their neighbours; the old
+/// ±2 window (5-wide) starved transitions. Checkpoints are NOT portable
+/// across this constant (fc_in dim = WINDOW*64+2) — bump = fresh train.
+pub const WINDOW: usize = 9;
+pub const HALF: usize = 4;
 
-/// Fixed embedding table size: phoneme vocab grows as banks are added,
-/// but checkpoints must stay loadable (resume/incremental training) —
-/// so the table is always this big and ids are clamped into it.
-pub const EMBED_SLOTS: usize = 512;
+/// Embedding capacity for the Universal alias vocabulary. The table is
+/// deliberately larger than the current 2673-symbol Teto bank; data loading
+/// rejects vocabularies that exceed it instead of silently colliding ids.
+/// Checkpoints made with the previous 512-slot table are not portable.
+pub const EMBED_SLOTS: usize = 4096;
 
 /// General-expert default size (legacy runs); the 140M-class general
 /// uses `--hidden 7680 --depth 2`.
@@ -46,9 +50,9 @@ pub struct ContextAcoustic<B: Backend> {
 }
 
 impl<B: Backend> ContextAcoustic<B> {
-    /// `_vocab_size` is accepted for call-site compatibility, but the
-    /// embedding is always `EMBED_SLOTS` — fixed so checkpoints stay
-    /// loadable when the phoneme vocab grows (resume/incremental).
+    /// `_vocab_size` is accepted for call-site compatibility; the embedding
+    /// uses the fixed Universal capacity so set-free inference has a stable
+    /// checkpoint shape.
     pub fn new(_vocab_size: usize, hidden: usize, depth: usize, device: &B::Device) -> Self {
         let emb = EmbeddingConfig::new(EMBED_SLOTS, 64).init(device);
         // 5*64 emb + 1 f0 + 1 position = 322 inputs.

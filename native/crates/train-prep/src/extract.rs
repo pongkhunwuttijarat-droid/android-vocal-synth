@@ -62,7 +62,11 @@ pub fn phrase_input(
         &project.0.tracks[0],
         part,
         vb,
-        pipeline::PhonemizerKind::English,
+        // Universal (not legacy English): same path as production
+        // inference (`from_track` default). English hard-match falls back
+        // to the lyric verbatim on unknown words, producing phonemes the
+        // bank can't render; Universal letter-splits + NearestPhoneme-maps.
+        pipeline::PhonemizerKind::Universal,
     )?;
     phrases.into_iter().next().ok_or_else(|| "no phrase derived".to_string())
 }
