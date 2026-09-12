@@ -46,3 +46,18 @@ app/android/app/src/main/assets/engine/voicebanks/
 ref-openutau-clean/
 native/third_party/
 app/android/app/src/main/jniLibs/
+
+# Generated wasm bindings (run web/run-smoke.sh to regenerate)
+web/pkg/
+
+# === Model checkpoints (large binaries — keep on disk, not in history) ===
+*.mpk
+
+# === Generated POC render outputs (rebuild: test/poc/eval_pipeline.sh) ===
+test/poc/renders/
+
+# === Logs from local harnesses (headless chromium / dev http server) ===
+/chr.err
+/chr.out
+web/srv.err
+web/srv.out
