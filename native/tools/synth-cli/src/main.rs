@@ -2,7 +2,7 @@
 //!
 //! ```sh
 //! synth-cli render --project song.ustx --voicebank <dir> --so libworldline.so \
-//!     --out out.wav [--track 0] [--phonemizer english|japanese] [--verbose]
+//!     --out out.wav [--track 0] [--phonemizer english|japanese|universal|default] [--verbose]
 //! synth-cli synth-note --voicebank <dir> --so libworldline.so \
 //!     --phoneme <alias> --tone 60 --out note.wav [--duration-ms 500]
 //! ```
@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use synth_cli::engine::{DsEngine, WorldlineClassicEngine, WorldlineR2Engine, WorldlineRsEngine};
 use synth_cli::moe::MoeEngine;
+use synth_cli::diffusion::DiffusionEngine;
 use synth_cli::pipeline::{self, PhonemizerKind, SAMPLE_RATE};
 use wavwriter::{write_wav_16, write_wav_file};
 
@@ -39,6 +40,10 @@ enum PhonemizerArg {
     English,
     Japanese,
     Universal,
+    /// OpenUtau DefaultPhonemizer parity: one note -> one phoneme = the lyric
+    /// verbatim (the oto alias the bank reports). A note whose lyric has no oto
+    /// alias emits no phoneme, mirroring OpenUtau's Error + FromPart filter.
+    Default,
 }
 
 #[derive(Args)]
@@ -99,6 +104,24 @@ struct RenderArgs {
     /// MoE engine: general-expert depth (default 1; match training).
     #[arg(long, default_value_t = moe_train::baseline::DEFAULT_DEPTH)]
     moe_depth: usize,
+    /// Diffusion engine: fresh frozen base checkpoint prefix.
+    #[arg(long)]
+    diffusion_base: Option<PathBuf>,
+    /// Diffusion engine: denoiser checkpoint prefix and vocab sidecar.
+    #[arg(long)]
+    diffusion_prefix: Option<PathBuf>,
+    /// Diffusion engine: pc-nsf-hifigan ONNX model.
+    #[arg(long)]
+    diffusion_vocoder: Option<PathBuf>,
+    /// Diffusion engine base width (match the base training --hidden).
+    #[arg(long, default_value_t = moe_train::baseline::SINGLE_SINGER_BASE_HIDDEN)]
+    diffusion_base_hidden: usize,
+    /// Diffusion engine base depth (match the base training --depth).
+    #[arg(long, default_value_t = moe_train::baseline::SINGLE_SINGER_BASE_DEPTH)]
+    diffusion_base_depth: usize,
+    /// DDIM inference steps (2..=64; 64 matches heldout evaluation).
+    #[arg(long, default_value_t = 64)]
+    diffusion_steps: usize,
     /// Print per-phrase progress.
     #[arg(long)]
     verbose: bool,
@@ -115,6 +138,8 @@ enum EngineArg {
     DiffSinger,
     #[value(name = "moe")]
     Moe,
+    #[value(name = "diffusion")]
+    Diffusion,
 }
 
 #[derive(Args)]
@@ -213,6 +238,18 @@ fn cmd_render(args: RenderArgs) -> Result<(), String> {
                 .map_err(|e| format!("open moe engine: {e}"))?,
             )
         }
+        EngineArg::Diffusion => {
+            let base = args.diffusion_base
+                .ok_or("--engine diffusion requires --diffusion-base <checkpoint-prefix>")?;
+            let prefix = args.diffusion_prefix
+                .ok_or("--engine diffusion requires --diffusion-prefix <checkpoint-prefix>")?;
+            let vocoder = args.diffusion_vocoder
+                .ok_or("--engine diffusion requires --diffusion-vocoder <pc-nsf-hifigan.onnx>")?;
+            Box::new(DiffusionEngine::open(base, prefix, vocoder,
+                args.diffusion_base_hidden, args.diffusion_base_depth,
+                args.diffusion_steps, args.verbose)
+                .map_err(|e| format!("open diffusion engine: {e}"))?)
+        }
     };
 
     let track = project
@@ -223,6 +260,7 @@ fn cmd_render(args: RenderArgs) -> Result<(), String> {
         Some(PhonemizerArg::English) => PhonemizerKind::English,
         Some(PhonemizerArg::Japanese) => PhonemizerKind::Japanese,
         Some(PhonemizerArg::Universal) => PhonemizerKind::Universal,
+        Some(PhonemizerArg::Default) => PhonemizerKind::Default,
         None => PhonemizerKind::from_track(track),
     };
     if args.verbose {

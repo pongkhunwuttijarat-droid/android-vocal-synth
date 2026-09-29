@@ -1,6 +1,6 @@
 # Web UI Design — editor บน static web + wasm engine
 
-> สถานะ: **Implementation in progress (vertical slice ผ่านแล้ว)** · อัปเดต 2026-09-12
+> สถานะ: **Implementation in progress — editor render ผ่าน RenderPool แล้ว** · อัปเดต 2026-09-23
 > ต่อจาก: [wasm-target.md](../architecture/wasm-target.md) · [wasm-parallel.md](../architecture/wasm-parallel.md) · [web-static-feasibility.md](web-static-feasibility.md)
 
 UI production ตัวแรกของ Lilt บน browser — tablet-first, landscape, ปากกาเป็น input
@@ -291,6 +291,14 @@ worker เป็นราย chunk; worker เรียก `add_sample_with_frq`
 OPFS อ่านฝั่ง main thread แล้ว `postMessage` แบบ transfer (chunk ละ 1–3 sample);
 ทางเลือกขั้นสูงคือให้ worker อ่าน OPFS เอง — ลด copy แต่ต้อง feature-check (§9 ข้อ 6)
 
+> **Implement แล้ว (2026-09-23):** `web/app/editor.js` สร้าง `RenderPool` ตอน
+> boot ด้วย `workerCount = max(1, min(4, cores-1))`, เรียก `setProject()` +
+> `render({signal, onProgress})` หลังทุกคำสั่งแก้, มี epoch guard กันผลของ render
+> เก่ามาทับ, `cancelRender()` ผูกกับปุ่ม Stop, และ chunk overlay วาดสถานะจาก
+> `pool.cache` จริง. ทางถอยคือ `driver.renderAll()` บน main thread เมื่อ Worker
+> ใช้ไม่ได้. เทสต์: `./web/run-editor.sh` (แก้ 1 note → 1/6 chunk, ไม่แก้อะไร →
+> 0/6 chunk ใน 2 ms, cancel → ผลถูกทิ้ง)
+
 ### Progress และสถานะ chunk
 
 `chunk_meta_json()` ให้ `start_ms/end_ms/own_start/own_end` จริง → วาด chunk mark ตรง
@@ -446,13 +454,13 @@ chunk-state overlay
 | เฟส | สถานะ 2026-09-12 | สิ่งที่ทำแล้ว / gap หลัก |
 |---|---|---|
 | **P0** | 🟡 เกือบครบ | `commands` compile WASM; project/load/YAML, command group, undo/redo, notes/curves/tracks API และ parity tests ผ่าน. `phonemize_json` ยังไม่มี |
-| **P1** | 🟡 Vertical slice | Shell/CSS, `Driver`, transport/play และ HTTP fixture bank ทำงาน. OPFS/project import flow และ worker production path ยังไม่ต่อ |
+| **P1** | 🟡 เกือบครบ | Shell/CSS, `Driver`, transport/play, HTTP fixture bank, **OPFS project store + autosave + export/import** และ worker production path ต่อแล้ว (2026-09-23); เหลือ voicebank import เข้า OPFS |
 | **P2** | 🟡 Vertical slice | Canvas roll, viewport, hit-test, Select/Draw/Move/Resize/Erase/Split, snap และ pointer handling มีแล้ว; lyric/phoneme/playhead/pen hardware QA ยังไม่ครบ |
-| **P3** | 🟡 Harness ผ่าน | `RenderPool`, per-chunk loading และ cache/incremental parity ผ่าน test แยก; editor ยังเรียก `driver.renderAll()` main thread และยังไม่มี progress/cancel/epoch UI |
+| **P3** | ✅ 2026-09-23 | `RenderPool` ต่อเข้า editor แล้ว (epoch/progress/cancel + chunk state + main-thread fallback); `run-editor.sh` ยืนยัน incremental 1/6 chunk |
 | **P4** | ⬜ | Curve API มีฐานและ chunk hash ครอบ pitch/curves แล้ว; PITD overlay/expression lanes ยังไม่ implement |
 | **P5** | 🟡 UI only | Track list + mute/solo commands มี แต่ render/mix ยังเป็น track เดียวและ `TrackSpec::default()` |
 | **P6** | 🟡 บางส่วน | Marquee, split, inspector, keyboard shortcuts และ undo/redo UI มี; context menu/polish ยังเหลือ |
-| **P7** | ⬜ | Engine export WAV ได้ แต่ editor ยังไม่มี autosave/project browser/service worker/PWA |
+| **P7** | 🟡 2026-09-23 | autosave + project browser + export/import `.ustx` ทำแล้ว; เหลือ export WAV จาก editor, service worker/PWA |
 | **P8** | ⬜ | ยังไม่ผ่าน tablet DPR/palm-rejection/perf/memory/i18n/error-state QA |
 
 **รวม ~24–35 วัน.** P0 เป็น dependency ของ P1–P6; P3 ควรมาก่อน P4 เพราะ chunk cache ทำให้
@@ -500,7 +508,8 @@ re-render เฉพาะ chunk = "wow" แรก) และหลัง P6 (edi
 [x] P0: command edit render = YAML edit render (bit-identical)
 [x] curve/pitch อยู่ใน chunk hash + regression tests
 [ ] เพิ่ม authoritative `phonemize_json`
-[ ] wire `web/app/editor.js` → `RenderPool` + progress/cancel/epoch
+[x] wire `web/app/editor.js` → `RenderPool` + progress/cancel/epoch (2026-09-23)
 [ ] ตัดสิน multi-track mix API และ stale-audio policy
-[ ] ต่อ OpfsBank/project autosave/import/export แล้วทดสอบ browser refresh/offline
+[x] project autosave/import/export ใน OPFS (`app/project-store.js` + `projects/<name>.ustx`) — 2026-09-23
+[ ] voicebank import เข้า `OpfsBank` + ทดสอบ offline/service worker
 ```

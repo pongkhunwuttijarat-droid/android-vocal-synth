@@ -33,6 +33,9 @@ app/android/app/build/
 native/crates/*/target/
 
 # === Large models / datasets (skip from git — too big for history) ===
+# R2 model binaries stay on disk; the provenance record IS tracked.
+models/r2/*
+!models/r2/PROVENANCE.md
 test/poc/bigset/
 test/poc/eval/train-set.jsonl
 test/poc/eval/teacher-wavs/
@@ -49,6 +52,7 @@ app/android/app/src/main/jniLibs/
 
 # Generated wasm bindings (run web/run-smoke.sh to regenerate)
 web/pkg/
+native/crates/moe-wasm/www/pkg/
 
 # === Model checkpoints (large binaries — keep on disk, not in history) ===
 *.mpk
@@ -61,3 +65,6 @@ test/poc/renders/
 /chr.out
 web/srv.err
 web/srv.out
+
+# === Local render deliverables (WAV exports, ไม่ commit) ===
+out/

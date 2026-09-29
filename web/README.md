@@ -8,20 +8,26 @@ server, ไม่มี `.so`, ไม่มี dlopen**
 | ไฟล์ | หน้าที่ |
 |---|---|
 | `index.html` | UI harness — import voicebank เข้า OPFS, โหลด `.ustx`, render + เล่น |
-| `editor.html` | Browser editor vertical slice (Canvas piano roll + inspector + transport) |
+| `editor.html` | Flutter-style browser editor shell (Canvas piano roll + inspector + R1/WASM transport) |
 | `app/driver.js` | Rust-owned project/command adapter สำหรับ editor |
 | `app/roll.js` / `app/viewport.js` | Canvas interaction, note tools, selection และ zoom/pan |
-| `app/editor.js` | ผูก editor UI กับ engine; ปัจจุบันยัง render บน main thread |
+| `app/editor.js` | ผูก editor UI กับ engine + **RenderPool** (มี main-thread fallback) และ project/autosave |
+| `app/project-store.js` | **OPFS project store** — `projects/<name>.ustx`, last-opened sidecar, `storage.persist()` |
+| `app/r2-runtime.js` | โหลด R2 ONNX sessions ซ้ำใช้ได้: WebGPU-first ทั้ง mel และ vocoder, WASM fallback |
 | `editor-test.html` | Headless vertical-slice test ของ editor |
 | `engine.js` | adapter: wasm engine ↔ OPFS (อ่าน wav/frq, ส่ง bytes เข้า engine) |
 | `samples.js` | `HttpBank` / `OpfsBank` — แหล่ง sample (cache + frq companion) |
 | `worker.js` | render worker: wasm instance ของตัวเอง + โหลด sample แบบเพิ่มทีละ chunk |
-| `pool.js` | **`RenderPool`** — pool + per-chunk loading + chunk cache (ผ่าน harness; รอ wire เข้า editor) |
+| `pool.js` | **`RenderPool`** — pool + per-chunk loading + chunk cache + cancel/progress (**editor ใช้ตัวนี้เป็น renderer หลักแล้ว**) |
 | `pkg/` | wasm module + JS bindings (generated — `run-smoke.sh` สร้างใหม่) |
 | `smoke.html` | headless test page (สร้างจาก script) |
 | `fixture/` | voicebank subset + demo-song สำหรับ test (3.2 MB) |
 | `run-smoke.sh` | build + serve + รัน headless Chromium แล้วเช็คผล |
 | `run-pool.sh` | ทดสอบ RenderPool (bit-identical + cache + incremental) |
+| `run-editor.sh` | ทดสอบ editor vertical slice + pool wiring (incremental / cancel) |
+| `run-real.sh` | **ไฟล์จริง**: render เพลงจริงด้วย voicebank จริง แล้วเทียบ native bit-exact |
+| `r2-test.html` | R2 ONNX inference harness; `?ep=webgpu` ใช้ WebGPU-first ทั้ง mel และ vocoder |
+| `real-test.html` | หน้าเทสต์ของ `run-real.sh` (sequential vs pool + ส่ง WAV ให้ runner) |
 | `pool-test.html` | หน้าเทียบ pool กับ full render + ตรวจ incremental |
 | `parallel.html` | หน้าเทียบ sequential vs Web Worker fan-out (ตรวจ bit-identical) |
 | `run-parallel.sh` | ทดสอบ parallel แบบ headless |
@@ -34,7 +40,14 @@ server, ไม่มี `.so`, ไม่มี dlopen**
 # 1. ทดสอบ headless (แนะนำ — ยืนยันว่า engine ทำงานจริงบน browser)
 ./web/run-smoke.sh
 
-# 2. เปิด UI จริง
+# 2. editor vertical slice + pool wiring (incremental / cancel / progress)
+./web/run-editor.sh
+
+# 3. ไฟล์จริง: เพลงจริง + voicebank จริง (558 wav, 93 MB) แล้วเทียบ native
+./web/run-real.sh                      # → /tmp/wasm-real.wav
+PROJECT=/test/golden/scale-demo-app.ustx WORKERS=8 ./web/run-real.sh
+
+# 4. เปิด UI จริง
 cd native && cargo build --release --target wasm32-unknown-unknown -p engine-wasm
 wasm-bindgen --target web --out-dir ../web/pkg \
   target/wasm32-unknown-unknown/release/engine_wasm.wasm
@@ -44,19 +57,28 @@ cd ../web && python3 -m http.server 8901
 
 **ต้องเสิร์ฟผ่าน http(s)** — `file://` ใช้ WebAssembly/ES module ไม่ได้
 
+> **ทำไมมี Python?** `python3 -m http.server` กับ `bench-server.py` เป็น **dev/test harness เท่านั้น**
+> (เสิร์ฟไฟล์ + เก็บผล/timing ที่หน้าเว็บ POST กลับมา เพราะ headless `--virtual-time-budget`
+> ทำให้ `performance.now()` หยุด). ตัว product เป็น static + wasm ล้วน — host อะไรก็ได้
+> หรือจะใช้ `synth-server` เสิร์ฟโฟลเดอร์นี้เองก็ได้ (origin เดียว จะได้ไม่ต้องพึ่ง CORS)
+
 ## ผลที่คาดหวังจาก `run-smoke.sh`
 
 ```
 wasm loaded
 aliases=2673
 samples=6 withFrq=6
-render: 132066 samples in ... ms, peak=0.9884
-wav bytes=264176 magic=RIFF
+render: 132098 samples in ... ms, peak=0.9884
+wav bytes=264240 magic=RIFF
 RESULT: PASS
 ```
 
-`132066 samples / 264176 bytes / peak 0.9884` — **ตัวเลขเดียวกับ native**
+`132098 samples / 264240 bytes / peak 0.9884` — **ตัวเลขเดียวกับ native**
 (`world-oracle` / `synth-cli render`)
+
+> อัปเดต 2026-09-23 (T23): ตัวเลขเดิม `132066 / 264176` มาจากโค้ดก่อน fix mixer pre-roll ของ task-9;
+> หลัง rebuild wasm ด้วยโค้ดใหม่ = **+32 samples** (0.73 ms) ตามที่ mixer ไม่หัก leading ซ้ำอีก
+> · `peak` เท่าเดิม 0.9884 · ดู `docs/planning/wasm-refresh-2026-09.md`
 
 ## API ที่ engine เปิดให้ JS
 
@@ -110,7 +132,7 @@ const keys = indices.flatMap((k) => engine.chunk_wav_keys(k).split("\n"));
 ต่อให้ pool แล้ว การโหลดทั้ง bank ยังกิน ~790 MB รวม 4 workers —
 บนแท็บเล็ตควรใช้ per-chunk
 
-## RenderPool (production candidate; editor ยังไม่ wire)
+## RenderPool (editor ใช้เป็น renderer หลักแล้ว)
 
 ```js
 import { HttpBank } from "./samples.js";   // หรือ OpfsBank
@@ -135,10 +157,74 @@ pool.toWav();                        // export จาก cache
 รายละเอียด + ประวัติการแก้ `Chunk::hash` ให้ครอบคลุม curves/pitch:
 `docs/architecture/wasm-parallel.md`
 
-> Update 2026-09-12: `Chunk::hash` ครอบ pitch/expression-curve window และมี
-> regression tests แล้ว. `run-pool.sh` ยังผ่านแบบ bit-identical แต่หน้า
-> `editor.html` ปัจจุบันใช้ `driver.renderAll()` บน main thread; import ของ
-> `RenderPool` เป็นงาน wiring ถัดไป ไม่ควรตีความว่า editor ใช้ pool แล้ว.
+> Update 2026-09-23: **editor ต่อ pool แล้ว** — `app/editor.js` สร้าง
+> `RenderPool` ตอน boot (workerCount = cores-1 สูงสุด 4), เรียก
+> `pool.setProject()` + `pool.render({signal, onProgress})` ทุกครั้งที่แก้,
+> มี epoch guard กันผลของ render เก่ามาทับ, ปุ่ม Stop ยกเลิก render ได้
+> (`cancelRender()`) และ chunk overlay วาดสถานะจาก cache จริง
+> (`done` / `rendering` / `stale`). ถ้า Worker ใช้ไม่ได้จะถอยไป main-thread
+> path เดิม (`driver.renderAll()`) อัตโนมัติ
+>
+> ยืนยันด้วย `./web/run-editor.sh`: ไม่แก้อะไร → **0/6 chunk ใน 2 ms**,
+> แก้ 1 note → **1/6 chunk**, cancel → ผลถูกทิ้งและ audio เดิมยังใช้ได้
+
+## R2 WebGPU experiment (separate harness)
+
+หน้า editor หลักใช้ R1/WASM อย่างเดียว; R2 WebGPU คงไว้เป็น harness ทดลองแยก
+ที่ `r2-test.html` ระหว่างรอเส้นทาง R2 ผ่าน local native server.
+
+ดาวน์โหลด ORT WebGPU runtime ที่ตรึง checksum ไว้ด้วย:
+
+```sh
+./web/vendor/fetch-ort-webgpu.sh
+```
+
+เปิด `r2-test.html?ep=webgpu` เพื่อรัน chain harness บน Chromium; โหมดนี้ขอ
+WebGPU EP ก่อนทั้ง mel และ vocoder แล้วใช้ WASM รองรับ operator ที่ WebGPU ใช้ไม่ได้.
+ค่าเริ่มต้น harness ยังเป็น `?ep=wasm`. Harness ใช้ deterministic feature tensors
+สำหรับ runtime probe.
+
+ผลเทียบก่อนย้าย mel ไป WebGPU (mel WASM, vocoder WebGPU) บน
+`fixture/scale-demo.ustx` + fixture bank:
+
+| Metric | Browser · Rust WORLD + ORT WebGPU | Native · C++ WORLD + ORT CPU | Difference |
+|---|---:|---:|---:|
+| samples | 640,196 | 640,196 | equal |
+| peak | 0.90744 | 0.90747 | 0.00003 |
+| RMS | 0.28723418 | 0.28723427 | 0.00000008 |
+| correlation | — | — | 0.999999999855 |
+| max difference (16-bit WAV) | — | — | 2 LSB |
+
+ตัวเลขนี้เป็นผลจาก demo project/bank หนึ่งชุด; ยังควรเทียบ golden เพิ่มกับ
+โปรเจกต์และ voicebank อื่น โดยเฉพาะ sample ที่ไม่มี `.frq` ซึ่งใช้ Rust DIO fallback.
+
+ย้าย mel เป็น WebGPU-first แล้วและลองใน Chromium บน RTX 5060 Ti:
+สร้าง session ด้วย `[webgpu, wasm]` สำหรับ mel และ vocoder ได้, editor render
+ครบ **640,196 samples / 14.52 s ใน 5.38 s**. Harness input เดียวกันให้ mel
+WebGPU warm run 19.6 ms เทียบ WASM 10.2 ms และ vocoder 19.3 ms เทียบ 1,845.5 ms;
+การสร้าง WebGPU pipeline ครั้งแรกมี overhead ราว 522 ms. Peak/RMS audio ใกล้กัน
+ระหว่าง EP แต่ mel/output float hashes ต่างกันตาม GPU kernel. ตัวเลข parity ตาราง
+ด้านบนยังเป็นผลจาก mel WASM จึงยังไม่ใช่ sample-level native parity ของ mel WebGPU.
+
+## Projects (OPFS)
+
+`.ustx` เก็บใน Origin Private File System — เปิดหน้าใหม่แล้วงานยังอยู่:
+
+```js
+import { ProjectStore } from "./app/project-store.js";
+const store = new ProjectStore();            // root = "projects"
+await store.save("my-song", driver.yaml());  // → projects/my-song.ustx
+await store.list();                          // [{ name, bytes, savedAt }]
+await store.load("my-song");
+```
+
+Editor ทำให้อัตโนมัติ: **autosave 1500 ms** หลังแก้ (เขียนเฉพาะเมื่อ YAML ต่างจาก
+ครั้งล่าสุด), เปิดโปรเจกต์ล่าสุดให้เองตอน boot (`?project=<name>` เพื่อระบุ),
+project browser ในแถบซ้าย (New / Save as / Export / Import / ลบ) และเรียก
+`navigator.storage.persist()` ครั้งแรกที่บันทึก
+
+> ⚠️ **ล้าง site data = โปรเจกต์หายทั้งหมด** — ใช้ **Export .ustx** เก็บสำเนาไว้เสมอ
+> (voicebank ยังมาจาก HTTP fixture; การ import voicebank เข้า OPFS เป็นงานถัดไป)
 
 ## Browser editor checkpoint
 
@@ -148,9 +234,8 @@ cursor-anchored zoom. Demo ใช้ `fixture/scale-demo.ustx` กับ HTTP fi
 
 ## ยังไม่ทำ
 
-- **Production editor wiring** — vertical slice มีแล้ว แต่ยังต้องต่อ RenderPool,
-  progress/cancel, OPFS/project browser, autosave และ export flow
+- **Persistence** — OPFS/project browser, autosave และ export flow (pool wiring + progress/cancel ทำแล้ว)
 - **Feature breadth** — multi-track audio mix, expression lanes, authoritative
   phoneme labels และ tablet/pen hardware QA
-- **Neural engines** (r2/diffsinger/moe) — ยัง native-only
+- **Neural engines** — R2 มี browser WebGPU preview แล้ว; DiffSinger/MoE ยัง native-only
 - **Deploy** — ยังไม่มี service worker/PWA/static host config

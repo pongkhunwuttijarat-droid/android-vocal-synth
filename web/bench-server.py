@@ -7,7 +7,13 @@ lets the page POST its measurements back over HTTP while running in real time.
 """
 import http.server, socketserver, sys, threading, pathlib
 
-ROOT = pathlib.Path(__file__).parent
+# What gets served: `web/` by default, or the directory given as the first
+# argument. The real-file test serves the repository root so the page can reach
+# `test/golden/...` voicebanks and `.ustx` projects on the same origin.
+ROOT = pathlib.Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else pathlib.Path(__file__).parent
+# Binary POST target: the rendered WAV, so the runner can compare it with the
+# native binary's output byte for byte.
+WAV_PATH = pathlib.Path("/tmp/wasm-real.wav")
 result = {}
 done = threading.Event()
 
@@ -24,17 +30,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(n).decode("utf-8", "replace")
+        raw = self.rfile.read(n) if n else b""
         path = self.path
         if path == "/__progress":
             # Stream progress lines so a hung step is visible.
+            body = raw.decode("utf-8", "replace")
             with open("/tmp/dsh-progress.log", "a") as f:
                 f.write(body + "\n")
             print(body, flush=True)
             self.send_response(204)
             self.end_headers()
             return
-        result["body"] = body
+        if path == "/__wav":
+            # Binary — never decoded.
+            WAV_PATH.write_bytes(raw)
+            print(f"WAV {WAV_PATH} {len(raw)} bytes", flush=True)
+            self.send_response(204)
+            self.end_headers()
+            return
+        result["body"] = raw.decode("utf-8", "replace")
         self.send_response(204)
         self.end_headers()
         done.set()

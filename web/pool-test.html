@@ -27,7 +27,7 @@
   <section><h2>ผล</h2><pre id="out"></pre><audio id="player" controls></audio></section>
 </main>
 <script type="module">
-import init, { Engine } from "./pkg/engine_wasm.js";
+import init, { Engine, Mixer } from "./pkg/engine_wasm.js";
 import { HttpBank } from "./samples.js";
 import { RenderPool } from "./pool.js";
 
@@ -69,6 +69,46 @@ function renderReference(yaml) {
     else e.add_sample(k, new Uint8Array(hit.wav));
   }
   return e.render_project(yaml, 0);
+}
+
+/** T24 diagnostic: does the plan-based chunk path reproduce render_project on
+ * the SAME engine? Prints per-chunk meta + rendered length and compares the
+ * manual chunk mix against the single-threaded render. */
+function diagChunks(yaml) {
+  const e = new Engine();
+  e.set_voicebank("ref", "ref", OTO_DIR, new Uint8Array(bank.otoBytes));
+  e.plan_project(yaml, 0);
+  const meta = JSON.parse(e.chunk_meta_json());
+  const needed = new Set();
+  for (let i = 0; i < meta.length; i++) {
+    for (const k of e.chunk_wav_keys(i).split("\n")) if (k) needed.add(k);
+  }
+  for (const k of needed) {
+    const hit = bank.cache.get(k);
+    if (!hit) continue;
+    if (hit.frq) e.add_sample_with_frq(k, new Uint8Array(hit.wav), new Uint8Array(hit.frq));
+    else e.add_sample(k, new Uint8Array(hit.wav));
+  }
+  const lens = [];
+  const mixer = new Mixer();
+  for (let i = 0; i < meta.length; i++) {
+    const pcm = e.render_chunk(i);
+    lens.push(pcm.length);
+    mixer.add_chunk(pcm, meta[i].position_ms, meta[i].leading_ms);
+  }
+  const manual = mixer.finish();
+  const seq = e.render_project(yaml, 0);
+  // T26: plan_track_chunks now reports position_ms = chunk.start_ms (the note
+  // start), matching what the mixer expects, so the raw plan positions mix
+  // bit-identically to the sequential render — the T24 (+leading_ms)
+  // compensation is gone.
+  say("DIAG-ENGINE " + meta.map((m, i) =>
+    `#${i}{pos=${m.position_ms.toFixed(3)},lead=${m.leading_ms.toFixed(3)},own=${m.own_start}-${m.own_end},len=${lens[i]}}`).join(" "));
+  say(`DIAG-LEN manual-chunk-mix=${manual.length} sequential=${seq.length} delta=${manual.length - seq.length}`);
+  let md = 0;
+  for (let i = 0; i < Math.min(manual.length, seq.length); i++) md = Math.max(md, Math.abs(manual[i] - seq[i]));
+  say(`DIAG-DIFF max|diff| manual vs sequential = ${md.toExponential(3)}`);
+  return { meta, lens, manual, seq };
 }
 
 function compare(label, a, b) {
@@ -124,6 +164,12 @@ async function run() {
   const ref1 = renderReference(baseYaml);
   say(`   pool ${firstMs.toFixed(0)} ms | chunks rendered ${first.stats.chunksRendered} | samples โหลด ${first.stats.samplesLoaded} | per-worker keys ${pool.perWorkerKeys.join(",")}`);
   say(`   plain sequential: ${ref1.length} samples`);
+  diagChunks(baseYaml);
+  say("DIAG-POOL " + pool.plan.map((m, i) => {
+    const pcm = pool.cache.get(m.hash);
+    return `#${i}{pos=${m.position_ms.toFixed(3)},lead=${m.leading_ms.toFixed(3)},len=${pcm ? pcm.length : "-"}}`;
+  }).join(" "));
+  say(`DIAG-POOL-MIX pool=${first.samples.length} ref=${ref1.length} delta=${first.samples.length - ref1.length}`);
   allOk = compare("   pool vs sequential", first.samples, ref1) && allOk;
 
   // ---- 2. second render, nothing changed → all chunks reused ----

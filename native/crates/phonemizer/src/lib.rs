@@ -28,6 +28,7 @@
 //! `OpenUtau.Core/Classic/ClassicSinger.cs`.
 
 pub mod adapter;
+pub mod default;
 pub mod detect;
 pub mod english;
 pub mod g2p;
@@ -39,6 +40,7 @@ pub mod timing;
 pub mod translit;
 pub mod universal;
 
+pub use default::DefaultPhonemizer;
 pub use domain::UPhoneme as Phoneme;
 pub use english::EnglishCvvcPhonemizer;
 pub use g2p::{G2p, G2pDictionary, G2pFallbacks, AP, SP};

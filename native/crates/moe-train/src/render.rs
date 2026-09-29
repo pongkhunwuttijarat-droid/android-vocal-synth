@@ -172,6 +172,7 @@ fn build_render_batch<B: Backend>(
     )
 }
 
+#[cfg(feature = "ort-vocoder")]
 /// Open the pc-nsf-hifigan session once (reused across phrases).
 /// `intra_threads` caps the session's op thread pool (0 = ort default) —
 /// parallel render workers each open a session, and the default (all
@@ -188,11 +189,13 @@ pub fn open_vocoder_threads(vocoder_path: &str, intra_threads: usize) -> Result<
         .map_err(|e| format!("load vocoder: {e}"))
 }
 
+#[cfg(feature = "ort-vocoder")]
 /// Open with ort's default thread pool (single-phrase rendering).
 pub fn open_vocoder(vocoder_path: &str) -> Result<ort::session::Session, String> {
     open_vocoder_threads(vocoder_path, 0)
 }
 
+#[cfg(feature = "ort-vocoder")]
 /// pc-nsf-hifigan: mel [1,N,128] + f0 [1,N] → audio [N*hop] (44.1k).
 pub fn run_vocoder(
     session: &mut ort::session::Session,
@@ -216,6 +219,7 @@ pub fn run_vocoder(
     Ok(audio.to_vec())
 }
 
+#[cfg(feature = "ort-vocoder")]
 /// One-shot convenience (single-phrase rendering): open + run.
 pub fn run_vocoder_once(vocoder_path: &str, mel: &[[f32; 128]], f0: &[f32]) -> Result<Vec<f32>, String> {
     let mut session = open_vocoder(vocoder_path)?;
@@ -225,6 +229,7 @@ pub fn run_vocoder_once(vocoder_path: &str, mel: &[[f32; 128]], f0: &[f32]) -> R
 /// Render one phrase to a 16-bit PCM WAV (44.1 kHz mono). `gain`
 /// scales the audio (volume calibration — the student renders ~4×
 /// quieter than the teacher without it).
+#[cfg(feature = "ort-vocoder")]
 pub fn render_phrase_wav<B: Backend>(
     moe: &LoadedMoe<B>,
     set: &TrainSet,
@@ -245,6 +250,7 @@ pub fn render_phrase_wav<B: Backend>(
 
 /// Render with a shared vocoder session (batch rendering — the session
 /// open is the expensive part, so render-all reuses one).
+#[cfg(feature = "ort-vocoder")]
 pub fn render_phrase_wav_with_session<B: Backend>(
     moe: &LoadedMoe<B>,
     set: &TrainSet,

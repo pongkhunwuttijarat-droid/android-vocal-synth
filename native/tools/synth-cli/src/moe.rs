@@ -94,25 +94,25 @@ impl MoeEngine {
 /// Per-frame features: the ±2 phoneme context ids, f0/pos and group per
 /// frame. Mirrors `moe-train`'s `build_batch` but driven by a
 /// [`RenderInput`] (app phrase) instead of a [`TrainSet`].
-struct FrameFeats {
+pub(crate) struct FrameFeats {
     /// WINDOW ids per frame ([frames, WINDOW] flattened).
-    ids: Vec<i64>,
+    pub(crate) ids: Vec<i64>,
     /// `[f0_norm, pos_frac]` per frame ([frames, 2] flattened).
-    feats: Vec<f32>,
+    pub(crate) feats: Vec<f32>,
     /// group id per frame (routing key).
-    groups: Vec<usize>,
+    pub(crate) groups: Vec<usize>,
     /// f0 denormalized (Hz) per frame — passed to the vocoder.
-    f0_hz: Vec<f32>,
+    pub(crate) f0_hz: Vec<f32>,
     /// Universal phonemes that are absent from the checkpoint vocabulary.
     /// These currently fall back to the pad embedding, so expose them in
     /// verbose mode instead of making the mismatch invisible.
-    missing_symbols: Vec<String>,
+    pub(crate) missing_symbols: Vec<String>,
 }
 
 /// Build per-frame features (ids/feats/groups/f0) from a `RenderInput`.
 /// Frame grid: `ceil((duration + leading) / frame_ms)` with `frame_ms`
 /// matched to the train-prep distillation (11.61 ms, the v2 fork frame).
-fn build_frame_features(
+pub(crate) fn build_frame_features(
     input: &RenderInput,
     vocab: &std::collections::HashMap<String, usize>,
 ) -> FrameFeats {
@@ -197,7 +197,7 @@ fn locate_phoneme_index(input: &RenderInput, ms: f64) -> Option<usize> {
 }
 
 /// Load `{prefix}-phonemes.txt` (one symbol per line, index = id).
-fn load_vocab_sidecar(prefix: &Path) -> Result<std::collections::HashMap<String, usize>, String> {
+pub(crate) fn load_vocab_sidecar(prefix: &Path) -> Result<std::collections::HashMap<String, usize>, String> {
     let path = format!("{}-phonemes.txt", prefix.to_string_lossy());
     let text = std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))?;
     let mut map = std::collections::HashMap::new();

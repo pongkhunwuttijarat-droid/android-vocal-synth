@@ -260,6 +260,36 @@ impl Phonemizer for JapaneseVcvPhonemizer {
             }
 
             let plans = plan_morae(&lyric, running_tail);
+
+            // --- ONE PHONEME PER NOTE (OpenUtau parity) ---------------------
+            // The reference JapaneseVCVPhonemizer.Process returns EXACTLY ONE
+            // phoneme for the whole note: the VCV alias picked by trying
+            //   "{prev vowel} {lyric}", "* {lyric}", "{lyric}", "- {lyric}"
+            // (ref-openutau-clean/.../JapaneseVCVPhonemizer.cs:56-80). The note
+            // duration is never divided between phonemes.
+            //
+            // Splitting a note into [consonant, vowel] and sharing the note
+            // duration evenly (the mora path below) put the vowel in the MIDDLE
+            // of the note: a 1500 ms "sa" note held the consonant for 750 ms
+            // before the vowel started, which is the reported broken onset.
+            let whole_candidates: Vec<String> = match running_tail {
+                Some(t) => vec![
+                    format!("{t} {lyric}"),
+                    format!("* {lyric}"),
+                    lyric.clone(),
+                    format!("- {lyric}"),
+                ],
+                None => vec![format!("- {lyric}"), lyric.clone()],
+            };
+            let mut whole = make_phoneme(lyric.clone(), 0, note.duration, 0, note.tone, nidx);
+            if resolve_any(&mut whole, singer, note.tone, &whole_candidates) {
+                running_tail = plans.last().and_then(|p| p.tail);
+                out.push(whole);
+                continue;
+            }
+            // Fallback for banks without a whole-lyric alias (e.g. a bank that
+            // only has mora-level aliases): keep the mora/consonant split.
+
             // Flatten to (symbol, is_tail) pairs: [か, a] or [あ].
             let mut symbols: Vec<(String, bool)> = Vec::new();
             for plan in &plans {
@@ -330,16 +360,112 @@ impl Phonemizer for JapaneseVcvPhonemizer {
 }
 
 /// Try each candidate alias against the singer's oto table (tone-mapped,
-/// with plain fallback) and keep the first match in `ph.phoneme`.
-/// `raw_phoneme` always stays the original symbol.
+/// with plain fallback) and keep the first match in ph.phoneme.
+/// raw_phoneme always stays the original symbol.
 fn resolve(ph: &mut UPhoneme, singer: Option<&Voicebank>, tone: i32, candidates: &[String]) {
+    let _ = resolve_any(ph, singer, tone, candidates);
+}
+
+/// resolve that also reports whether a candidate alias was found in the
+/// singer oto table (the caller needs to fall back when none matches).
+fn resolve_any(
+    ph: &mut UPhoneme,
+    singer: Option<&Voicebank>,
+    tone: i32,
+    candidates: &[String],
+) -> bool {
     if let Some(vb) = singer {
         for candidate in candidates {
             if vb.lookup(candidate, tone).is_some() {
                 ph.phoneme = candidate.clone();
-                return;
+                return true;
             }
         }
     }
     ph.phoneme = ph.raw_phoneme.clone();
+    false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    use voicebank::{parse_oto_ini, Voicebank};
+
+    /// Minimal ja_vcv-style bank written as oto.ini TEXT (no wav is read):
+    /// a whole-note VCV alias (`- sa`), the CV alias (`sa`) and the
+    /// consonant/tail aliases (`s`, `- a`) the old split path used.
+    fn jp_voicebank() -> Voicebank {
+        let ini = concat!(
+            "_sau+_sau+_s-.wav=- sa,80.0,251.664,-498.668,201.665,73.333\n",
+            "_sau+_sau+_s-.wav=sa,736.336,185.666,-352.001,135.666,44.0\n",
+            "_s3_s3_s-.wav=s,742.069,50.731,-122.467,0.731,27.133\n",
+            "_sau+_sau+_s-.wav=- a,100.0,100.0,-275.001,1.994,10.0\n",
+        );
+        let parsed = parse_oto_ini(ini.as_bytes(), None);
+        let oto_map: HashMap<String, _> =
+            parsed.otos.into_iter().map(|o| (o.alias.clone(), o)).collect();
+        Voicebank {
+            name: "jp-test".into(),
+            base_path: Default::default(),
+            path: Default::default(),
+            id: "jp-test".into(),
+            image: None,
+            portrait: None,
+            portrait_opacity: 0.0,
+            portrait_height: 0,
+            author: None,
+            voice: None,
+            web: None,
+            version: None,
+            sample: None,
+            default_phonemizer: None,
+            other_info: String::new(),
+            localized_names: HashMap::new(),
+            text_file_encoding: encoding_rs::UTF_8,
+            singer_type: String::new(),
+            use_filename_as_alias: None,
+            subbanks: Vec::new(),
+            oto_sets: Vec::new(),
+            otos: Vec::new(),
+            oto_map,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn note(lyric: &str) -> UNote {
+        UNote {
+            lyric: lyric.to_string(),
+            duration: 1440,
+            tone: 69,
+            ..Default::default()
+        }
+    }
+
+    /// Regression (T9): a single `sa` note used to be split into the
+    /// consonant `s` and the tail `- a` with the note duration divided
+    /// EVENLY — the vowel only started at 750 ms of a 1500 ms note, which is
+    /// the reported "broken onset". OpenUtau's JapaneseVCVPhonemizer emits
+    /// exactly ONE phoneme per note (see its Process(): a single Phoneme).
+    #[test]
+    fn one_phoneme_per_note_like_openutau() {
+        let vb = jp_voicebank();
+        let phs = JapaneseVcvPhonemizer.process(&[note("sa")], Some(&vb));
+        assert_eq!(phs.len(), 1, "one phoneme per note, got {phs:?}");
+        assert_eq!(phs[0].phoneme, "- sa", "VCV alias, as the reference picks it");
+        assert_eq!(phs[0].position, 0);
+        assert_eq!(phs[0].duration, 1440, "the phoneme owns the whole note");
+    }
+
+    /// The split path stays available for banks with no whole-lyric alias.
+    #[test]
+    fn falls_back_to_the_mora_split_without_a_whole_alias() {
+        let mut vb = jp_voicebank();
+        vb.oto_map.remove("- sa");
+        vb.oto_map.remove("sa");
+        let phs = JapaneseVcvPhonemizer.process(&[note("sa")], Some(&vb));
+        assert!(phs.len() > 1, "expected the mora split, got {phs:?}");
+    }
+}
+

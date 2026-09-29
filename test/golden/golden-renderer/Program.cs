@@ -149,12 +149,35 @@ namespace GoldenRenderer {
             // The DiffSinger phonemizer caches its encoder outputs as a
             // tensorcache under the project's cacheDir — ensure it exists
             // BEFORE ValidateFull triggers the phonemizer.
-            Directory.CreateDirectory(project.cacheDir);
-            Directory.CreateDirectory(Path.Combine(project.cacheDir, "OpenUtau"));
+            // NB: cacheDir may legitimately be empty (projects that ship
+            // `cache_dir: ''`), which throws for Directory.CreateDirectory —
+            // fall back to the harness default (/tmp/golden-renderer-cache).
+            var cacheDir = string.IsNullOrEmpty(project.cacheDir) ? "/tmp/golden-renderer-cache" : project.cacheDir;
+            Directory.CreateDirectory(cacheDir);
+            Directory.CreateDirectory(Path.Combine(cacheDir, "OpenUtau"));
             // The harness's default cache (when cache_dir is empty) is
             // /tmp/golden-renderer-cache — cover both.
             Directory.CreateDirectory("/tmp/golden-renderer-cache");
             Directory.CreateDirectory("/tmp/golden-renderer-cache/OpenUtau");
+
+            // --- T17: make DEMO mode honour WORLDLINE_RENDERER ----------------
+            // Every RenderPhrase bakes `track.RendererSettings.Renderer` when it
+            // is constructed (ref-openutau-clean .../Render/RenderPhrase.cs:222),
+            // and that renderer is chosen by URenderSettings.Validate() inside
+            // the ValidateFull() below. Without this override RenderMixdown
+            // always used the track default (v1), so `WORLDLINE_RENDERER=2
+            // ./run.sh demo` wrote a byte-identical v1 file — the "golden r2"
+            // demo files were really r1 (found in T16). `phrase` mode already
+            // honoured the env (RenderPhrasesDirect); this makes the two agree.
+            if (!diffSingerMode) {
+                string rendererName = RendererVersion() == 2 ? Renderers.WORLDLINE_R2 : Renderers.WORLDLINE_R;
+                foreach (var track in project.tracks) {
+                    track.RendererSettings.renderer = rendererName;
+                    // force URenderSettings.Validate() to rebuild from the name
+                    track.RendererSettings.Renderer = null;
+                }
+                Console.WriteLine($"  renderer override -> {rendererName} (WORLDLINE_RENDERER)");
+            }
 
             project.ValidateFull();
 
@@ -285,6 +308,16 @@ namespace GoldenRenderer {
                 while (true) {
                     // OpenUtau ISignalSource.Mix returns the NEXT absolute
                     // position (in float units — stereo interleaved).
+                    //
+                    // NB: WaveMix.Mix never clears the destination and
+                    // WaveSource.Mix writes with += — so the buffer MUST be
+                    // zeroed here, otherwise every gap inherits stale audio
+                    // from the previous chunk and covered ranges accumulate
+                    // (that produced the "golden sings through the rest"
+                    // artifacts + clipping). MasterAdapter.Read in the real
+                    // app clears the buffer before each read for the same
+                    // reason.
+                    Array.Clear(buffer, 0, chunkSize);
                     int nextPos = mix.Mix(total, buffer, 0, chunkSize);
                     if (nextPos <= total) break;
                     int n = nextPos - total;
@@ -305,6 +338,20 @@ namespace GoldenRenderer {
             return 0;
         }
 
+        /// WORLDLINE_RENDERER env → renderer version used by BOTH modes (T17):
+        /// 1 = WORLDLINE-R (WORLD resynthesis, frame 441/10ms),
+        /// 2 = WORLDLINE-R2 (SynthFeatures → mel.onnx → HiFiGAN,
+        /// frame 512/11.6ms — matches our DEFAULT_FRAME_MS).
+        /// Default 1 (unchanged behaviour when the env var is unset).
+        static int RendererVersion() {
+            int ver = 1;
+            var verStr = Environment.GetEnvironmentVariable("WORLDLINE_RENDERER");
+            if (!string.IsNullOrEmpty(verStr) && int.TryParse(verStr, out int parsed)) {
+                ver = parsed;
+            }
+            return ver;
+        }
+
         /// Apple-to-apple mode: render each phrase through the renderer
         /// directly (no mixdown, no faders, no stereo upmix) and write a
         /// MONO wav — mirroring what our Rust engine's PhraseSynth::Synth()
@@ -315,15 +362,9 @@ namespace GoldenRenderer {
             // Stitch all phrases into one mono stream (phrase order).
             var all = new List<float>();
             double peak = 0;
-            // Renderer version selectable via WORLDLINE_RENDERER env:
-            // 1 = WORLDLINE-R (WORLD resynthesis, frame 441/10ms),
-            // 2 = WORLDLINE-R2 (SynthFeatures → mel.onnx → HiFiGAN,
-            // frame 512/11.6ms — matches our DEFAULT_FRAME_MS).
-            int ver = 1;
-            var verStr = Environment.GetEnvironmentVariable("WORLDLINE_RENDERER");
-            if (!string.IsNullOrEmpty(verStr) && int.TryParse(verStr, out int parsed)) {
-                ver = parsed;
-            }
+            // Renderer version selectable via WORLDLINE_RENDERER env (same helper
+            // the demo path uses, so both modes stay in sync — T17).
+            int ver = RendererVersion();
             // DiffSinger: render through the phrase's OWN renderer (the
             // DiffSingerRenderer ValidateFull assigned for a DS singer).
             IRenderer renderer = diffSingerMode

@@ -40,6 +40,7 @@ const COLORS = {
   playhead: "#55d7de",
   chunk: "#3b3652",
   chunkDone: "#2f4a3a",
+  chunkRendering: "#6d4a24",
 };
 
 /** Hit target width for a note's resize edges, in px. */
@@ -513,7 +514,10 @@ export class PianoRoll {
       for (const c of this.chunks) {
         const x = vp.x(c.start_tick);
         const w = Math.max(2, ((c.end_tick - c.start_tick) / TICKS_PER_BEAT) * vp.beatW);
-        ctx.fillStyle = c.state === "done" ? COLORS.chunkDone : COLORS.chunk;
+        ctx.fillStyle =
+          c.state === "done" ? COLORS.chunkDone
+          : c.state === "rendering" ? COLORS.chunkRendering
+          : COLORS.chunk;
         ctx.globalAlpha = 0.55;
         ctx.fillRect(x, 0, w, ctx.canvas.height / (window.devicePixelRatio || 1));
         ctx.globalAlpha = 1;

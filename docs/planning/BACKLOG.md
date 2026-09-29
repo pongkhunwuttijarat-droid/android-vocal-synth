@@ -1,9 +1,62 @@
 # Lilt — Backlog / Task List
 
-> อัปเดตสถานะ: 2026-09-12
+> อัปเดตสถานะ: 2026-09-23
 > เอกสารนี้เก็บรายละเอียด/ประวัติ native backlog เดิม. ใช้
 > [Roadmap](roadmap/ROADMAP.md), [WASM Migration](wasm-migration-status.md) และ
 > [Web UI Design](web-ui-design.md) เป็น source of truth สำหรับลำดับงานปัจจุบัน.
+
+---
+
+## 🧭 วางไว้ก่อน (ยังไม่เริ่ม) — ตกลงทิศทาง 2026-09-23
+
+> บันทึกจากการคุย: **ยังไม่ต้องเริ่มทำ** แค่จดขอบเขตไว้ให้หยิบมาทำต่อได้ทันที
+
+### A. Web UI ใหม่ (redesign) + เอาไป deploy ที่อื่น
+
+- ผู้ใช้เลือกทาง **"ทำ UI ใหม่"** (redesign — ไม่อิงหน้าตา mock เดิม) และอยากเอาไปลง host อื่นได้ด้วย
+- **ต้องตกลงก่อนเริ่ม:** design direction (mock ใหม่? โครงอ้างอิงจาก `ui-mock/index.html` แค่ layout?) และ stack
+  (คง vanilla + Canvas2D ตามเดิม ซึ่ง reuse ของที่พิสูจน์แล้วได้ทั้งหมด หรือย้ายไป framework)
+- งานเตรียมโครงที่รู้แน่ ๆ:
+  - แยก `web/app/editor.js` (ตอนนี้ ~600 บรรทัด รวม chrome + roll + pool + store) เป็นโมดูลตาม
+    `web-ui-design.md` §7: `app/{view,input,render,store,ui}`
+  - แยก shell/หน้าจอใหม่ + เทสต์ headless ชุดใหม่ (ของเดิม `web/run-editor.sh` ใช้เป็น regression ได้)
+  - ฟีเจอร์ที่ vertical slice ยังไม่มี: trackstrip จริง, expression lanes, mixer sheet, inspector เต็ม, phoneme label จริง
+- **Deploy:** ตัว web เป็น static ล้วน (`web/` + `pkg/` + fixture/bank) — ต้องมี base-path config
+  (ห้าม hardcode `/`), service worker/PWA (ยังไม่มี), HTTPS และ CORS ถ้าจะคุยกับ server
+
+### B. แยก render backend ของ web ให้ต่อ `synth-server` ได้
+
+> **แผนละเอียด (interface, งานฝั่ง server/เว็บ, ลำดับ step + เกณฑ์ผ่าน): [web-render-backend.md](web-render-backend.md)**
+
+เป้าหมาย: web ver เลือกได้ 2 ทาง — **in-process wasm** (ตอนนี้) หรือ **remote `synth-server`** แบบเดียวกับที่ Flutter app ใช้ผ่าน CONTRACT-v1
+และ **โหมด server ต้องได้ฟีเจอร์ครบเท่า wasm** (progress, แก้ 1 note = 1 chunk, cancel, export, เลือก engine) — ไม่ใช่โหมดลดฟีเจอร์
+> **"server" = `native/tools/synth-server` ตัว native** (Rust + `.so`/ONNX) — neural engine ทั้งหมดอยู่ฝั่งนี้
+> ส่วน wasm เก็บ classic path; ผล spike neural บน wasm (ort/burn compile ผ่านทั้งคู่) ดู
+> [web-render-backend.md](web-render-backend.md) §1.2–1.3
+
+ที่มีอยู่แล้วฝั่ง server: `/health`, `/capabilities`, `/voicebanks`, `/render`, `/phonemize`, `/project(s)`, `/post-fx`, `/cancel`, `/stats`
+
+ที่ยังขาด:
+- ❌ **ไม่มี CORS** → หน้าเว็บที่ serve จาก origin อื่น (หรือ static host) เรียกไม่ได้ เพราะ browser บล็อก
+- ❌ `/render` รับ `project` เป็น **absolute path ฝั่ง server** เท่านั้น → ต้องเพิ่ม `project_yaml` แบบ inline
+  (backwards compatible) หรือให้ client `POST /project` เก็บก่อนแล้ว render ตามชื่อ
+- ฝั่งเว็บยังไม่มี seam: `editor.js` ผูกกับ `Driver` + `RenderPool` ตรง ๆ → ต้องมี interface กลาง
+  `render(projectYaml, voicebank, {track, engine, signal, onProgress}) → Float32Array` แล้วมี 2 implementation
+  (wasm pool / http server) ให้สลับได้จาก UI + จำเป็นสำหรับ "เอาไปลงที่อื่น"
+- ทางเลือกที่เลี่ยง CORS ได้: ให้ `synth-server` เสิร์ฟ static web ด้วย (`--static <dir>`) → origin เดียว
+- หมายเหตุ: server คืน WAV 16-bit (quantized) ส่วน pool ให้ float PCM ก่อน quantize — ถ้าต้องการ bit-identical
+  ให้ตั้ง engine ฝั่ง server เป็น `r1-rs` (kernel เดียวกับ wasm)
+- เทสต์ที่ต้องมี: `web/run-server.sh` — สตาร์ต server + render เพลงจริงจาก browser ผ่าน HTTP แล้ว `cmp` กับผล wasm/native
+
+### C. ทำไมมี Python อยู่ในโปรเจกต์ web (ตอบคำถาม)
+
+Python **ไม่ได้อยู่ใน product** — เป็น dev/test harness เท่านั้น:
+- `python3 -m http.server` (ใน `web/run-smoke.sh`) ใช้เสิร์ฟไฟล์เฉย ๆ เพราะ `file://` โหลด WebAssembly/ES module ไม่ได้
+- `web/bench-server.py` เป็น test server ตัวจิ๋ว: เสิร์ฟไฟล์ + รับผลที่หน้าเว็บ POST กลับ (ใช้เก็บผลและ timing
+  จริง เพราะ `--virtual-time-budget` ของ headless ทำให้ `performance.now()` หยุด) — ใช้โดย
+  `run-{pool,parallel,editor,real}.sh`
+- ปลายทาง production = **static files + wasm ล้วน ๆ** (หรือ `synth-server` เสิร์ฟ static เอง) ไม่ต้องมี Python
+- ที่อื่นใน repo ที่ใช้ python: `native/test-data/test-audio.sh`, `test/poc/eval_pipeline.sh`, `test/golden/diffsinger-fake/make-fake-ds.py` (test/data tooling ทั้งหมด)
 
 ---
 
@@ -60,6 +113,8 @@
 | 4 | ~~Device deploy ตรวจ stop/mixer/phoneme~~ — **ผ่านแล้ว 2026-08-05**: stop ระหว่างเล่น ✅, mixer post-fx (fader เปลี่ยนเสียง) ✅, phoneme labels ✅ | done |
 | 5 | ~~Device deploy ตรวจ play UX~~ — **ผ่าน 2026-08-08**: pre-render + playhead sync + edit→rerender + pinch zoom (no red) — "ครบอยู่นะ" | done |
 | 6 | **Engine select per-phrase UI (ระหว่างท่อน)** — server รองรับแล้ว (`RenderRequest.engines[]` + render_service resolve per phrase); app มี dropdown engine เดียว (r1/r2/classic) — ยังไม่มี UI เลือก engine ต่อท่อน | ค้าง |
+| 7b | **🐌 native parallel scaling ฝั่งเพลงยาว** — Bad Apple (136 chunks): RAYON 1→12 ได้แค่ **1.24×** (46.65→37.57 s) และ CPU เพิ่ม 46→65 CPU-s (งานงอก/contention) ขณะที่ **wasm pool 1→8 workers ได้ 6.53×** (109→16.75 s) ⇒ wasm เร็วกว่า native บนเพลงจริง ต้องสืบว่า rayon/plan/cache ตรงไหนเป็นคอขวด (ผลวัด: docs/architecture/wasm-performance.md §0.2) | กลาง |
+| 7 | **🐞 cache salt ไม่ผูกกับโมเดล** — `pipeline.rs:626` key = `chunk.hash(input, engine.cache_salt())`; `DsEngine` **ไม่ override** (salt = 0) และ r2/classic/r1-rs เป็นค่าคงที่ตาม *ชนิด* engine ⇒ สลับ `--ds-model` (หรือ mel/vocoder ของ r2, checkpoint ของ moe) แล้วได้ chunk เก่ากลับมาเงียบ ๆ. **พิสูจน์ 2026-09-23:** รัน kiritan (271 MB) ต่อจาก fake model (260 B) → ได้ WAV **byte-identical** กับผลของ fake, wall 0.7s (เคลียร์ cache แล้ว 57s) · แก้: ผสม identity ของโมเดล (path+size+mtime หรือ content hash) เข้า salt + เทสต์ "สลับโมเดลต้อง cache miss" | เล็ก |
 
 ### MS3 — Renderers
 | # | งาน | สถานะ |

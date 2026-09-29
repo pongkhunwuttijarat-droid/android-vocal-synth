@@ -23,7 +23,7 @@ import init, { Engine, Mixer } from "./pkg/engine_wasm.js";
 
 /** One worker connection with promise-based request/response. */
 class WorkerLink {
-  constructor(samples, projectYaml, track) {
+  constructor(samples, projectYaml, track, renderEngine) {
     this.worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
     this.seq = 1;
     this.pending = new Map();
@@ -35,13 +35,16 @@ class WorkerLink {
     });
     this.worker.onmessage = (ev) => this._onMessage(ev.data);
     this.worker.onerror = (e) => this._rejectReady?.(new Error("worker error: " + (e.message || e)));
-    this.worker.postMessage({ type: "init", id: 0, samples, projectYaml, track });
+    this.worker.postMessage({ type: "init", id: 0, samples, projectYaml, track, renderEngine });
   }
 
   _onMessage(m) {
     if (m.type === "ready") {
       this.timings.wasmInitMs = m.wasmInitMs;
       this.timings.voicebankLoadMs = m.voicebankLoadMs;
+      this.timings.renderEngine = m.renderEngine;
+      this.timings.r2LoadMs = m.r2LoadMs || 0;
+      this.timings.r2Device = m.r2Device || null;
       this._resolveReady?.(m);
       this._resolveReady = null;
       return;
@@ -112,10 +115,11 @@ export class RenderPool {
     projectYaml,
     track = 0,
     onProgress,
+    renderEngine = "r1-rs",
   }) {
     await init();
 
-    const pool = new RenderPool({ workerCount, bank, otoDir, track, onProgress });
+    const pool = new RenderPool({ workerCount, bank, otoDir, track, onProgress, renderEngine });
 
     // The planner engine holds the alias table only — no audio.
     await bank.openOto({ otoPath, otoDir });
@@ -133,20 +137,26 @@ export class RenderPool {
     };
     pool.links = Array.from(
       { length: workerCount },
-      () => new WorkerLink(emptySamples, projectYaml, track),
+      () => new WorkerLink(emptySamples, projectYaml, track, renderEngine),
     );
-    await Promise.all(pool.links.map((l) => l.ready));
+    try {
+      await Promise.all(pool.links.map((l) => l.ready));
+    } catch (error) {
+      pool.terminate();
+      throw error;
+    }
 
     await pool.setProject(projectYaml, { force: true });
     return pool;
   }
 
-  constructor({ workerCount, bank, otoDir, track, onProgress }) {
+  constructor({ workerCount, bank, otoDir, track, onProgress, renderEngine }) {
     this.workerCount = workerCount;
     this.bank = bank;
     this.otoDir = otoDir;
     this.track = track;
     this.onProgress = onProgress;
+    this.renderEngine = renderEngine;
     /** hash -> Float32Array (rendered chunk audio). */
     this.cache = new Map();
     /** hash -> {index, position_ms, leading_ms} */
@@ -207,9 +217,16 @@ export class RenderPool {
    * Cached chunks are reused, so an edit that touches one chunk renders one
    * chunk.
    *
-   * @returns {Promise<{samples: Float32Array, stats: object}>}
+   * @param {object} [opts]
+   * @param {number[]} [opts.only] render exactly these chunk indices
+   * @param {{cancelled:boolean}} [opts.signal] set `cancelled` to drop the
+   *   render: worker replies that arrive afterwards are NOT written to the
+   *   cache and no PCM is returned, so the caller keeps its previous audio
+   *   instead of publishing a half render.
+   * @param {(p:{rendered:number,total:number}) => void} [opts.onProgress]
+   * @returns {Promise<{samples: Float32Array|null, cancelled?: boolean, stats: object}>}
    */
-  async render({ only } = {}) {
+  async render({ only, signal, onProgress } = {}) {
     const t0 = performance.now();
     // Default to the chunks whose CURRENT hash is not cached — not to a stale
     // dirty list from the last `setProject`. This is what makes "Play" after
@@ -237,20 +254,27 @@ export class RenderPool {
     this.stats.lastLoadMs = performance.now() - tLoad;
     this.stats.samplesLoaded += loaded;
 
+    if (signal?.cancelled) return this._cancelled(t0);
+
     // Render, then mix in plan order (the mixer's crossfade depends on order).
     let done = 0;
+    const progress = onProgress || this.onProgress;
     await Promise.all(
       [...byWorker.entries()].map(async ([w, list]) => {
         const out = await this.links[w].render(list);
+        // A cancelled render must not pollute the cache with stale audio.
+        if (signal?.cancelled) return;
         for (const c of out) {
           const hash = this.plan[c.index].hash;
           this.cache.set(hash, c.pcm);
           this.cacheMeta.set(hash, this.plan[c.index]);
         }
         done += out.length;
-        this.onProgress?.({ rendered: done, total: indices.length });
+        progress?.({ rendered: done, total: indices.length });
       }),
     );
+
+    if (signal?.cancelled) return this._cancelled(t0, done);
 
     this.stats.chunksRendered += done;
 
@@ -263,6 +287,29 @@ export class RenderPool {
     this.stats.renders += 1;
     this.stats.lastRenderMs = performance.now() - t0;
     return { samples: mixed, stats: { ...this.stats } };
+  }
+
+  /** Outcome of a render that was cancelled before it could be mixed. */
+  _cancelled(t0, done = 0) {
+    this.stats.renders += 1;
+    this.stats.chunksRendered += done;
+    this.stats.lastRendered = 0;
+    this.stats.lastReused = this.plan.length;
+    this.stats.lastRenderMs = performance.now() - t0;
+    return { samples: null, cancelled: true, stats: { ...this.stats } };
+  }
+
+  /** True when the chunk carrying this hash is already rendered. */
+  has(hash) {
+    return this.cache.has(hash);
+  }
+
+  /**
+   * Overlay state per planned chunk, straight from the cache:
+   * `done` = rendered, `stale` = its hash is not cached yet.
+   */
+  states() {
+    return this.plan.map((m) => (this.cache.has(m.hash) ? "done" : "stale"));
   }
 
   /** Mix every planned chunk from the cache, in plan order. */

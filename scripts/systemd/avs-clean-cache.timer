@@ -1,8 +1,10 @@
 [Unit]
-Description=ตรวจและล้าง build cache ของ android-voice-synth สัปดาห์ละครั้ง
+Description=ตรวจและล้าง build cache ของ android-voice-synth ทุกวัน
 
 [Timer]
-OnCalendar=weekly
+# ทุกวัน 04:00 (+ สุ่มไม่เกิน 1 ชม.) — เคส 2026-09-23 cache โต 21 GB ใน 6 วัน
+# จึงต้องรายวัน ไม่ใช่รายสัปดาห์
+OnCalendar=*-*-* 04:00:00
 Persistent=true
 RandomizedDelaySec=1h
 AccuracySec=5min

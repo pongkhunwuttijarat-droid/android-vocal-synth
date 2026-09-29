@@ -28,6 +28,16 @@ fn main() {
         std::process::exit(code);
     }
 
+    if args[1] == "--diffusion" {
+        let code = run_diffusion_cli(&args);
+        std::process::exit(code);
+    }
+
+    if args[1] == "--eval-diffusion" {
+        let code = run_eval_diffusion_cli(&args);
+        std::process::exit(code);
+    }
+
     if args[1] == "--render" {
         let code = run_render_cli(&args);
         std::process::exit(code);
@@ -592,6 +602,102 @@ fn run_moe_cli(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// Train a residual diffusion denoiser against an already-trained, frozen
+/// single-singer base. The base itself is deliberately not updated here.
+fn run_diffusion_cli(args: &[String]) -> i32 {
+    if args.len() < 5 {
+        eprintln!("usage: {} --diffusion <train-set> <base-prefix> <out-prefix> [--epochs N] [--batch N] [--lr X] [--eval-frac F] [--hidden N] [--depth N] [--backend wgpu|ndarray]", args[0]);
+        return 2;
+    }
+    use moe_train::diffusion::{train, DEFAULT_DEPTH as DIFF_DEPTH, DEFAULT_HIDDEN as DIFF_HIDDEN};
+    use std::sync::atomic::AtomicBool;
+    static NEVER_STOP_DIFFUSION: AtomicBool = AtomicBool::new(false);
+    let data_path=&args[2]; let base_prefix=&args[3]; let out_prefix=&args[4];
+    let (mut epochs,mut batch,mut hidden,mut depth)=(100usize,512usize,DIFF_HIDDEN,DIFF_DEPTH);
+    let (mut lr,mut eval_frac)=(1e-4f64,0.1f64); let mut backend="wgpu".to_string();
+    let (mut base_hidden,mut base_depth)=(moe_train::baseline::DEFAULT_HIDDEN,moe_train::baseline::DEFAULT_DEPTH);
+    let mut i=5;
+    while i<args.len(){
+        match args[i].as_str(){
+            "--epochs"=>{i+=1;epochs=args.get(i).and_then(|v|v.parse().ok()).unwrap_or(epochs);},
+            "--batch"=>{i+=1;batch=args.get(i).and_then(|v|v.parse().ok()).unwrap_or(batch);},
+            "--lr"=>{i+=1;lr=args.get(i).and_then(|v|v.parse().ok()).unwrap_or(lr);},
+            "--eval-frac"=>{i+=1;eval_frac=args.get(i).and_then(|v|v.parse().ok()).unwrap_or(eval_frac);},
+            "--hidden"=>{i+=1;hidden=args.get(i).and_then(|v|v.parse().ok()).unwrap_or(hidden);},
+            "--depth"=>{i+=1;depth=args.get(i).and_then(|v|v.parse().ok()).unwrap_or(depth);},
+            "--base-hidden"=>{i+=1;base_hidden=args.get(i).and_then(|v|v.parse().ok()).unwrap_or(base_hidden);},
+            "--base-depth"=>{i+=1;base_depth=args.get(i).and_then(|v|v.parse().ok()).unwrap_or(base_depth);},
+            "--backend"=>{i+=1;backend=args.get(i).cloned().unwrap_or(backend);},
+            other=>{eprintln!("unknown arg: {other}");return 2;}
+        } i+=1;
+    }
+    let set=match load_train_set(data_path){Ok(s)=>s,Err(e)=>{eprintln!("ERROR: {e}");return 1;}};
+    eprintln!("diffusion set: {} samples, {} phonemes, {} phrases; frozen base={base_prefix}",set.samples.len(),set.vocab.len(),set.phrases.len());
+    let result=match backend.as_str(){
+        "wgpu"=>{
+            type B=burn::backend::Wgpu; type AB=burn::backend::Autodiff<B>;
+            let device=burn::backend::wgpu::WgpuDevice::DefaultDevice;
+            match moe_train::baseline::load_model::<B>(set.vocab.len()+1,base_prefix,base_hidden,base_depth,&device){
+                Ok(base)=>train::<AB>(&set,&base,epochs,batch,lr,eval_frac,hidden,depth,out_prefix,&device,&NEVER_STOP_DIFFUSION,&mut |e,t,v|println!("[diffusion] epoch {e}: train={t:.5} val={v:.5}")),
+                Err(e)=>Err(format!("load frozen base: {e}")),
+            }
+        },
+        "ndarray"=>{
+            type B=burn::backend::NdArray; type AB=burn::backend::Autodiff<B>;
+            let device=Default::default();
+            match moe_train::baseline::load_model::<B>(set.vocab.len()+1,base_prefix,base_hidden,base_depth,&device){
+                Ok(base)=>train::<AB>(&set,&base,epochs,batch,lr,eval_frac,hidden,depth,out_prefix,&device,&NEVER_STOP_DIFFUSION,&mut |e,t,v|println!("[diffusion] epoch {e}: train={t:.5} val={v:.5}")),
+                Err(e)=>Err(format!("load frozen base: {e}")),
+            }
+        },
+        other=>{eprintln!("ERROR: unknown backend {other}");return 1;}
+    };
+    match result{
+        Ok(r)=>{
+            println!("OK diffusion -> {out_prefix}.mpk");
+            println!("REPORT epochs={} train_eps_mse={:.6} val_eps_mse={:.6} base_val_mel_mse={:.6} corrected_val_mel_mse={:.6} frozen_base_infer_s={:.3} diffusion_train_s={:.3}",r.epochs,r.train_epsilon_mse,r.val_epsilon_mse,r.base_val_mel_mse,r.corrected_val_mel_mse,r.base_seconds,r.diffusion_seconds);
+            if let Err(e)=write_vocab_sidecar(out_prefix,&set){eprintln!("WARN: vocab sidecar: {e}");}
+            0
+        },
+        Err(e)=>{eprintln!("ERROR: {e}");1}
+    }
+}
+
+fn run_eval_diffusion_cli(args:&[String])->i32{
+    if args.len()<5{
+        eprintln!("usage: {} --eval-diffusion <train-set> <base-prefix> <diffusion-prefix> [--steps N] [--hidden N] [--depth N] [--backend wgpu|ndarray]",args[0]);return 2;
+    }
+    let (data_path,base_prefix,diff_prefix)=(&args[2],&args[3],&args[4]);
+    let (mut steps,mut hidden,mut depth)=(moe_train::diffusion::DIFFUSION_STEPS,moe_train::diffusion::DEFAULT_HIDDEN,moe_train::diffusion::DEFAULT_DEPTH);
+    let (mut base_hidden,mut base_depth)=(moe_train::baseline::DEFAULT_HIDDEN,moe_train::baseline::DEFAULT_DEPTH);
+    let mut backend="wgpu".to_string();let mut i=5;
+    while i<args.len(){match args[i].as_str(){
+        "--steps"=>{i+=1;steps=args.get(i).and_then(|v|v.parse().ok()).unwrap_or(steps);},
+        "--hidden"=>{i+=1;hidden=args.get(i).and_then(|v|v.parse().ok()).unwrap_or(hidden);},
+        "--depth"=>{i+=1;depth=args.get(i).and_then(|v|v.parse().ok()).unwrap_or(depth);},
+        "--base-hidden"=>{i+=1;base_hidden=args.get(i).and_then(|v|v.parse().ok()).unwrap_or(base_hidden);},
+        "--base-depth"=>{i+=1;base_depth=args.get(i).and_then(|v|v.parse().ok()).unwrap_or(base_depth);},
+        "--backend"=>{i+=1;backend=args.get(i).cloned().unwrap_or(backend);},
+        other=>{eprintln!("unknown arg: {other}");return 2;}
+    }i+=1;}
+    let set=match load_train_set(data_path){Ok(s)=>s,Err(e)=>{eprintln!("ERROR: {e}");return 1;}};
+    let result=match backend.as_str(){
+        "wgpu"=>{
+            type B=burn::backend::Wgpu;let device=burn::backend::wgpu::WgpuDevice::DefaultDevice;
+            let base=moe_train::baseline::load_model::<B>(set.vocab.len()+1,base_prefix,base_hidden,base_depth,&device);
+            let model=moe_train::diffusion::load_model::<B>(diff_prefix,hidden,depth,&device);
+            match(base,model){(Ok(b),Ok(m))=>moe_train::diffusion::evaluate(&set,&b,&m,steps,&device), (Err(e),_)|(_,Err(e))=>Err(e)}
+        },
+        "ndarray"=>{
+            type B=burn::backend::NdArray;let device=Default::default();
+            let base=moe_train::baseline::load_model::<B>(set.vocab.len()+1,base_prefix,base_hidden,base_depth,&device);
+            let model=moe_train::diffusion::load_model::<B>(diff_prefix,hidden,depth,&device);
+            match(base,model){(Ok(b),Ok(m))=>moe_train::diffusion::evaluate(&set,&b,&m,steps,&device), (Err(e),_)|(_,Err(e))=>Err(e)}
+        },other=>{eprintln!("ERROR: unknown backend {other}");return 1;}
+    };
+    match result{Ok((base,corrected))=>{println!("EVAL steps={steps} heldout_base_mel_mse={base:.6} corrected_mel_mse={corrected:.6}");0},Err(e)=>{eprintln!("ERROR: {e}");1}}
 }
 
 /// Write `{prefix}-phonemes.txt` — one phoneme per line (index order =

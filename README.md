@@ -85,10 +85,10 @@ the WASM editor while keeping the native render paths available for neural engin
 - MS4 is in progress on two fronts: the Flutter tablet client is functional, and
   the browser editor now has a tested vertical slice for note editing, undo/redo,
   rendering, playback, and viewport interaction.
-- The WASM engine and Web Worker render pool pass parity/incremental tests. The
-  browser editor still renders on the main thread; wiring the pool, OPFS project
-  flow, multi-track mix, expression lanes, PWA/offline packaging, and neural WASM
-  engines remain.
+- The WASM engine and Web Worker render pool pass parity/incremental tests, and
+  the browser editor now renders through the pool (progress/cancel, chunk cache,
+  main-thread fallback). OPFS project flow, multi-track mix, expression lanes,
+  PWA/offline packaging, and neural WASM engines remain.
 
 See the [roadmap](docs/planning/roadmap/ROADMAP.md) for the evidence and blockers
 behind these labels.
@@ -136,6 +136,8 @@ native `.so` path remains available for parity and neural renderers.
 - WASM engine: `cd native && cargo build --release --target wasm32-unknown-unknown -p engine-wasm`
 - Browser smoke test: `./web/run-smoke.sh`
 - Browser render-pool test: `./web/run-pool.sh`
+- Browser editor test (pool wiring): `./web/run-editor.sh`
+- Real project + real voicebank, compared with native: `./web/run-real.sh`
 - Flutter client: `cd app && flutter test`
 
 Native Android builds additionally require the Android NDK/CMake; browser builds

@@ -32,6 +32,8 @@ let projectYaml = null;
 let track = 0;
 let engineInitMs = 0;
 let sampleLoadMs = 0;
+let renderEngine = "r1-rs";
+let r2Runtime = null;
 /** Keys currently installed in this worker's engine. */
 const loadedKeys = new Set();
 
@@ -67,6 +69,14 @@ self.onmessage = async (ev) => {
     switch (msg.type) {
       case "init": {
         await ensureEngine(msg.samples);
+        renderEngine = msg.renderEngine || "r1-rs";
+        let r2LoadMs = 0;
+        if (renderEngine === "r2-webgpu") {
+          const tR2 = performance.now();
+          const { R2Runtime } = await import("./app/r2-runtime.js");
+          r2Runtime = await R2Runtime.load({ ep: "webgpu" });
+          r2LoadMs = performance.now() - tR2;
+        }
         projectYaml = msg.projectYaml;
         track = msg.track ?? 0;
         const chunks = engine.plan_project(projectYaml, track);
@@ -77,6 +87,9 @@ self.onmessage = async (ev) => {
           loadedKeys: loadedKeys.size,
           wasmInitMs: engineInitMs,
           voicebankLoadMs: sampleLoadMs,
+          renderEngine,
+          r2LoadMs,
+          r2Device: r2Runtime?.info.device || null,
         });
         return;
       }
@@ -107,8 +120,15 @@ self.onmessage = async (ev) => {
         }
         const out = [];
         for (const index of msg.indices || []) {
-          // `slice()` copies out of wasm memory so the buffer is transferable.
-          const pcm = engine.render_chunk(index).slice();
+          let pcm;
+          if (renderEngine === "r2-webgpu") {
+            if (!r2Runtime) throw new Error("R2 WebGPU runtime is not initialized");
+            const packet = engine.render_r2_features_chunk(index);
+            pcm = (await r2Runtime.renderFeaturePacket(packet)).pcm;
+          } else {
+            // `slice()` copies out of wasm memory so the buffer is transferable.
+            pcm = engine.render_chunk(index).slice();
+          }
           out.push({ index, pcm: pcm.buffer });
         }
         self.postMessage({ type: "done", id: msg.id, chunks: out }, out.map((o) => o.pcm));

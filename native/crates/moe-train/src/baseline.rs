@@ -32,6 +32,9 @@ pub const EMBED_SLOTS: usize = 4096;
 /// uses `--hidden 7680 --depth 2`.
 pub const DEFAULT_HIDDEN: usize = 1024;
 pub const DEFAULT_DEPTH: usize = 1;
+/// Width/depth for the higher-capacity single-singer base.
+pub const SINGLE_SINGER_BASE_HIDDEN: usize = 3584;
+pub const SINGLE_SINGER_BASE_DEPTH: usize = 1;
 /// Per-group residual experts stay small (they learn the residual only).
 pub const EXPERT_HIDDEN: usize = 1024;
 pub const EXPERT_DEPTH: usize = 1;
@@ -46,7 +49,7 @@ pub struct ContextAcoustic<B: Backend> {
     fc_in: Linear<B>,
     hiddens: Vec<Linear<B>>,
     out: Linear<B>,
-    dropout: Dropout,
+    pub(crate) dropout: Dropout,
 }
 
 impl<B: Backend> ContextAcoustic<B> {
@@ -83,6 +86,11 @@ impl<B: Backend> ContextAcoustic<B> {
         }
         self.out.forward(x)
     }
+
+    /// Disable dropout for deterministic inference with a loaded checkpoint.
+    pub fn disable_dropout(&mut self) {
+        self.dropout.prob = 0.0;
+    }
 }
 
 /// Load a checkpoint if it exists on disk (resume support).
@@ -98,7 +106,7 @@ pub fn try_load_model<B: Backend>(
     if !probe.exists() {
         return Ok(None);
     }
-    let dummy = ContextAcoustic::<B>::new(0, DEFAULT_HIDDEN, DEFAULT_DEPTH, device);
+    let dummy = ContextAcoustic::<B>::new(0, hidden, depth, device);
     match dummy.load_file(path, &recorder, device) {
         Ok(m) => Ok(Some(m)),
         Err(e) => Err(format!("resume load {path}: {e}")),
@@ -144,7 +152,7 @@ fn mse_loss<B: Backend>(pred: Tensor<B, 2>, target: Tensor<B, 2>) -> Tensor<B, 1
     sq.mean_dim(1).mean()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "wgpu"))]
 mod f16_smoke {
     use super::*;
     use burn::tensor::Int;
@@ -235,17 +243,11 @@ pub fn train_context<B: AutodiffBackend>(
     // take the last eval_frac as validation — a random split, not the
     // bank-order tail (which is systematically the exotic aliases).
     let n_phrases = set.samples.last().map(|s| s.phrase_id + 1).unwrap_or(0);
-    let n_val = ((n_phrases as f64) * eval_frac).round() as usize;
-    let mut phrase_order: Vec<usize> = (0..n_phrases).collect();
+    let val_phrases = heldout_phrases(n_phrases, eval_frac);
+    let n_val = val_phrases.len();
+    // Keep a separate epoch shuffle stream. The split helper owns its own
+    // stream so train_context and MoE correction share the same holdout.
     let mut rng = 0x9E3779B97F4A7C15u64;
-    for i in (1..n_phrases).rev() {
-        rng = xorshift(rng);
-        let j = (rng % (i as u64 + 1)) as usize;
-        phrase_order.swap(i, j);
-    }
-    let val_from = n_phrases.saturating_sub(n_val);
-    let val_phrases: std::collections::HashSet<usize> =
-        phrase_order[val_from..].iter().copied().collect();
     let train_samples: Vec<&FrameSample> = set
         .samples
         .iter()
@@ -328,7 +330,7 @@ pub fn train_context<B: AutodiffBackend>(
 
 /// Build one batch: for every frame gather its ±2 phoneme context
 /// (padded at phrase edges), f0, position, and the teacher mel.
-fn build_batch<B: Backend>(
+pub(crate) fn build_batch<B: Backend>(
     set: &TrainSet,
     samples: &[&FrameSample],
     chunk: &[usize],
@@ -555,27 +557,41 @@ pub fn train_moe<B: AutodiffBackend>(
     println!("[moe] general done: train={train_loss:.4} val={val_loss:.4}");
     save_model(&general, &format!("{prefix}-general"))?;
 
+    // Use the exact same deterministic phrase holdout as the general
+    // model. Group experts must not see validation phrases.
+    let val_phrases = heldout_phrases(set.phrases.len(), eval_frac);
+    let train_samples: Vec<&FrameSample> = set.samples.iter()
+        .filter(|s| !val_phrases.contains(&s.phrase_id)).collect();
+    let val_samples: Vec<&FrameSample> = set.samples.iter()
+        .filter(|s| val_phrases.contains(&s.phrase_id)).collect();
+
     // 2. Per-group residual experts.
-    let general_inner: ContextAcoustic<B::InnerBackend> = general.valid();
+    let mut general_inner: ContextAcoustic<B::InnerBackend> = general.valid();
+    general_inner.dropout.prob = 0.0;
     let mut report: Vec<(usize, f64, f64)> = Vec::new();
+    let mut val_base_weighted = 0.0f64;
+    let mut val_moe_weighted = 0.0f64;
+    let mut val_elements = 0usize;
     for g in 0..N_GROUPS {
-        let frames: Vec<&FrameSample> = set
-            .samples
-            .iter()
-            .filter(|s| s.group_id == g)
-            .collect();
+        let frames: Vec<&FrameSample> = train_samples.iter().copied()
+            .filter(|s| s.group_id == g).collect();
+        let val_frames: Vec<&FrameSample> = val_samples.iter().copied()
+            .filter(|s| s.group_id == g).collect();
         if frames.len() < 200 {
             println!("[moe] group {g}: skip (only {} frames)", frames.len());
             continue;
         }
         let residuals = compute_residuals(&general_inner, set, &frames, batch_size, device)?;
-        let before = mean_mse(&residuals);
+        let val_residuals = compute_residuals::<B::InnerBackend>(
+            &general_inner, set, &val_frames, batch_size, device,
+        )?;
+        let before = mean_mse(&val_residuals);
         let expert_init = if resume {
             try_load_model::<B>(&format!("{prefix}-g{g}"), EXPERT_HIDDEN, EXPERT_DEPTH, device)?
         } else {
             None
         };
-        let (expert, after) = train_group_expert::<B>(
+        let (mut expert, _train_after) = train_group_expert::<B>(
             set,
             &frames,
             &residuals,
@@ -588,13 +604,62 @@ pub fn train_moe<B: AutodiffBackend>(
             stop,
         );
         save_model(&expert, &format!("{prefix}-g{g}"))?;
+        let after = mean_prediction_mse(&mut expert, set, &val_frames, &val_residuals, batch_size, device);
+        let elements = val_frames.len() * 128;
+        val_base_weighted += before * elements as f64;
+        val_moe_weighted += after * elements as f64;
+        val_elements += elements;
         println!(
-            "[moe] group {g}: {} frames, residual {before:.4} -> {after:.4}",
-            frames.len()
+            "[moe] group {g}: train_frames={} val_frames={} residual_mse {before:.4} -> {after:.4}",
+            frames.len(), val_frames.len()
         );
         report.push((g, before, after));
     }
+    if val_elements > 0 {
+        println!("[moe] heldout_mel_mse: base={:.6} moe={:.6}",
+            val_base_weighted / val_elements as f64,
+            val_moe_weighted / val_elements as f64);
+    }
     Ok(report)
+}
+
+fn heldout_phrases(n_phrases: usize, eval_frac: f64) -> std::collections::HashSet<usize> {
+    let n_val = ((n_phrases as f64) * eval_frac.clamp(0.0, 0.5)).round() as usize;
+    let mut order: Vec<usize> = (0..n_phrases).collect();
+    let mut rng = 0x9E3779B97F4A7C15u64;
+    for i in (1..n_phrases).rev() {
+        rng = xorshift(rng);
+        let j = (rng % (i as u64 + 1)) as usize;
+        order.swap(i, j);
+    }
+    let from = n_phrases.saturating_sub(n_val);
+    order[from..].iter().copied().collect()
+}
+
+fn mean_prediction_mse<B: AutodiffBackend>(
+    model: &mut ContextAcoustic<B>, set: &TrainSet, samples: &[&FrameSample],
+    residuals: &[[f32; 128]], batch_size: usize, device: &B::Device,
+) -> f64 {
+    if samples.is_empty() { return f64::NAN; }
+    let saved_dropout = model.dropout.prob;
+    model.dropout.prob = 0.0;
+    let idx: Vec<usize> = (0..samples.len()).collect();
+    let mut squared = 0.0f64;
+    let mut count = 0usize;
+    for chunk in idx.chunks(batch_size.max(1)) {
+        let (ids, feats, _) = build_batch(set, samples, chunk, device);
+        let pred: Vec<f32> = model.forward(ids, feats).into_data().convert::<f32>()
+            .to_vec::<f32>().unwrap_or_default();
+        for (row, &sample_idx) in chunk.iter().enumerate() {
+            for bin in 0..128 {
+                let d = pred[row * 128 + bin] - residuals[sample_idx][bin];
+                squared += (d as f64) * (d as f64);
+                count += 1;
+            }
+        }
+    }
+    model.dropout.prob = saved_dropout;
+    squared / count.max(1) as f64
 }
 
 /// Serialize the trained module to a burn checkpoint file

@@ -1,12 +1,20 @@
 [Unit]
-Description=android-voice-synth: clean build cache when it grows past threshold
-Documentation=file:///run/media/seal/shared/project/android-voice-synth/docs/DISK-HYGIENE.md
+Description=android-voice-synth: clean build cache (orphan agent dirs + cache over threshold)
+Documentation=file:///media/DATA/project/android-voice-synth/docs/DISK-HYGIENE.md
 # ถ้าโปรเจกต์/ไดรฟ์ไม่พร้อม ให้ข้าม (ไม่ error)
-ConditionPathExists=/run/media/seal/shared/project/android-voice-synth/scripts/clean-cache.sh
+ConditionPathExists=/media/DATA/project/android-voice-synth/scripts/clean-cache.sh
 
 [Service]
 Type=oneshot
-WorkingDirectory=/run/media/seal/shared/project/android-voice-synth
-ExecStart=/run/media/seal/shared/project/android-voice-synth/scripts/clean-cache.sh --auto --threshold 20G --apply
+WorkingDirectory=/media/DATA/project/android-voice-synth
+
+# 1) ลบ .<name>-target / .<name>-cargo ที่ session ของ agent ทิ้งไว้ — ทำทุกครั้ง
+#    (ของพวกนี้ไม่มีใครใช้ต่อ และไม่ต้องบิลด์ใหม่ จึงไม่ต้องรอให้เกิน threshold)
+ExecStart=/media/DATA/project/android-voice-synth/scripts/clean-cache.sh --orphan --apply --quiet
+
+# 2) ล้าง cache ชนิดอื่นเมื่อรวมแล้วเกิน threshold (default 20G)
+#    --auto = rust + flutter + dotnet + stale + orphan
+ExecStart=/media/DATA/project/android-voice-synth/scripts/clean-cache.sh --auto --threshold 20G --apply
+
 Nice=10
 IOSchedulingClass=idle

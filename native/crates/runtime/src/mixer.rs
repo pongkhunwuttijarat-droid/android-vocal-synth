@@ -80,6 +80,12 @@ pub fn ms_to_samples(ms: f64, sample_rate: u32) -> usize {
     (ms * f64::from(sample_rate) / 1000.0) as usize
 }
 
+/// ms_to_samples without the negative clamp: a chunk whose leading extends
+/// left of the project start has a negative start sample.
+pub fn ms_to_samples_signed(ms: f64, sample_rate: u32) -> i64 {
+    (ms * f64::from(sample_rate) / 1000.0) as i64
+}
+
 /// dB to linear amplitude (`10^(db/20)`).
 pub fn db_to_linear(db: f32) -> f32 {
     10f32.powf(db / 20.0)
@@ -213,12 +219,17 @@ pub fn apply_fades(samples: &mut [f32], fade_in_ms: f64, fade_out_ms: f64, sampl
 ///
 /// Output length covers the longest chunk; `duration_ms` follows.
 pub fn mix(inputs: &[MixInput]) -> FinalAudio {
+    // A leading region (oto preutter) can extend LEFT of the project start,
+    // so a chunk can begin at a negative time. The mix timeline starts at 0:
+    // those samples are dropped. The alternative (clamping the placement to
+    // sample 0) prepends the whole pre-roll and makes the note sound late.
+    // OpenUtau trims the leading in its mixdown the same way.
+    let chunk_start = |input: &MixInput| -> i64 {
+        ms_to_samples_signed(input.chunk.position_ms - input.chunk.leading_ms, SAMPLE_RATE)
+    };
     let length = inputs
         .iter()
-        .map(|input| {
-            let start = ms_to_samples(input.chunk.position_ms - input.chunk.leading_ms, SAMPLE_RATE);
-            start + input.chunk.samples.len()
-        })
+        .map(|input| (chunk_start(input) + input.chunk.samples.len() as i64).max(0) as usize)
         .max()
         .unwrap_or(0);
     let mut out = vec![0f32; length];
@@ -227,7 +238,7 @@ pub fn mix(inputs: &[MixInput]) -> FinalAudio {
     // instead of summed — matches the worldline weight blend.
     let mut written = vec![0usize; length];
     for input in inputs {
-        let start = ms_to_samples(input.chunk.position_ms - input.chunk.leading_ms, SAMPLE_RATE);
+        let start = chunk_start(input);
         // Crossfade zone = the chunk's leading (it overlaps the previous
         // chunk's tail); beyond it the chunk writes at full gain. Only
         // chunks with leading (incremental re-render) crossfade — plain
@@ -236,7 +247,11 @@ pub fn mix(inputs: &[MixInput]) -> FinalAudio {
         let crossfade = input.chunk.leading_ms > 0.0;
         let gain = db_to_linear(input.track.volume_db) * pan_gain(input.track.pan);
         for (i, sample) in input.chunk.samples.iter().enumerate() {
-            let target = start + i;
+            let target = start + i as i64;
+            if target < 0 {
+                continue; // pre-roll sample (left of t=0): trimmed, not shifted
+            }
+            let target = target as usize;
             if target >= out.len() {
                 break;
             }
@@ -302,6 +317,47 @@ mod tests {
 
     fn assert_close(a: f32, b: f32, eps: f32) {
         assert!((a - b).abs() <= eps, "|{a} - {b}| > {eps}");
+    }
+
+    /// Regression (T9): a chunk whose leading reaches LEFT of t=0 (the
+    /// preutter of a note at position 0) must be TRIMMED at t=0 — the
+    /// pre-roll samples are dropped, the rest stays at 0. Clamping the
+    /// placement instead (the old behaviour) wrote the whole pre-roll
+    /// starting at 0, delaying the note by the leading (750 ms in the
+    /// reported "note sounds late" case, 136 ms for a plain "sa").
+    #[test]
+    fn negative_start_trims_the_preroll_instead_of_shifting() {
+        let samples: Vec<f32> = (0..1000).map(|i| i as f32).collect();
+        // position 0 ms, leading 10 ms = 441 samples -> samples[0] is at -441.
+        let a = chunk(samples.clone(), 0.0, 10.0);
+        let audio = mix(&[input(a, 0.0, 0.0)]);
+        assert_eq!(audio.samples.len(), 1000 - 441, "pre-roll must be dropped");
+        assert_close(audio.samples[0], samples[441], 1e-6);
+        assert_close(audio.samples[100], samples[541], 1e-6);
+    }
+
+    /// Regression (T15): chunks with a GAP between them must leave digital
+    /// silence in the gap. `mix()` allocates a zeroed output and every chunk
+    /// writes only its own span, so nothing carries over between chunks.
+    ///
+    /// The golden-renderer's demo mode used to reuse ONE dirty buffer (it
+    /// called `WaveMix.Mix` directly, and neither `WaveMix.Mix` nor
+    /// `WaveSource.Mix` clears it) — the gaps then replayed stale audio and
+    /// the overlapping writes accumulated. OpenUtau's real playback path
+    /// (`MasterAdapter.Read`) zeroes the buffer first, which is what this test
+    /// pins.
+    #[test]
+    fn gap_between_chunks_is_digital_silence() {
+        let a = chunk(vec![1.0; 100], 0.0, 0.0); // 0 ms, 100 samples
+        let b = chunk(vec![0.5; 100], 10.0, 0.0); // 10 ms = 441 samples
+        let audio = mix(&[input(a, 0.0, 0.0), input(b, 0.0, 0.0)]);
+        assert_eq!(audio.samples.len(), 441 + 100, "length = last chunk end");
+        assert!(audio.samples[0..100].iter().all(|s| *s == 1.0));
+        assert!(
+            audio.samples[100..441].iter().all(|s| *s == 0.0),
+            "the gap must be digital silence (no stale carry-over)"
+        );
+        assert!(audio.samples[441..541].iter().all(|s| *s == 0.5));
     }
 
     #[test]

@@ -3,14 +3,43 @@ name = "moe-train"
 version.workspace = true
 edition.workspace = true
 
+# Feature gating (T2 / wasm-readiness):
+#   * native default = today's behaviour (wgpu + train + ort vocoder).
+#   * `ort` (ONNX Runtime, the pc-nsf-hifigan vocoder) is optional so a
+#     wasm32 build can drop it: ort's default feature `download-binaries`
+#     has NO prebuilt binaries for wasm32-unknown-unknown and fails the build.
+#   * burn is configured per-target: native keeps its defaults (wgpu/cubecl);
+#     wasm32 gets burn-ndarray only (`default-features = false`).
+[features]
+default = ["wgpu", "train", "ort-vocoder"]
+# burn's wgpu/cubecl backend — native only in practice.
+wgpu = ["burn/wgpu"]
+# burn-train (Learner) — kept for parity with the previous native feature set.
+train = ["burn/train"]
+# The ONNX Runtime vocoder path (render.rs). Native only.
+ort-vocoder = ["dep:ort"]
+
 [dependencies]
-burn = { version = "0.21", features = ["ndarray", "wgpu", "std", "train"] }
-burn-ndarray = { version = "0.21", features = ["std"] }
-ort = { version = "2.0.0-rc.13", features = ["ndarray"] }
 ndarray = "0.17"
 wavwriter = { path = "../../crates/wavwriter" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# ONNX Runtime — optional (native vocoder). Not buildable for wasm32 with the
+# default features; a wasm build must use --no-default-features.
+ort = { version = "2.0.0-rc.13", features = ["ndarray"], optional = true }
+
+# burn, per target. A wasm32 build must not see wgpu/cubecl at all.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+burn = { version = "0.21", features = ["ndarray", "wgpu", "std", "train"] }
+burn-ndarray = { version = "0.21", features = ["std"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+burn = { version = "0.21", default-features = false, features = ["ndarray", "std"] }
+# rand 0.10 (pulled in by burn-ndarray) uses getrandom 0.4, which has NO
+# default backend for wasm32-unknown-unknown: it emits `compile_error!` unless
+# the `wasm_js` crate feature is on. getrandom target-gates wasm-bindgen/js-sys,
+# so this is a no-op on native targets (hence wasm32-only).
+getrandom = { version = "0.4", features = ["wasm_js"] }
 
 [lib]
 name = "moe_train"
@@ -19,3 +48,11 @@ path = "src/lib.rs"
 [[bin]]
 name = "moe-train"
 path = "src/main.rs"
+# The CLI is native-only: wgpu backend, ort vocoder session, filesystem IO.
+required-features = ["wgpu", "ort-vocoder"]
+
+# wasm32 probe: builds a real .wasm (cdylib) with --no-default-features.
+[[example]]
+name = "moe_wasm_smoke"
+path = "examples/moe_wasm_smoke.rs"
+crate-type = ["cdylib"]

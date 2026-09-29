@@ -175,6 +175,10 @@ fn run(mode: &str, wav: &Path, so_path: &Path, json: bool, extra: &str) -> Resul
                 ap_stats.mae,
                 ap_stats.max
             );
+            println!(
+                "{{\"stage\":\"analysis_extra\",\"sp_lin_rel_mae\":{:.9},\"sp_db_mae_loud\":{:.6},\"sp_db_max_loud\":{:.6},\"sp_loud_kept\":{},\"sp_loud_total\":{}}}",
+                sp_stats.lin_rel_mae, sp_stats.db_mae_loud, sp_stats.db_max_loud, sp_stats.loud_kept, sp_stats.loud_total
+            );
         }
         return Ok(());
     }
@@ -828,6 +832,15 @@ struct LogStats {
     db_max: f64,
     mean_so_db: f64,
     mean_rs_db: f64,
+    /// sum|so-rs| / sum|so| (linear domain, over every entry) — a metric that
+    /// does not blow up in near-silent bins the way a dB MAE does.
+    lin_rel_mae: f64,
+    /// dB MAE / max restricted to entries where the .so value is above a floor
+    /// (1e-8, i.e. above -160 dB), so the digital-silence floor cannot dominate.
+    db_mae_loud: f64,
+    db_max_loud: f64,
+    loud_kept: usize,
+    loud_total: usize,
 }
 
 fn log_spectrum_stats(so: &[f64], rs: &[f64], bins: usize) -> LogStats {
@@ -836,6 +849,12 @@ fn log_spectrum_stats(so: &[f64], rs: &[f64], bins: usize) -> LogStats {
     let mut b = Vec::with_capacity(n);
     let mut db_sum = 0.0;
     let mut db_max = 0.0f64;
+    let mut abs_sum = 0.0f64;
+    let mut ref_sum = 0.0f64;
+    let mut db_sum_loud = 0.0;
+    let mut db_max_loud = 0.0f64;
+    let mut loud_kept = 0usize;
+    const LOUD_FLOOR: f64 = 1e-8; // -160 dB in amplitude: below this is the silence floor
     for i in 0..n {
         let x = so[i].max(1e-30);
         let y = rs[i].max(1e-30);
@@ -844,6 +863,13 @@ fn log_spectrum_stats(so: &[f64], rs: &[f64], bins: usize) -> LogStats {
         let db = 20.0 * (y / x).log10();
         db_sum += db.abs();
         db_max = db_max.max(db.abs());
+        abs_sum += (so[i] - rs[i]).abs();
+        ref_sum += so[i].abs();
+        if so[i] > LOUD_FLOOR {
+            db_sum_loud += db.abs();
+            db_max_loud = db_max_loud.max(db.abs());
+            loud_kept += 1;
+        }
     }
     let mean_so = a.iter().sum::<f64>() / n.max(1) as f64 * 20.0 / std::f64::consts::LN_10;
     let mean_rs = b.iter().sum::<f64>() / n.max(1) as f64 * 20.0 / std::f64::consts::LN_10;
@@ -853,6 +879,11 @@ fn log_spectrum_stats(so: &[f64], rs: &[f64], bins: usize) -> LogStats {
         db_max,
         mean_so_db: mean_so,
         mean_rs_db: mean_rs,
+        lin_rel_mae: if ref_sum > 0.0 { abs_sum / ref_sum } else { 0.0 },
+        db_mae_loud: if loud_kept > 0 { db_sum_loud / loud_kept as f64 } else { 0.0 },
+        db_max_loud,
+        loud_kept,
+        loud_total: n,
     }
 }
 
@@ -882,6 +913,13 @@ fn print_log_stats(label: &str, s: &LogStats) {
     println!(
         "{label}: corr={:.12}  dB MAE={:.6}  dB max={:.6}  mean so={:.3} dB rs={:.3} dB",
         s.corr, s.db_mae, s.db_max, s.mean_so_db, s.mean_rs_db
+    );
+    // The plain dB MAE is dominated by near-silent bins (both sides sit at the
+    // log floor there, so a tiny relative change is a huge dB change). These two
+    // lines give the same comparison in a form that is not floor-dominated.
+    println!(
+        "{label}: linear rel-err sum|so-rs|/sum|so|={:.9}   dB MAE (so>{:.0e}, {}/{} entries)={:.6}  dB max loud={:.6}",
+        s.lin_rel_mae, 1e-8, s.loud_kept, s.loud_total, s.db_mae_loud, s.db_max_loud
     );
 }
 

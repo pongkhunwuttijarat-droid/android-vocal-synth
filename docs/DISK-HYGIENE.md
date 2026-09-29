@@ -1,7 +1,12 @@
 # Disk Hygiene — คุมขนาด build cache
 
-บริบท: โปรเจกต์นี้อยู่บน exfat (`/run/media/seal/shared`, 218 GB) ซึ่งเป็นพาร์ทิชัน
-เดียวกับข้อมูลอื่นในเครื่อง — build cache เคยโตจนดิสก์เหลือไม่ถึง 7 GB (ใช้ไป 97%)
+บริบท: โปรเจกต์นี้อยู่บน NTFS (`/media/DATA`, 142 GB) พาร์ทิชันเดียวกับ workspace
+อื่น ๆ ทั้งหมด — build cache เคยโตจนดิสก์เหลือไม่ถึง 7 GB (ใช้ไป 97%) และรอบล่าสุด
+(2026-09-23) ใช้ไป 103 GB = 73% ก่อนล้าง
+
+> เดิมโปรเจกต์อยู่บน exfat (`/run/media/seal/shared`, 218 GB) — ข้อ 7 เป็นข้อจำกัด
+> ที่เจอบน exfat ตอนนั้น ปัจจุบัน NTFS ยังมีอาการ `rm` ล้มกลางทางแบบเดียวกัน
+> สคริปต์จึงยังจัดการให้เหมือนเดิม
 
 ## 1. ทำไม `native/target` เคยโต ~50 GB
 
@@ -74,6 +79,8 @@ scripts/clean-cache.sh --rust --apply                    # เฉพาะ Rust
 scripts/clean-cache.sh --flutter --apply                 # app/build + gradle
 scripts/clean-cache.sh --dotnet --apply                  # .NET bin/obj (รวม ref copies)
 scripts/clean-cache.sh --poc --apply                     # output กลางทางใน test/poc
+scripts/clean-cache.sh --stale --apply                   # artifact เก่ากว่า 7 วัน (debug/wasm)
+scripts/clean-cache.sh --orphan --apply                  # target/cargo ของ agent ที่ค้าง
 scripts/clean-cache.sh --auto --threshold 20G --apply     # สำหรับ timer/cron
 ```
 
@@ -83,18 +90,46 @@ scripts/clean-cache.sh --auto --threshold 20G --apply     # สำหรับ t
 | `--flutter` | `app/build`, `app/android/.gradle`, `app/android/.kotlin` | `flutter build` |
 | `--dotnet` | `golden-renderer/{bin,obj}` + `ref*/core/*/{bin,obj}` | `dotnet build` |
 | `--poc` | `test/poc/renders`, `student-*`, `*teacher-wavs` | รัน eval pipeline ใหม่ |
-| `--auto` | rust + flutter + dotnet **เฉพาะเมื่อเกิน `--threshold`** (default 20G) | — |
+| `--stale` | ไฟล์ใน `target/debug` + `target/wasm32-unknown-unknown` ที่เก่ากว่า `--stale-days` (default 7) | `cargo build` |
+| `--orphan` | `.<name>-target` / `.<name>-cargo*` ที่ค้างใน workspace root (เก่ากว่า `--orphan-days`, default 1) — ข้ามโฟลเดอร์ที่มีไฟล์ใหม่ | ไม่ต้อง — ของทิ้ง |
+| `--include-release` | ให้ `--stale` ครอบ `target/release` ด้วย (ปิด default เพราะ lto แพง) | `cargo build --release` |
+| `--auto` | ทุกชนิดข้างบน **เฉพาะเมื่อรวมแล้วเกิน `--threshold`** (default 20G) | — |
 
 `--poc` **ไม่แตะ** dataset (`train-*.jsonl`, `*.tsbin`) และโมเดล (`*.mpk`)
 
+### รูรั่ว 3 ทางที่ทำให้ cache บาน (2026-09-23)
+
+| รูรั่ว | ขนาดที่พบ | ปิดด้วย |
+|---|---|---|
+| session ของ agent ตั้ง `CARGO_TARGET_DIR`/`CARGO_HOME` เป็น dot-dir แล้วทิ้งไว้ | 21 GB (5 target + 6 cargo) | `--orphan` + กฎใน `AGENTS.md` |
+| artifact เก่าใน `target/debug` ไม่มีใครลบ (cargo เก็บ 1 ชุดต่อ fingerprint ไม่ทิ้งของเก่า) | 40 GB จาก 40,366 ไฟล์ | `--stale` |
+| ไม่มีอะไรรันอัตโนมัติ | — | systemd timer (ข้อ 4) |
+
+> **กับดัก locale — ห้ามใช้ date string กับ `find -newermt`**
+> เครื่องนี้ `LANG=th_TH.UTF-8` ทำให้ `date` พ่นปี พ.ศ. (`2569-09-22`)
+> แต่ `find` ตีความตัวเลขนั้นเป็น ค.ศ. => cutoff ไปอยู่ปี 2569 จริง ๆ =>
+> ทุกไฟล์กลายเป็น "เก่ากว่า" และถูกลบทั้งก้อน (เกิดจริง: `target/debug` หาย 40 GB
+> แทนที่จะเป็น 30 GB) สคริปต์จึงใช้ epoch: `find -newermt "@$ref"`
+> เทียบให้เห็น: cutoff แบบ epoch -> 9,586 ไฟล์ถูกเก็บ / แบบ date string -> 0 ไฟล์
+
 ## 4. ล้างอัตโนมัติ (systemd user timer)
 
-unit อยู่ใน `scripts/systemd/` — path ข้างในอ้างตำแหน่ง checkout ปัจจุบัน
-ถ้าย้ายโปรเจกต์ให้แก้ `ExecStart` ด้วย
+**สถานะ: ติดตั้งและเปิดใช้งานแล้ว** (2026-09-23) — ครั้งถัดไป 24 ก.ย. ~04:00
+รันทุกวัน 04:00 (± สุ่มไม่เกิน 1 ชม.) เพราะรอบนี้ cache โต 21 GB ใน 6 วัน
+รายสัปดาห์จึงช้าเกินไป
+
+unit อยู่ใน `scripts/systemd/` มี `ExecStart` 2 บรรทัด:
+
+1. `--orphan --apply` — ลบของที่ session ทิ้งไว้ **ทุกครั้ง** (ไม่ต้องรอเกิน threshold)
+2. `--auto --threshold 20G --apply` — ล้าง cache ชนิดอื่นเมื่อรวมแล้วเกิน 20 GB
+
+path ใน unit อ้างตำแหน่ง checkout ปัจจุบัน ถ้าย้ายโปรเจกต์ต้องแก้ `ExecStart` ด้วย
 
 ```bash
+# ใช้ symlink — repo เป็น source of truth แก้ไฟล์ใน repo แล้วมีผลเลย
 mkdir -p ~/.config/systemd/user
-cp scripts/systemd/avs-clean-cache.{service,timer} ~/.config/systemd/user/
+ln -sfn "$PWD/scripts/systemd/avs-clean-cache.service" ~/.config/systemd/user/
+ln -sfn "$PWD/scripts/systemd/avs-clean-cache.timer"   ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now avs-clean-cache.timer
 systemctl --user list-timers avs-clean-cache.timer
@@ -104,10 +139,18 @@ loginctl enable-linger "$USER"     # ให้ทำงานแม้ไม่�
 ทดสอบทันทีด้วย `systemctl --user start avs-clean-cache.service`
 (ถ้า cache ไม่เกิน 20 GB จะไม่ลบอะไร แล้วจบแบบ success)
 
-ทางเลือกถ้าไม่ใช้ systemd — ใส่ cron รายสัปดาห์:
+```bash
+systemctl --user show avs-clean-cache.service -p Result   # Result=success
+loginctl show-user "$USER" -p Linger                      # Linger=yes
+```
+
+(`Linger=yes` แล้ว จึงรันแม้ไม่ล็อกอิน — ไม่ต้อง `sudo`)
+
+ทางเลือกถ้าไม่ใช้ systemd — ใส่ cron รายวัน:
 
 ```cron
-0 4 * * 0 /run/media/seal/shared/project/android-voice-synth/scripts/clean-cache.sh --auto --threshold 20G --apply --quiet
+0 4 * * * /media/DATA/project/android-voice-synth/scripts/clean-cache.sh --orphan --apply --quiet
+30 4 * * * /media/DATA/project/android-voice-synth/scripts/clean-cache.sh --auto --threshold 20G --apply --quiet
 ```
 
 ## 5. ห้ามลบ (ไม่ใช่ cache)
@@ -181,9 +224,24 @@ git config core.fileMode false     # ตั้งครั้งเดียว�
 | 1 | `clean-cache.sh --all --apply` | 58 GB | 4.6 GB → 63 GB |
 | 2 | build ใหม่ทั้ง workspace (วัดผล profile ใหม่) | — | target กลับมาแค่ 13 GB |
 | 3 | `clean-cache.sh --poc --apply` | 7.6 GB | 51 GB → 59 GB |
+| 4 (2026-09-23) | ลบ `.<name>-target` + `.<name>-cargo` ของ agent ที่ค้าง | 21 GB | 40 GB → 61 GB |
+| 5 (2026-09-23) | `clean-cache.sh --stale` (**ลบเกินแผน** — ดูหมายเหตุ) | 39 GB | 61 GB → 100 GB |
+| 6 (2026-09-23) | `cargo build --workspace` หลังลบ | target กลับมา 13 GB | 100 GB → 94 GB |
 
 หลังรอบที่ 3 `test/poc` เหลือ 6.5 GB ซึ่งเป็น **dataset และโมเดลที่ตั้งใจเก็บไว้**
 (`train-*.jsonl` / `*.tsbin` / `*.mpk` — ไม่อยู่ใน git จึงกู้คืนไม่ได้)
 
 สิ่งที่รอบที่ 3 ลบไปเป็น output ที่สร้างซ้ำได้: `renders/`, `student-*` 9 ชุด,
 `*teacher-wavs/` — สร้างใหม่ด้วย `test/poc/eval_pipeline.sh`
+
+### หมายเหตุรอบที่ 5 — ลบเกินแผน
+
+ตั้งใจจะลบเฉพาะ artifact เก่ากว่า 7 วัน (30.7 GB) แต่ด้วยกับดัก locale ที่อธิบายใน
+ข้อ 3 สคริปต์เวอร์ชันเก่าจึงลบ `target/debug` **ทั้งก้อน 40 GB** รวมของที่บิลด์วันนั้น
+
+ผลกระทบ: ไม่มีข้อมูลสูญหาย (เป็น build output ล้วน) แต่ต้อง `cargo build --workspace`
+ใหม่ทั้งรอบ — ใช้เวลา 56 วินาที เพราะ deps ถูกคอมไพล์ขนานกัน
+
+รอบนี้ทำให้เพิ่ม `--stale` ที่ใช้ epoch และเพิ่ม regression test ในหัวข้อ 3
+ของเอกสารนี้ สิ่งที่ **ไม่** ถูกแตะเลย: `native/build/**/*.so`,
+`target/release`, `target/wasm32-unknown-unknown`, source ทั้งหมด

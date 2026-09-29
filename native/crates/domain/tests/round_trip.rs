@@ -711,3 +711,39 @@ fn openutau_compatible_sample_loads_and_round_trips() {
     q.after_load().unwrap();
     assert_projects_equal(&p, &q);
 }
+
+#[test]
+fn project_yaml_is_byte_stable_across_reload() {
+    // The editor autosaves by comparing YAML text, so serializing the same
+    // document twice must produce identical bytes even though `expressions`
+    // is a HashMap whose iteration order depends on insertion history.
+    let mut first = UProject::create();
+    first.before_save();
+    let a = serde_yaml::to_string(&first).expect("serialize");
+    let mut reloaded: UProject = serde_yaml::from_str(&a).expect("deserialize");
+    reloaded.after_load().expect("after_load");
+    reloaded.before_save();
+    let b = serde_yaml::to_string(&reloaded).expect("re-serialize");
+    assert_eq!(a, b, "project YAML must round-trip byte-stable");
+
+    // ...and the table really is written sorted by abbreviation. Keys of the
+    // expression mapping sit at exactly two spaces; a descriptor's own fields
+    // are indented four, and the next top-level key starts at column zero.
+    let start = a.find("expressions:").expect("expressions block");
+    let mut seen: Vec<&str> = Vec::new();
+    for line in a[start..].lines().skip(1) {
+        if line.is_empty() {
+            continue;
+        }
+        if !line.starts_with(' ') {
+            break;
+        }
+        if line.starts_with("  ") && !line.starts_with("   ") && line.ends_with(':') {
+            seen.push(line.trim().trim_end_matches(':'));
+        }
+    }
+    assert!(seen.len() > 5, "expected the default expression table, got {seen:?}");
+    let mut sorted = seen.clone();
+    sorted.sort_unstable();
+    assert_eq!(seen, sorted, "expressions must be written sorted by abbr");
+}
