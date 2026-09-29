@@ -68,3 +68,14 @@ web/srv.out
 
 # === Local render deliverables (WAV exports, ไม่ commit) ===
 out/
+
+# === POC training runs (dataset dumps + per-run render caches) ===
+# `test/poc/diffusion-*` ถูกสร้างใหม่ได้จาก test/poc/eval_pipeline.sh แต่ตัว
+# train-set.jsonl/.tsbin ใหญ่รวมกัน ~840 MB — ต้องไม่เข้า history
+test/poc/diffusion-*/
+test/poc/**/train-set.jsonl
+test/poc/**/train-set.tsbin
+
+# === Scratch files จาก tooling (sqlite in-memory, ฯลฯ) ===
+/:memory:*
+
