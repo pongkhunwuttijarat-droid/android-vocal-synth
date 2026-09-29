@@ -52,6 +52,7 @@ use domain::UProject;
 
 mod project;
 pub use project::ProjectDoc;
+mod r2_features;
 use runtime::mixer::{AudioChunk, MixInput, TrackSpec};
 use voicebank::Voicebank;
 use worldline_rs::MemorySource;
@@ -343,6 +344,34 @@ impl Engine {
             
     }
 
+    /// Extract real WORLDLINE-R2 feature tensors for one planned chunk.
+    ///
+    /// The returned `R2WF` packet is consumed by the browser's ORT-WebGPU
+    /// worker. This uses the pure-Rust WORLD kernel; samples with a shipped
+    /// `.frq` use that pitch curve exactly, while the no-FRQ fallback is the
+    /// Rust DIO implementation.
+    pub fn render_r2_features_chunk(&self, index: usize) -> Result<Vec<u8>, String> {
+        let plan = self.plan.as_ref().ok_or_else(|| "no plan (call plan_project first)".to_string())?;
+        let planned = plan.chunks.get(index).ok_or_else(|| format!("chunk {index} out of range"))?;
+        let phrase = &plan.phrases[planned.phrase_index];
+        let input = synth_cli::pipeline::chunk_render_input(phrase, &planned.chunk);
+        let ctx_first = phrase.input.phonemes.get(planned.chunk.ctx_range.start)
+            .ok_or_else(|| format!("chunk {index} has empty context"))?;
+        let first_own = phrase.input.phonemes.get(planned.chunk.own_range.start)
+            .ok_or_else(|| format!("chunk {index} has empty own range"))?;
+        let audio_start_ms = ctx_first.position_ms - ctx_first.leading_ms;
+        let last_chunk = planned.chunk.own_range.end == phrase.input.phonemes.len();
+        r2_features::packet_for_chunk(
+            &input,
+            &self.source,
+            audio_start_ms,
+            planned.chunk.start_ms,
+            planned.chunk.end_ms,
+            first_own.leading_ms,
+            last_chunk,
+        )
+    }
+
     /// Wav keys one planned chunk actually needs, newline-separated.
     ///
     /// A chunk covers a few phonemes, so a worker handling only that chunk
@@ -403,8 +432,14 @@ impl Engine {
     }
 
     /// YAML of the last known-good state (survives a rejected command).
-    pub fn project_snapshot(&self) -> String {
-        self.doc.as_ref().map(|d| d.snapshot().to_string()).unwrap_or_default()
+    ///
+    /// Takes `&mut self` because the cached snapshot is refreshed lazily after
+    /// a mutation (serialization is far more expensive than an edit).
+    pub fn project_snapshot(&mut self) -> String {
+        self.doc
+            .as_mut()
+            .map(|d| d.snapshot().to_string())
+            .unwrap_or_default()
     }
 
     /// Apply one JSON command. Returns the undo-step name on success.

@@ -2532,6 +2532,7 @@ dependencies = [
  "feed",
  "phonemizer",
  "phrase",
+ "project-session",
  "runtime",
  "serde_json",
  "serde_yaml",
@@ -4216,11 +4217,23 @@ version = "0.1.0"
 dependencies = [
  "burn",
  "burn-ndarray",
+ "getrandom 0.4.3",
  "ndarray 0.17.2",
  "ort",
  "serde",
  "serde_json",
  "wavwriter",
+]
+
+[[package]]
+name = "moe-wasm"
+version = "0.1.0"
+dependencies = [
+ "burn",
+ "getrandom 0.4.3",
+ "js-sys",
+ "moe-train",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -5144,6 +5157,18 @@ checksum = "4488a4a36b9a4ba6b9334a32a39971f77c1436ec82c38707bce707699cc3bbcb"
 dependencies = [
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "project-session"
+version = "0.1.0"
+dependencies = [
+ "commands",
+ "domain",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "xxhash-rust",
 ]
 
 [[package]]

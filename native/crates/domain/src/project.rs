@@ -27,14 +27,38 @@
 
 use std::collections::HashMap;
 use std::fmt;
+
+/// Serialize the expression table in a canonical (abbr-sorted) order.
+///
+/// The map is a `HashMap`, so its iteration order depends on the insertion
+/// history and on the hasher seed: writing it as-is made `project_yaml()`
+/// differ between two loads of the same document (and between processes).
+/// The editor autosaves by comparing YAML text, so an unstable order meant a
+/// save → open → save cycle rewrote the file with no user edit, and two dumps
+/// of the same project were never identical. Rendering was never affected —
+/// `phrase::builder` already sorts descriptors before sampling curves.
+fn sorted_expressions<S>(
+    map: &HashMap<String, crate::expression::UExpressionDescriptor>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+    let mut entries: Vec<_> = map.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    let mut ser = serializer.serialize_map(Some(entries.len()))?;
+    for (abbr, descriptor) in entries {
+        ser.serialize_entry(abbr, descriptor)?;
+    }
+    ser.end()
+}
 use std::str::FromStr;
 
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::expression::{
-    add_default_expressions, EXP_SELECTORS_DEFAULT, ATK,
-};
+use crate::expression::{add_default_expressions, ATK, EXP_SELECTORS_DEFAULT};
 use crate::note::{PitchPoint, PitchPointShape, UNote};
 use crate::part::{UPart, UVoicePart, UWavePart};
 use crate::time_axis::TimeAxis;
@@ -52,7 +76,10 @@ pub struct UTempo {
 
 impl Default for UTempo {
     fn default() -> Self {
-        UTempo { position: 0, bpm: 0.0 }
+        UTempo {
+            position: 0,
+            bpm: 0.0,
+        }
     }
 }
 
@@ -76,13 +103,21 @@ pub struct UTimeSignature {
 
 impl Default for UTimeSignature {
     fn default() -> Self {
-        UTimeSignature { bar_position: 0, beat_per_bar: 4, beat_unit: 4 }
+        UTimeSignature {
+            bar_position: 0,
+            beat_per_bar: 4,
+            beat_unit: 4,
+        }
     }
 }
 
 impl UTimeSignature {
     pub fn new(bar_position: i32, beat_per_bar: i32, beat_unit: i32) -> Self {
-        UTimeSignature { bar_position, beat_per_bar, beat_unit }
+        UTimeSignature {
+            bar_position,
+            beat_per_bar,
+            beat_unit,
+        }
     }
 }
 
@@ -143,7 +178,8 @@ impl<'de> Deserialize<'de> for UstxVersion {
             }
 
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                UstxVersion::parse(v).ok_or_else(|| E::custom(format!("invalid ustx version {v:?}")))
+                UstxVersion::parse(v)
+                    .ok_or_else(|| E::custom(format!("invalid ustx version {v:?}")))
             }
 
             fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
@@ -204,7 +240,9 @@ pub struct UProject {
     /// Legacy beat unit (deprecated since ustx v0.6).
     #[serde(default = "default_beat_unit")]
     pub beat_unit: i32,
-    #[serde(default)]
+    /// Expression table, keyed by abbreviation. Serialized in a canonical
+    /// (abbr-sorted) order — see `sorted_expressions`.
+    #[serde(default, serialize_with = "sorted_expressions")]
     pub expressions: HashMap<String, crate::expression::UExpressionDescriptor>,
     #[serde(default = "default_exp_selectors")]
     pub exp_selectors: Vec<String>,
@@ -235,6 +273,84 @@ pub struct UProject {
     /// [`validate`](Self::validate)/[`after_load`](Self::after_load).
     #[serde(skip)]
     pub time_axis: TimeAxis,
+}
+
+/// A defect found and repaired (or reported) while loading a project.
+///
+/// Loading must never fail because of these: a corrupt curve would otherwise
+/// panic later inside `UCurve::sample` (the parallel arrays are indexed
+/// together), an unresolvable descriptor would silently render as "curve
+/// ignored", and an empty `tracks` list produces a file that OpenUtau itself
+/// cannot save (verified against the real `OpenUtau.Core.dll`: its `BeforeSave`
+/// indexes `tracks[part.trackNo]` and throws).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoadRepair {
+    /// `xs` and `ys` had different lengths; both were truncated to `min(len)`
+    /// so every later `sample`/`insert` stays in bounds.
+    ArraysTruncated {
+        part: usize,
+        curve: usize,
+        xs: usize,
+        ys: usize,
+    },
+    /// The part curve's `abbr` is not a registered project expression.
+    /// Renderer lookups are exact and case-sensitive, so the curve is dead
+    /// weight until the descriptor is registered — the data is preserved.
+    UnregisteredAbbr { part: usize, abbr: String },
+    /// Two or more curves in one voice part share an `abbr`. Lookups take the
+    /// first match and deletes remove every match, so this is reported rather
+    /// than silently repaired (removing user data is worse).
+    DuplicateAbbr { part: usize, abbr: String },
+    /// The project had no tracks. OpenUtau's `UProject()` constructor seeds one
+    /// `Track1` and YamlDotNet keeps that default when the key is absent, so
+    /// the loader restores it to match. An explicit `tracks: []` is repaired
+    /// the same way because OpenUtau cannot save such a file at all.
+    MissingTracksRepaired { created: usize },
+    /// A voice part references a track index that does not exist. OpenUtau
+    /// crashes while saving such a file; we preserve the data and report it
+    /// instead of inventing tracks the project never had.
+    PartReferencesMissingTrack { part: usize, track_no: i32 },
+}
+
+/// Deprecated alias: this enum started curve-only and is now project-wide.
+pub type CurveRepair = LoadRepair;
+
+fn repair_voice_part_curves(
+    part_index: usize,
+    vp: &mut UVoicePart,
+    registered: &std::collections::HashSet<String>,
+    warnings: &mut Vec<LoadRepair>,
+) {
+    for (curve_index, curve) in vp.curves.iter_mut().enumerate() {
+        if curve.xs.len() != curve.ys.len() {
+            warnings.push(LoadRepair::ArraysTruncated {
+                part: part_index,
+                curve: curve_index,
+                xs: curve.xs.len(),
+                ys: curve.ys.len(),
+            });
+            let n = curve.xs.len().min(curve.ys.len());
+            curve.xs.truncate(n);
+            curve.ys.truncate(n);
+        }
+        if !registered.contains(&curve.abbr) {
+            warnings.push(LoadRepair::UnregisteredAbbr {
+                part: part_index,
+                abbr: curve.abbr.clone(),
+            });
+        }
+    }
+
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut reported: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for curve in &vp.curves {
+        if !seen.insert(curve.abbr.as_str()) && reported.insert(curve.abbr.clone()) {
+            warnings.push(LoadRepair::DuplicateAbbr {
+                part: part_index,
+                abbr: curve.abbr.clone(),
+            });
+        }
+    }
 }
 
 fn default_project_name() -> String {
@@ -327,8 +443,10 @@ impl UProject {
     /// (at -40 ms and +40 ms, `io` shape).
     pub fn create_note(&self) -> UNote {
         let mut note = UNote::default();
-        note.pitch.add_point(PitchPoint::new(-40.0, 0.0, PitchPointShape::Io));
-        note.pitch.add_point(PitchPoint::new(40.0, 0.0, PitchPointShape::Io));
+        note.pitch
+            .add_point(PitchPoint::new(-40.0, 0.0, PitchPointShape::Io));
+        note.pitch
+            .add_point(PitchPoint::new(40.0, 0.0, PitchPointShape::Io));
         note
     }
 
@@ -377,8 +495,16 @@ impl UProject {
                 UPart::Wave(wp) => waves.push(wp.clone()),
             }
         }
-        voices.sort_by(|a, b| a.track_no.cmp(&b.track_no).then_with(|| a.position.cmp(&b.position)));
-        waves.sort_by(|a, b| a.track_no.cmp(&b.track_no).then_with(|| a.position.cmp(&b.position)));
+        voices.sort_by(|a, b| {
+            a.track_no
+                .cmp(&b.track_no)
+                .then_with(|| a.position.cmp(&b.position))
+        });
+        waves.sort_by(|a, b| {
+            a.track_no
+                .cmp(&b.track_no)
+                .then_with(|| a.position.cmp(&b.position))
+        });
         self.voice_parts = Some(voices);
         self.wave_parts = Some(waves);
     }
@@ -388,7 +514,24 @@ impl UProject {
     /// expressions with unknown abbreviations, apply legacy version
     /// migrations, revalidate timing, and bump the version to 0.9.
     pub fn after_load(&mut self) -> Result<(), String> {
+        self.after_load_with_warnings().map(|_| ())
+    }
+
+    /// [`after_load`](Self::after_load) that also returns the defects it
+    /// repaired or reported (see [`LoadRepair`]).
+    pub fn after_load_with_warnings(&mut self) -> Result<Vec<LoadRepair>, String> {
         add_default_expressions(self);
+
+        // Tracks: OpenUtau's `UProject()` constructor seeds one `Track1`, and
+        // YamlDotNet keeps that default when the `tracks` key is absent (probe:
+        // 1 track after deserialize). Our serde default is an empty `Vec`, so
+        // restore the constructor default here. An explicit `tracks: []` gets
+        // the same repair because OpenUtau itself cannot save such a file.
+        let mut warnings: Vec<LoadRepair> = Vec::new();
+        if self.tracks.is_empty() {
+            self.tracks.push(UTrack::new("Track1"));
+            warnings.push(LoadRepair::MissingTracksRepaired { created: 1 });
+        }
 
         if let Some(voice_parts) = self.voice_parts.take() {
             self.parts.extend(voice_parts.into_iter().map(UPart::Voice));
@@ -402,10 +545,8 @@ impl UProject {
         // computed per track without holding cross-field borrows.
         for part in &mut self.parts {
             if let UPart::Voice(vp) = part {
-                let valid_abbrs: Option<std::collections::HashSet<&str>> = self
-                    .tracks
-                    .get(vp.track_no as usize)
-                    .map(|track| {
+                let valid_abbrs: Option<std::collections::HashSet<&str>> =
+                    self.tracks.get(vp.track_no as usize).map(|track| {
                         let mut set: std::collections::HashSet<&str> =
                             self.expressions.keys().map(String::as_str).collect();
                         for te in &track.track_expressions {
@@ -451,11 +592,42 @@ impl UProject {
         }
 
         self.ustx_version = Some(K_USTX_VERSION);
-        Ok(())
+
+        // Curve hardening (see [`LoadRepair`]): `UCurve::sample` indexes the
+        // parallel arrays without checking their lengths, so a malformed file
+        // would panic on the first render. Values are only truncated/reported
+        // here — never invented, and never deleted.
+        let registered: std::collections::HashSet<String> =
+            self.expressions.keys().cloned().collect();
+        for part_index in 0..self.parts.len() {
+            if let Some(UPart::Voice(vp)) = self.parts.get_mut(part_index) {
+                let track_no = vp.track_no;
+                if track_no < 0 || track_no as usize >= self.tracks.len() {
+                    warnings.push(LoadRepair::PartReferencesMissingTrack {
+                        part: part_index,
+                        track_no,
+                    });
+                }
+                repair_voice_part_curves(part_index, vp, &registered, &mut warnings);
+            }
+        }
+
+        Ok(warnings)
     }
 
     /// `UProject.Validate`: sort timing lists and rebuild the time axis.
     pub fn validate(&mut self) -> Result<(), String> {
+        // OpenUtau's `UProject()` constructor seeds `timeSignatures` and
+        // `tempos`, and YamlDotNet constructs the object before overwriting
+        // fields — so its `BuildSegments` never sees an empty list even when
+        // those keys are absent. Our serde default is an empty `Vec`, which
+        // would panic inside `TimeAxis`; restore the constructor defaults.
+        if self.time_signatures.is_empty() {
+            self.time_signatures.push(UTimeSignature::new(0, 4, 4));
+        }
+        if self.tempos.is_empty() {
+            self.tempos.push(UTempo::new(0, default_bpm()));
+        }
         self.time_signatures.sort_by_key(|ts| ts.bar_position);
         self.tempos.sort_by_key(|t| t.position);
         self.time_axis
@@ -465,7 +637,9 @@ impl UProject {
     /// ustx < 0.4: rename the `acc`/`accent` expression to `atk`/`attack`
     /// and rewrite note expressions (Ustx.Load).
     fn migrate_acc_to_atk(&mut self) {
-        let Some(exp) = self.expressions.remove("acc") else { return };
+        let Some(exp) = self.expressions.remove("acc") else {
+            return;
+        };
         if exp.name != "accent" {
             self.expressions.insert("acc".to_string(), exp);
             return;
@@ -547,8 +721,14 @@ mod tests {
         assert_eq!(serde_yaml::from_str::<UstxVersion>(yaml.trim()).unwrap(), v);
         assert_eq!(serde_yaml::from_str::<UstxVersion>("'0.9'").unwrap(), v);
         assert_eq!(serde_yaml::from_str::<UstxVersion>("\"0.9\"").unwrap(), v);
-        assert_eq!(serde_yaml::from_str::<UstxVersion>("0.6").unwrap(), UstxVersion::new(0, 6));
-        assert_eq!(serde_yaml::from_str::<UstxVersion>("0").unwrap(), UstxVersion::new(0, 0));
+        assert_eq!(
+            serde_yaml::from_str::<UstxVersion>("0.6").unwrap(),
+            UstxVersion::new(0, 6)
+        );
+        assert_eq!(
+            serde_yaml::from_str::<UstxVersion>("0").unwrap(),
+            UstxVersion::new(0, 0)
+        );
         assert!(serde_yaml::from_str::<UstxVersion>("x.y").is_err());
     }
 

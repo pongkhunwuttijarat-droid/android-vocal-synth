@@ -35,6 +35,8 @@
 //! ```
 
 pub mod command;
+pub mod curve_commands;
+pub mod document_commands;
 pub mod exp_commands;
 pub mod note_commands;
 pub mod part_commands;
@@ -44,6 +46,11 @@ pub mod undo_stack;
 mod locate;
 
 pub use command::Command;
+pub use curve_commands::{
+    apply_stroke_to_curves, canonicalize, ApplyCurveStrokeCommand, CanonicalStroke, StrokeMode,
+    StrokeTarget, STROKE_INTERVAL,
+};
+pub use document_commands::RestoreDocumentCommand;
 pub use exp_commands::{
     SetCurveCommand, SetCurvePointsCommand, SetExpDescriptorCommand, SetExpressionCommand,
 };

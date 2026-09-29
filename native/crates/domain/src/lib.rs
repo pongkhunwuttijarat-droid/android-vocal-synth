@@ -39,16 +39,16 @@ pub mod project;
 pub mod time_axis;
 pub mod track;
 
-pub use curve::UCurve;
+pub use curve::{snap_tick, UCurve};
 pub use expression::{
     add_default_expressions, UExpression, UExpressionDescriptor, UExpressionType, ALT, ATK, BRE,
     BREC, CLR, DEC, DIR, DYN, ENG, EXP_SELECTORS_DEFAULT, GEN, GENC, LPF, MOD, MODP, NORM, PITD,
     REQUIRED, SHFC, SHFT, TENC, VEL, VOIC, VOL,
 };
-pub use note::{PitchPoint, PitchPointShape, UNote, UPitch, UPhonemeOverride, UVibrato};
+pub use note::{PitchPoint, PitchPointShape, UNote, UPhonemeOverride, UPitch, UVibrato};
 pub use part::{UPart, UVoicePart, UWavePart};
 pub use phoneme::{UEnvelope, UPhoneme};
-pub use project::{UTempo, UProject, UTimeSignature, UstxVersion};
+pub use project::{CurveRepair, LoadRepair, UProject, UTempo, UTimeSignature, UstxVersion};
 pub use time_axis::TimeAxis;
 pub use track::{UMixFx, URenderSettings, UTrack};
 

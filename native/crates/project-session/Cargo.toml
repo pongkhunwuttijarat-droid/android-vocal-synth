@@ -1,0 +1,19 @@
+[package]
+name = "project-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Platform-neutral Rust-owned project document, command session, and read-only views"
+
+[dependencies]
+domain = { path = "../domain" }
+commands = { path = "../commands" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+# Stable, host-independent fingerprints for entity identity (same crate and
+# feature set the render cache uses).
+xxhash-rust = { version = "0.8", default-features = false, features = ["xxh64"] }
+
+[dev-dependencies]
+serde_json = "1"

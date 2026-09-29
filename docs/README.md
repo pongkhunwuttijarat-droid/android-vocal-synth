@@ -15,10 +15,14 @@
 - [MS4](planning/milestones/ms4/MS.md) — Flutter/Web productization (กำลังทำ)
 - [WASM Migration Status](planning/wasm-migration-status.md) — สถานะ engine/browser ล่าสุด
 - [Web UI Design](planning/web-ui-design.md) — spec + implementation checkpoint ของ editor
+- [Web Render Backend](planning/web-render-backend.md) — แผนแยก renderer ให้ต่อได้ทั้ง wasm และ server (ยังไม่เริ่ม)
+- [Engine vs OpenUtau Performance](planning/engine-vs-openutau-performance.md) — เทียบ wall/CPU/RSS + thread scaling (2026-09-29) และบั๊ก partial-render ของ golden harness
 
 ## Architecture (design เสร็จแล้ว)
 
 - [Architecture Overview](architecture/README.md) — ระบบหลัก
+- [Engine-owned State Policy](architecture/engine-owned-state.md) — ขอบเขตความรับผิดชอบ Rust engine/UI และแผนย้าย state จาก Flutter
+- [Shared Project Session API Draft](CONTRACT-v1.md#6-project-session-api-draft-v1--implementation-ready-partially-implemented) — logical contract ร่วม Native/Flutter/Web/WASM (identity/sidecar/revision implement แล้ว; routes/commands ยังไม่)
 - [Engine](architecture/engine.md) — core domain
 - [Renderer](architecture/renderer.md) — plugin renderers
 - [Runtime](architecture/runtime.md) — orchestration

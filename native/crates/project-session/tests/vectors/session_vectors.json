@@ -1,0 +1,602 @@
+{
+  "_comment": "Host-independent session conformance vectors (CONTRACT-v1 §6.17). Refs: @track:N @part:N @note:N @curve:N @last_note: @last_curve:. revision: current|stale|<n>. Vectors carrying a 'skip' reason are not run yet: they are reported as not-run, never as passing.",
+  "vectors": [
+    {
+      "name": "note edit is one revision and one undo step",
+      "project": "demo",
+      "seed": 1,
+      "steps": [
+        {
+          "op": "apply",
+          "command": {
+            "type": "note.set_lyric",
+            "note_id": "@note:2",
+            "lyric": "ka"
+          },
+          "expect": {
+            "revision": 1,
+            "changed": true,
+            "changes": [
+              "history.changed",
+              "note.changed",
+              "render.invalidated"
+            ]
+          }
+        },
+        {
+          "op": "undo",
+          "expect": {
+            "revision": 2,
+            "changed": true
+          }
+        },
+        {
+          "op": "redo",
+          "expect": {
+            "revision": 3,
+            "changed": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "unknown id is not_found and mutates nothing",
+      "project": "demo",
+      "seed": 1,
+      "steps": [
+        {
+          "op": "apply",
+          "command": {
+            "type": "note.set_tone",
+            "note_id": "ghost",
+            "tone": 60
+          },
+          "expect": {
+            "revision": 0,
+            "code": "not_found"
+          }
+        },
+        {
+          "op": "undo",
+          "expect": {
+            "revision": 0,
+            "changed": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "stale expected_revision is a conflict",
+      "project": "demo",
+      "seed": 1,
+      "steps": [
+        {
+          "op": "apply",
+          "command": {
+            "type": "note.set_tone",
+            "note_id": "@note:0",
+            "tone": 61
+          },
+          "expect": {
+            "revision": 1
+          }
+        },
+        {
+          "op": "apply",
+          "revision": 0,
+          "command": {
+            "type": "note.set_tone",
+            "note_id": "@note:0",
+            "tone": 62
+          },
+          "expect": {
+            "revision": 1,
+            "code": "revision_conflict"
+          }
+        }
+      ]
+    },
+    {
+      "name": "an added note is reported and then addressable",
+      "project": "demo",
+      "seed": 1,
+      "steps": [
+        {
+          "op": "apply",
+          "command": {
+            "type": "note.add",
+            "part_id": "@part:0",
+            "tone": 72,
+            "position_ticks": 2400,
+            "duration_ticks": 480,
+            "lyric": "new"
+          },
+          "expect": {
+            "revision": 1,
+            "changes": [
+              "history.changed",
+              "note.added",
+              "render.invalidated"
+            ]
+          }
+        },
+        {
+          "op": "apply",
+          "command": {
+            "type": "note.set_tone",
+            "note_id": "@last_note:",
+            "tone": 74
+          },
+          "expect": {
+            "revision": 2,
+            "changes": [
+              "note.changed",
+              "render.invalidated"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "moving a note keeps its id addressable",
+      "project": "demo",
+      "seed": 1,
+      "steps": [
+        {
+          "op": "apply",
+          "command": {
+            "type": "note.move",
+            "note_id": "@note:1",
+            "delta_position_ticks": 4800,
+            "delta_tone": 2
+          },
+          "expect": {
+            "revision": 1
+          }
+        },
+        {
+          "op": "apply",
+          "command": {
+            "type": "note.set_lyric",
+            "note_id": "@note:1",
+            "lyric": "moved"
+          },
+          "expect": {
+            "revision": 2,
+            "changes": [
+              "note.changed",
+              "render.invalidated"
+            ]
+          }
+        },
+        {
+          "op": "snapshot",
+          "expect": {
+            "revision": 2,
+            "ids_stable": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "curve stroke replaces an interval with canonical points",
+      "project": "curve",
+      "seed": 1,
+      "steps": [
+        {
+          "op": "apply",
+          "command": {
+            "type": "curve.apply_stroke",
+            "part_id": "@part:0",
+            "curve_id": "@curve:0",
+            "mode": "replace",
+            "start_tick": 480,
+            "end_tick": 960,
+            "points": [
+              {
+                "tick": 612,
+                "value": 20
+              },
+              {
+                "tick": 700,
+                "value": 5
+              }
+            ]
+          },
+          "expect": {
+            "revision": 1,
+            "changes": [
+              "curve.changed",
+              "history.changed",
+              "render.invalidated"
+            ],
+            "point_count": 5
+          }
+        },
+        {
+          "op": "read_curve",
+          "expect": {
+            "revision": 1,
+            "abbr": "dyn",
+            "point_count": 5
+          }
+        },
+        {
+          "op": "undo",
+          "expect": {
+            "revision": 2
+          }
+        },
+        {
+          "op": "read_curve",
+          "expect": {
+            "revision": 2,
+            "point_count": 2
+          }
+        }
+      ]
+    },
+    {
+      "name": "clearing the whole curve removes it",
+      "project": "curve",
+      "seed": 1,
+      "steps": [
+        {
+          "op": "apply",
+          "command": {
+            "type": "curve.apply_stroke",
+            "part_id": "@part:0",
+            "curve_id": "@curve:0",
+            "mode": "clear",
+            "start_tick": 0,
+            "end_tick": 1920,
+            "points": []
+          },
+          "expect": {
+            "revision": 1,
+            "changes": [
+              "curve.changed",
+              "history.changed",
+              "render.invalidated"
+            ]
+          }
+        },
+        {
+          "op": "read_curve",
+          "expect": {
+            "revision": 1,
+            "code": "not_found"
+          }
+        }
+      ]
+    },
+    {
+      "name": "creating a curve reports a new id",
+      "project": "demo",
+      "seed": 1,
+      "steps": [
+        {
+          "op": "apply",
+          "command": {
+            "type": "curve.apply_stroke",
+            "part_id": "@part:0",
+            "create": true,
+            "abbr": "dyn",
+            "mode": "replace",
+            "start_tick": 0,
+            "end_tick": 480,
+            "points": [
+              {
+                "tick": 120,
+                "value": 15
+              }
+            ]
+          },
+          "expect": {
+            "revision": 1,
+            "changes": [
+              "curve.changed",
+              "history.changed",
+              "render.invalidated"
+            ],
+            "point_count": 3
+          }
+        },
+        {
+          "op": "apply",
+          "command": {
+            "type": "curve.apply_stroke",
+            "part_id": "@part:0",
+            "curve_id": "@last_curve:",
+            "mode": "clear",
+            "start_tick": 0,
+            "end_tick": 480,
+            "points": []
+          },
+          "expect": {
+            "revision": 2
+          }
+        }
+      ]
+    },
+    {
+      "name": "stroke rejections carry a reason and change nothing",
+      "project": "curve",
+      "seed": 1,
+      "steps": [
+        {
+          "op": "apply",
+          "command": {
+            "type": "curve.apply_stroke",
+            "part_id": "@part:0",
+            "curve_id": "@curve:0",
+            "mode": "replace",
+            "start_tick": 480,
+            "end_tick": 960,
+            "points": [
+              {
+                "tick": 1200,
+                "value": 1
+              }
+            ]
+          },
+          "expect": {
+            "revision": 0,
+            "code": "validation_error",
+            "reason": "stroke_point_out_of_range"
+          }
+        },
+        {
+          "op": "apply",
+          "command": {
+            "type": "curve.apply_stroke",
+            "part_id": "@part:0",
+            "create": true,
+            "abbr": "dyn",
+            "mode": "replace",
+            "start_tick": 0,
+            "end_tick": 480,
+            "points": [
+              {
+                "tick": 10,
+                "value": 1
+              }
+            ]
+          },
+          "expect": {
+            "revision": 0,
+            "code": "validation_error",
+            "reason": "duplicate_curve_descriptor"
+          }
+        }
+      ]
+    },
+    {
+      "name": "group commit is one revision and one undo step",
+      "project": "demo",
+      "seed": 1,
+      "steps": [
+        {
+          "op": "group_begin",
+          "name": "Drag notes",
+          "expect": {
+            "revision": 0
+          }
+        },
+        {
+          "op": "group_child",
+          "command": {
+            "type": "note.set_tone",
+            "note_id": "@note:1",
+            "tone": 70
+          },
+          "expect": {
+            "revision": 0,
+            "changes": []
+          }
+        },
+        {
+          "op": "group_child",
+          "command": {
+            "type": "note.set_tone",
+            "note_id": "@note:1",
+            "tone": 71
+          },
+          "expect": {
+            "revision": 0,
+            "changes": []
+          }
+        },
+        {
+          "op": "group_commit",
+          "expect": {
+            "revision": 1,
+            "changed": true,
+            "changes": [
+              "history.changed",
+              "note.changed",
+              "render.invalidated"
+            ]
+          }
+        },
+        {
+          "op": "undo",
+          "expect": {
+            "revision": 2
+          }
+        }
+      ]
+    },
+    {
+      "name": "group cancel leaves the revision and history untouched",
+      "project": "demo",
+      "seed": 1,
+      "steps": [
+        {
+          "op": "group_begin",
+          "name": "Throwaway",
+          "expect": {
+            "revision": 0
+          }
+        },
+        {
+          "op": "group_child",
+          "command": {
+            "type": "note.set_tone",
+            "note_id": "@note:0",
+            "tone": 75
+          },
+          "expect": {
+            "revision": 0
+          }
+        },
+        {
+          "op": "group_cancel",
+          "expect": {
+            "revision": 0
+          }
+        },
+        {
+          "op": "undo",
+          "expect": {
+            "revision": 0,
+            "changed": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "a failed group child closes the group with nothing applied",
+      "project": "demo",
+      "seed": 1,
+      "steps": [
+        {
+          "op": "group_begin",
+          "name": "Bad gesture",
+          "expect": {
+            "revision": 0
+          }
+        },
+        {
+          "op": "group_child",
+          "command": {
+            "type": "note.resize",
+            "note_id": "@note:0",
+            "delta_duration_ticks": -100000
+          },
+          "expect": {
+            "revision": 0,
+            "code": "group_failed"
+          }
+        },
+        {
+          "op": "group_commit",
+          "expect": {
+            "revision": 0,
+            "code": "not_found"
+          }
+        }
+      ]
+    },
+    {
+      "name": "mutations are rejected while a group is open",
+      "project": "demo",
+      "seed": 1,
+      "steps": [
+        {
+          "op": "group_begin",
+          "name": "Busy",
+          "expect": {
+            "revision": 0
+          }
+        },
+        {
+          "op": "apply",
+          "command": {
+            "type": "note.set_tone",
+            "note_id": "@note:0",
+            "tone": 61
+          },
+          "expect": {
+            "revision": 0,
+            "code": "session_busy"
+          }
+        },
+        {
+          "op": "group_cancel",
+          "expect": {
+            "revision": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "bounded reads are tagged with the authoritative revision",
+      "project": "curve",
+      "seed": 1,
+      "steps": [
+        {
+          "op": "apply",
+          "command": {
+            "type": "note.set_lyric",
+            "note_id": "@note:0",
+            "lyric": "ka"
+          },
+          "expect": {
+            "revision": 1
+          }
+        },
+        {
+          "op": "read_notes",
+          "expect": {
+            "revision": 1,
+            "note_count": 1
+          }
+        },
+        {
+          "op": "read_curve",
+          "expect": {
+            "revision": 1,
+            "abbr": "dyn",
+            "point_count": 2
+          }
+        },
+        {
+          "op": "read_tracks",
+          "expect": {
+            "revision": 1,
+            "track_count": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "importing a document mints all new ids",
+      "project": "demo",
+      "seed": 1,
+      "skip": "session import/replace is not implemented yet (CONTRACT-v1 §6.9 import row)",
+      "steps": []
+    },
+    {
+      "name": "Save As forks the project id but keeps entity ids",
+      "project": "demo",
+      "seed": 1,
+      "skip": "no Session save-as yet; identity::fork_for_save_as is unit-tested",
+      "steps": []
+    },
+    {
+      "name": "a render job captures an immutable revision",
+      "project": "demo",
+      "seed": 1,
+      "skip": "async render jobs are not implemented (task-11); capabilities().render.async_jobs is false",
+      "steps": []
+    },
+    {
+      "name": "a stale partial read cannot overwrite newer client state",
+      "project": "curve",
+      "seed": 1,
+      "skip": "client-side merge rule: vectors expose revision tags, but the cache policy lives in the frontend",
+      "steps": []
+    }
+  ]
+}

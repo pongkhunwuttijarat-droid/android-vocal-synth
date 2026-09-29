@@ -27,7 +27,11 @@ impl UCurve {
     pub const INTERVAL: i32 = 5;
 
     pub fn new(abbr: impl Into<String>) -> Self {
-        UCurve { xs: Vec::new(), ys: Vec::new(), abbr: abbr.into() }
+        UCurve {
+            xs: Vec::new(),
+            ys: Vec::new(),
+            abbr: abbr.into(),
+        }
     }
 
     /// A curve is empty when it has no points or all points are zero.
@@ -108,6 +112,21 @@ impl UCurve {
         }
     }
 
+    /// Remove all points in the closed range `[x1, x2]`.
+    ///
+    /// Used by the `clear` stroke mode (§6.6.2): "reset this region" must take
+    /// the endpoints with it, otherwise a stray point survives the reset.
+    /// `UCurve` itself has no C# counterpart for this; the exclusive variant
+    /// below mirrors `UCurve.DeleteBetweenExclusive`.
+    pub fn delete_between_inclusive(&mut self, x1: i32, x2: i32) {
+        let li = self.xs.partition_point(|&v| v < x1);
+        let ri = self.xs.partition_point(|&v| v <= x2);
+        if ri > li {
+            self.xs.drain(li..ri);
+            self.ys.drain(li..ri);
+        }
+    }
+
     /// Remove all points strictly between `x1` and `x2` (`UCurve.DeleteBetweenExclusive`).
     /// Removes exactly the range `[li, ri]` where `li` = first point > x1 and
     /// `ri` = last point < x2, matching C# `List.BinarySearch` semantics.
@@ -127,7 +146,11 @@ mod tests {
 
     #[test]
     fn sample_interpolates_and_rounds() {
-        let c = UCurve { abbr: "dyn".into(), xs: vec![0, 100, 200], ys: vec![0, 100, 0] };
+        let c = UCurve {
+            abbr: "dyn".into(),
+            xs: vec![0, 100, 200],
+            ys: vec![0, 100, 0],
+        };
         assert_eq!(c.sample(0), Some(0));
         assert_eq!(c.sample(100), Some(100));
         assert_eq!(c.sample(50), Some(50));
@@ -172,26 +195,58 @@ mod tests {
     #[test]
     fn delete_between_exclusive_matches_csharp() {
         // xs = [0, 10, 20]
-        let mut c = UCurve { abbr: "x".into(), xs: vec![0, 10, 20], ys: vec![1, 2, 3] };
+        let mut c = UCurve {
+            abbr: "x".into(),
+            xs: vec![0, 10, 20],
+            ys: vec![1, 2, 3],
+        };
         c.delete_between_exclusive(0, 15);
         assert_eq!(c.xs, vec![0, 20]); // removes only 10
         c.delete_between_exclusive(0, 10);
         assert_eq!(c.xs, vec![0, 20]); // nothing strictly between
-        let mut c2 = UCurve { abbr: "x".into(), xs: vec![0, 10, 20], ys: vec![1, 2, 3] };
+        let mut c2 = UCurve {
+            abbr: "x".into(),
+            xs: vec![0, 10, 20],
+            ys: vec![1, 2, 3],
+        };
         c2.delete_between_exclusive(-5, 25);
         assert!(c2.xs.is_empty());
-        let mut c3 = UCurve { abbr: "x".into(), xs: vec![0, 10, 20], ys: vec![1, 2, 3] };
+        let mut c3 = UCurve {
+            abbr: "x".into(),
+            xs: vec![0, 10, 20],
+            ys: vec![1, 2, 3],
+        };
         c3.delete_between_exclusive(5, 15);
         assert_eq!(c3.xs, vec![0, 20]);
     }
 
     #[test]
     fn empty_checks() {
-        let c = UCurve { abbr: "x".into(), xs: vec![0, 480], ys: vec![0, 0] };
+        let c = UCurve {
+            abbr: "x".into(),
+            xs: vec![0, 480],
+            ys: vec![0, 0],
+        };
         assert!(c.is_empty());
         assert!(c.is_empty_between(0, 480, 0));
-        let c2 = UCurve { abbr: "x".into(), xs: vec![0, 480], ys: vec![0, 10] };
+        let c2 = UCurve {
+            abbr: "x".into(),
+            xs: vec![0, 480],
+            ys: vec![0, 10],
+        };
         assert!(!c2.is_empty());
         assert!(!c2.is_empty_between(0, 480, 0));
     }
+}
+
+/// Snap a tick to the curve point interval, mirroring `UCurve.Set`.
+///
+/// `csharp_round` is crate-private (half-to-even, exactly like
+/// `System.Math.Round`), so a command layer that must canonicalize a stroke the
+/// same way as the editor needs this public entry point.
+pub fn snap_tick(tick: i32, interval: i32) -> i32 {
+    if interval <= 1 {
+        return tick;
+    }
+    crate::csharp_round(tick as f64 / interval as f64) * interval
 }

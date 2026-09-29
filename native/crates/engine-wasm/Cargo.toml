@@ -15,6 +15,7 @@ serde_yaml = "0.9"
 # Rust owns the project document: edits go through reversible commands so
 # undo/redo and the tick/rounding rules stay in one implementation.
 commands = { path = "../commands" }
+project-session = { path = "../project-session" }
 voicebank = { path = "../voicebank" }
 phonemizer = { path = "../phonemizer" }
 feed = { path = "../feed" }
