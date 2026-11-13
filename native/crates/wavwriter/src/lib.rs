@@ -30,13 +30,26 @@ pub const WAVE_FORMAT_IEEE_FLOAT: u16 = 0x0003;
 ///
 /// Returns the complete RIFF/WAVE bytes. `sample_rate` must be non-zero.
 pub fn write_wav_16(samples: &[f32], sample_rate: u32) -> Vec<u8> {
+    write_wav_16_channels(samples, sample_rate, 1)
+}
+
+/// Encode interleaved `samples` as 16-bit PCM with the requested channel
+/// count. `channels` must be non-zero and the sample count must contain whole
+/// frames.
+pub fn write_wav_16_channels(samples: &[f32], sample_rate: u32, channels: u16) -> Vec<u8> {
+    assert!(channels > 0, "channel count must be non-zero");
+    assert_eq!(
+        samples.len() % channels as usize,
+        0,
+        "interleaved sample count must contain whole frames"
+    );
     let mut pcm = Vec::with_capacity(samples.len() * 2);
     for &s in samples {
         // The cast saturates: +1.0 → 32768 → 32767, -1.0 → -32768.
         let quantized = (s.clamp(-1.0, 1.0) * 32768.0).round() as i16;
         pcm.extend_from_slice(&quantized.to_le_bytes());
     }
-    build_wav(&pcm, sample_rate, 16, WAVE_FORMAT_PCM)
+    build_wav(&pcm, sample_rate, 16, WAVE_FORMAT_PCM, channels)
 }
 
 /// Encode `samples` (mono) as a 32-bit IEEE float WAV file (lossless).
@@ -48,7 +61,7 @@ pub fn write_wav_float32(samples: &[f32], sample_rate: u32) -> Vec<u8> {
     for &s in samples {
         data.extend_from_slice(&s.to_le_bytes());
     }
-    build_wav(&data, sample_rate, 32, WAVE_FORMAT_IEEE_FLOAT)
+    build_wav(&data, sample_rate, 32, WAVE_FORMAT_IEEE_FLOAT, 1)
 }
 
 /// Write WAV bytes (from [`write_wav_16`] or [`write_wav_float32`]) to
@@ -68,9 +81,8 @@ pub fn write_wav_file(path: impl AsRef<Path>, wav_bytes: &[u8]) -> std::io::Resu
 /// Assemble a canonical mono WAV: `RIFF` + size, `WAVE`, `fmt ` (16-byte
 /// PCM-style payload), `data` + payload. `bits` is the container size
 /// (16 or 32); `format` the `fmt` audio format code.
-fn build_wav(data: &[u8], sample_rate: u32, bits: u16, format: u16) -> Vec<u8> {
+fn build_wav(data: &[u8], sample_rate: u32, bits: u16, format: u16, channels: u16) -> Vec<u8> {
     assert!(sample_rate > 0, "sample rate must be non-zero");
-    let channels: u16 = 1;
     let block_align = channels * bits / 8;
     let byte_rate = sample_rate * block_align as u32;
     let data_len = data.len() as u32;

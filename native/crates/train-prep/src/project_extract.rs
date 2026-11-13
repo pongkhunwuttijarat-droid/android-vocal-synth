@@ -41,10 +41,8 @@ pub fn extract_project(
             _ => None,
         })
         .ok_or_else(|| "project has no voice part".to_string())?;
-    let kind =
-        kind.unwrap_or_else(|| pipeline::PhonemizerKind::from_track(track));
-    let inputs =
-        pipeline::build_phrase_inputs(&project, track, part, vb, kind)?;
+    let kind = kind.unwrap_or_else(|| pipeline::PhonemizerKind::from_track(track));
+    let inputs = pipeline::build_phrase_inputs(&project, track, part, vb, kind)?;
     eprintln!(
         "[project-extract] {}: {} phrases",
         project_path.display(),
@@ -70,12 +68,9 @@ pub fn extract_project(
                 duration_ms: p.duration_ms,
             })
             .collect();
-        let lyrics: Vec<String> =
-            pi.input.notes.iter().map(|n| n.lyric.clone()).collect();
+        let lyrics: Vec<String> = pi.input.notes.iter().map(|n| n.lyric.clone()).collect();
         let dump_path: PathBuf = dump_dir.join(format!("proj-{i:05}.bin"));
-        worldline_plugin::r2_engine::set_thread_dump_path(Some(
-            dump_path.clone(),
-        ));
+        worldline_plugin::r2_engine::set_thread_dump_path(Some(dump_path.clone()));
         let result = engine.render_phrase(&pi.input);
         worldline_plugin::r2_engine::set_thread_dump_path(None);
         let audio = match result {
@@ -87,8 +82,7 @@ pub fn extract_project(
         };
         let (frames, f0_hz, mel_flat) = read_dump(&dump_path)?;
         let _ = std::fs::remove_file(&dump_path);
-        let mel: Vec<Vec<f32>> =
-            mel_flat.chunks_exact(128).map(|c| c.to_vec()).collect();
+        let mel: Vec<Vec<f32>> = mel_flat.chunks_exact(128).map(|c| c.to_vec()).collect();
         // tone/duration: representative from first note (display only —
         // the student's real inputs are phonemes + f0 + pos_frac).
         let tone = pi.input.notes.first().map(|n| n.tone).unwrap_or(60);
@@ -110,8 +104,7 @@ pub fn extract_project(
 }
 
 fn read_dump(path: &Path) -> Result<(usize, Vec<f32>, Vec<f32>), String> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| format!("read dump {}: {e}", path.display()))?;
+    let bytes = std::fs::read(path).map_err(|e| format!("read dump {}: {e}", path.display()))?;
     if bytes.len() < 4 {
         return Err("dump too small".to_string());
     }

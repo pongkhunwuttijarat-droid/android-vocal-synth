@@ -20,15 +20,14 @@ pub fn load_phonemes(path: &Path) -> Result<HashMap<String, i64>, String> {
 }
 
 fn load_phonemes_json(path: &Path) -> Result<HashMap<String, i64>, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
-    serde_json::from_str(&text)
-        .map_err(|e| format!("parse {}: {e}", path.display()))
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))
 }
 
 fn load_phonemes_txt(path: &Path) -> Result<HashMap<String, i64>, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let mut map = HashMap::new();
     for (i, line) in text.lines().enumerate() {
         let phoneme = line.trim();

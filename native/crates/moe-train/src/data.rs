@@ -173,9 +173,7 @@ pub fn load_train_set(path: &str) -> Result<TrainSet, String> {
             if line.trim().is_empty() {
                 continue;
             }
-            v.push(
-                serde_json::from_str(line).map_err(|e| format!("line {}: {e}", i + 1))?,
-            );
+            v.push(serde_json::from_str(line).map_err(|e| format!("line {}: {e}", i + 1))?);
         }
         v
     };

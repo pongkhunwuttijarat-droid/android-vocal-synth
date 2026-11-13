@@ -6,7 +6,7 @@
 use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor, TensorData};
 
-use crate::baseline::{ContextAcoustic, WINDOW, HALF};
+use crate::baseline::{ContextAcoustic, HALF, WINDOW};
 use crate::data::TrainSet;
 
 /// Loaded MoE: general expert + one optional expert per group.
@@ -28,9 +28,7 @@ pub fn load_moe<B: Backend>(
     let mut experts = Vec::new();
     for g in 0..crate::phoneme_groups::N_GROUPS {
         let path = format!("{prefix}-g{g}");
-        experts.push(
-            load_expert::<B>(&path, device).ok(),
-        ); // missing expert → None
+        experts.push(load_expert::<B>(&path, device).ok()); // missing expert → None
     }
     Ok(LoadedMoe { general, experts })
 }
@@ -103,9 +101,9 @@ pub fn predict_phrase_mel<B: Backend>(
     for chunk in idx.chunks(512) {
         let (ids, feats) = build_render_batch(set, &samples, chunk, device);
         let general_mel = moe.general.forward(ids.clone(), feats.clone()); // [B,128]
-        // Routed expert contribution: scatter each frame's group-expert
-        // output into a full-batch zeros tensor (groups WITHOUT an
-        // expert — e.g. skipped — keep zeros; the general covers them).
+                                                                           // Routed expert contribution: scatter each frame's group-expert
+                                                                           // output into a full-batch zeros tensor (groups WITHOUT an
+                                                                           // expert — e.g. skipped — keep zeros; the general covers them).
         let mut expert_add: Option<Tensor<B, 2>> = None;
         for (pos, &si) in chunk.iter().enumerate() {
             if let Some(exp) = &moe.experts[samples[si].group_id] {
@@ -177,8 +175,12 @@ fn build_render_batch<B: Backend>(
 /// `intra_threads` caps the session's op thread pool (0 = ort default) —
 /// parallel render workers each open a session, and the default (all
 /// cores per session!) oversubscribes the CPU badly.
-pub fn open_vocoder_threads(vocoder_path: &str, intra_threads: usize) -> Result<ort::session::Session, String> {
-    let mut builder = ort::session::Session::builder().map_err(|e| format!("vocoder builder: {e}"))?;
+pub fn open_vocoder_threads(
+    vocoder_path: &str,
+    intra_threads: usize,
+) -> Result<ort::session::Session, String> {
+    let mut builder =
+        ort::session::Session::builder().map_err(|e| format!("vocoder builder: {e}"))?;
     if intra_threads > 0 {
         builder = builder
             .with_intra_threads(intra_threads)
@@ -212,7 +214,9 @@ pub fn run_vocoder(
         ort::value::Value::from_array(mel_arr).map_err(|e| format!("mel tensor: {e}"))?,
         ort::value::Value::from_array(f0_arr).map_err(|e| format!("f0 tensor: {e}"))?,
     ];
-    let out = session.run(inputs).map_err(|e| format!("vocoder run: {e}"))?;
+    let out = session
+        .run(inputs)
+        .map_err(|e| format!("vocoder run: {e}"))?;
     let (_, audio) = out[0]
         .try_extract_tensor::<f32>()
         .map_err(|e| format!("audio extract: {e}"))?;
@@ -221,7 +225,11 @@ pub fn run_vocoder(
 
 #[cfg(feature = "ort-vocoder")]
 /// One-shot convenience (single-phrase rendering): open + run.
-pub fn run_vocoder_once(vocoder_path: &str, mel: &[[f32; 128]], f0: &[f32]) -> Result<Vec<f32>, String> {
+pub fn run_vocoder_once(
+    vocoder_path: &str,
+    mel: &[[f32; 128]],
+    f0: &[f32],
+) -> Result<Vec<f32>, String> {
     let mut session = open_vocoder(vocoder_path)?;
     run_vocoder(&mut session, mel, f0)
 }

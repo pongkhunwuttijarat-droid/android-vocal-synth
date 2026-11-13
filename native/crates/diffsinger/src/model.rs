@@ -79,10 +79,7 @@ fn open_session(path: &Path, what: &str) -> Result<Session, String> {
 }
 
 /// Mel-spec checks — C#:151-220 (`InvokeDiffsinger` validation block).
-fn validate_mel_spec(
-    acoustic: &DsConfig,
-    vocoder: &DsVocoderConfig,
-) -> Result<(), String> {
+fn validate_mel_spec(acoustic: &DsConfig, vocoder: &DsVocoderConfig) -> Result<(), String> {
     for (what, bins) in [
         ("vocoder", vocoder.num_mel_bins),
         ("acoustic model", acoustic.num_mel_bins),
@@ -93,9 +90,14 @@ fn validate_mel_spec(
             ));
         }
     }
-    for (what, base) in [("vocoder", &vocoder.mel_base), ("acoustic model", &acoustic.mel_base)] {
+    for (what, base) in [
+        ("vocoder", &vocoder.mel_base),
+        ("acoustic model", &acoustic.mel_base),
+    ] {
         if base != "10" && base != "e" {
-            return Err(format!("Mel base must be \"10\" or \"e\", but got \"{base}\" from {what}"));
+            return Err(format!(
+                "Mel base must be \"10\" or \"e\", but got \"{base}\" from {what}"
+            ));
         }
     }
     for (what, scale) in [
@@ -145,17 +147,18 @@ impl DsModel {
     /// Load a DiffSinger voicebank directory:
     /// `dsconfig.yaml` + phonemes table + acoustic onnx + vocoder dir.
     pub fn load(model_dir: &Path) -> Result<Self, String> {
-        let config: DsConfig =
-            load_yaml(&model_dir.join("dsconfig.yaml"), "dsconfig")?;
+        let config: DsConfig = load_yaml(&model_dir.join("dsconfig.yaml"), "dsconfig")?;
         config.validate()?;
 
-        let phoneme_table =
-            phonemes::load_phonemes(&model_dir.join(&config.phonemes))?;
+        let phoneme_table = phonemes::load_phonemes(&model_dir.join(&config.phonemes))?;
 
         let acoustic_path = model_dir.join(config.acoustic.as_deref().unwrap_or(""));
         let acoustic = open_session(&acoustic_path, "acoustic")?;
-        let acoustic_inputs: Vec<String> =
-            acoustic.inputs().iter().map(|i| i.name().to_string()).collect();
+        let acoustic_inputs: Vec<String> = acoustic
+            .inputs()
+            .iter()
+            .map(|i| i.name().to_string())
+            .collect();
 
         let vocoder_dir = model_dir.join(config.vocoder.as_deref().unwrap_or(""));
         let vocoder_config: DsVocoderConfig =
@@ -168,30 +171,34 @@ impl DsModel {
 
         // Speaker embed (config.speakers[0] → "<dir>/<name>.emb") — the
         // C# reads hidden_size raw f32s (BinaryReader.ReadSingle).
-        let spk_embed = config.speakers.first().map(|speaker| {
-            let path = model_dir.join(format!("{speaker}.emb"));
-            let bytes = std::fs::read(&path)
-                .map_err(|e| format!("speaker embed {}: {e}", path.display()))?;
-            let hidden = config.hidden_size.max(1) as usize;
-            if bytes.len() < hidden * 4 {
-                return Err(format!(
-                    "speaker embed {}: {} bytes, expected {}",
-                    path.display(),
-                    bytes.len(),
-                    hidden * 4
-                ));
-            }
-            let mut v = Vec::with_capacity(hidden);
-            for i in 0..hidden {
-                v.push(f32::from_le_bytes([
-                    bytes[i * 4],
-                    bytes[i * 4 + 1],
-                    bytes[i * 4 + 2],
-                    bytes[i * 4 + 3],
-                ]));
-            }
-            Ok(v)
-        }).transpose()?;
+        let spk_embed = config
+            .speakers
+            .first()
+            .map(|speaker| {
+                let path = model_dir.join(format!("{speaker}.emb"));
+                let bytes = std::fs::read(&path)
+                    .map_err(|e| format!("speaker embed {}: {e}", path.display()))?;
+                let hidden = config.hidden_size.max(1) as usize;
+                if bytes.len() < hidden * 4 {
+                    return Err(format!(
+                        "speaker embed {}: {} bytes, expected {}",
+                        path.display(),
+                        bytes.len(),
+                        hidden * 4
+                    ));
+                }
+                let mut v = Vec::with_capacity(hidden);
+                for i in 0..hidden {
+                    v.push(f32::from_le_bytes([
+                        bytes[i * 4],
+                        bytes[i * 4 + 1],
+                        bytes[i * 4 + 2],
+                        bytes[i * 4 + 3],
+                    ]));
+                }
+                Ok(v)
+            })
+            .transpose()?;
 
         let dict = {
             let root = LyricDict::load(model_dir)?;
@@ -240,11 +247,9 @@ impl DsModel {
             input.durations.clone().into_boxed_slice(),
         ))
         .map_err(|e| format!("durations tensor: {e}"))?;
-        let f0_val = ort::value::Tensor::from_array((
-            [1usize, total],
-            acoustic_f0.into_boxed_slice(),
-        ))
-        .map_err(|e| format!("f0 tensor: {e}"))?;
+        let f0_val =
+            ort::value::Tensor::from_array(([1usize, total], acoustic_f0.into_boxed_slice()))
+                .map_err(|e| format!("f0 tensor: {e}"))?;
         // Diffusion acceleration: the model either takes "speedup"
         // (plain: max(1, 1000/steps), C#:276-291) or "depth" (variable
         // depth). kiritan-family models take "speedup".
@@ -255,20 +260,20 @@ impl DsModel {
         let has_velocity = self.acoustic_inputs.iter().any(|n| n == "velocity");
         // Named inputs (the C# NamedOnnxValue) — the model matches by
         // NAME, so the declaration order never matters.
-        let mut acoustic_values: Vec<(std::borrow::Cow<'static, str>, ort::session::SessionInputValue)> =
-            vec![
-                ("tokens".into(), tokens_val.into()),
-                ("durations".into(), durations_val.into()),
-                ("f0".into(), f0_val.into()),
-            ];
+        let mut acoustic_values: Vec<(
+            std::borrow::Cow<'static, str>,
+            ort::session::SessionInputValue,
+        )> = vec![
+            ("tokens".into(), tokens_val.into()),
+            ("durations".into(), durations_val.into()),
+            ("f0".into(), f0_val.into()),
+        ];
         if self.config.use_continuous_acceleration {
             // Continuous-acceleration models take a "steps" scalar
             // (C#:268-274) — the no7-era models; NOT speedup/depth.
-            let v = ort::value::Tensor::from_array((
-                [1usize],
-                vec![DEFAULT_STEPS].into_boxed_slice(),
-            ))
-            .map_err(|e| format!("steps tensor: {e}"))?;
+            let v =
+                ort::value::Tensor::from_array(([1usize], vec![DEFAULT_STEPS].into_boxed_slice()))
+                    .map_err(|e| format!("steps tensor: {e}"))?;
             acoustic_values.push(("steps".into(), v.into()));
         } else if has_speedup {
             let speedup = compute_speedup(DEFAULT_STEPS);
@@ -291,11 +296,9 @@ impl DsModel {
             for _ in 0..total {
                 spk.extend_from_slice(embed);
             }
-            let v = ort::value::Tensor::from_array((
-                [1usize, total, hidden],
-                spk.into_boxed_slice(),
-            ))
-            .map_err(|e| format!("spk_embed tensor: {e}"))?;
+            let v =
+                ort::value::Tensor::from_array(([1usize, total, hidden], spk.into_boxed_slice()))
+                    .map_err(|e| format!("spk_embed tensor: {e}"))?;
             acoustic_values.push(("spk_embed".into(), v.into()));
         }
         // Gender (C#:313-325): the gender curve sampled per frame × the
@@ -344,8 +347,8 @@ impl DsModel {
                 self.vocoder_config.mel_base.as_str(),
                 self.config.mel_base.as_str(),
             ) {
-                ("e", "10") => 2.30259f32,   // ×ln(10)
-                ("10", "e") => 0.434294f32,  // ÷ln(10)
+                ("e", "10") => 2.30259f32,  // ×ln(10)
+                ("10", "e") => 0.434294f32, // ÷ln(10)
                 _ => {
                     return Err("This should never happen".to_string());
                 }
@@ -356,16 +359,12 @@ impl DsModel {
         };
 
         // --- vocoder: mel + ORIGINAL f0 → samples [1, L] ---
-        let mel_val = ort::value::Tensor::from_array((
-            [1usize, n_frames, mel_bins],
-            mel.into_boxed_slice(),
-        ))
-        .map_err(|e| format!("mel tensor: {e}"))?;
-        let f0_orig_val = ort::value::Tensor::from_array((
-            [1usize, total],
-            input.f0.clone().into_boxed_slice(),
-        ))
-        .map_err(|e| format!("f0 tensor: {e}"))?;
+        let mel_val =
+            ort::value::Tensor::from_array(([1usize, n_frames, mel_bins], mel.into_boxed_slice()))
+                .map_err(|e| format!("mel tensor: {e}"))?;
+        let f0_orig_val =
+            ort::value::Tensor::from_array(([1usize, total], input.f0.clone().into_boxed_slice()))
+                .map_err(|e| format!("f0 tensor: {e}"))?;
         let v_inputs = ort::inputs![mel_val, f0_orig_val];
         let mut vocoder = self
             .vocoder

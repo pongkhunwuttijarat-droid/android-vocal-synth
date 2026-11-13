@@ -1,4 +1,4 @@
-// Mixer FX plugin — per-track (or final) FX chain for Lilt.
+// Mixer FX plugin — per-track (or final) FX chain for Rusted UTAU.
 //
 // FFI contract (mirrors the worldline plugin pattern):
 //   void* MxFxCreate(const MxFxConfig* cfg, const char* params_json);

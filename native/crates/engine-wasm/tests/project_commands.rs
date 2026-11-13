@@ -48,6 +48,53 @@ fn install_teto(engine: &mut Engine, library: &Path) {
     }
 }
 
+#[test]
+fn session_render_sample_keys_are_sorted_and_revision_fenced() {
+    let library = teto_library();
+    if !library.is_dir() {
+        eprintln!("skip: {} not present", library.display());
+        return;
+    }
+    let mut engine = Engine::new();
+    engine.set_voicebank(
+        "teto-english",
+        "Teto",
+        "voice",
+        &read(&library.join("voice/oto.ini")),
+    );
+    let opened: serde_json::Value = serde_json::from_str(
+        &engine
+            .session_open_yaml(
+                include_str!("../../../tools/synth-cli/tests/data/demo-song.ustx"),
+                "",
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    let planned: serde_json::Value = serde_json::from_str(
+        &engine
+            .session_render_sample_keys_json("[0]")
+            .expect("sample plan"),
+    )
+    .unwrap();
+    let keys = planned["sampleKeys"].as_array().expect("sample key list");
+    assert!(
+        !keys.is_empty(),
+        "the demo voice track should need mapped sample WAVs"
+    );
+    assert_eq!(planned["sessionId"], engine.session_id());
+    assert_eq!(planned["revision"], opened["revision"]);
+    let values: Vec<_> = keys.iter().map(|key| key.as_str().unwrap()).collect();
+    let mut sorted = values.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(values, sorted, "sample keys must be sorted and unique");
+    assert_eq!(
+        engine.session_revision(),
+        opened["revision"].as_u64().unwrap()
+    );
+}
+
 /// `project_load_yaml` must round-trip without losing anything the renderer
 /// needs: loading then re-serializing must render the same audio.
 #[test]
@@ -65,14 +112,21 @@ fn project_load_round_trips_and_renders_unchanged() {
     let yaml = engine.project_yaml();
     assert_eq!(normalized, yaml, "load did not return the current YAML");
 
-    let a = engine.render_project(&original, 0).expect("render from file text");
-    let b = engine.render_project(&yaml, 0).expect("render from round-tripped text");
+    let a = engine
+        .render_project(&original, 0)
+        .expect("render from file text");
+    let b = engine
+        .render_project(&yaml, 0)
+        .expect("render from round-tripped text");
     assert_eq!(a.len(), b.len(), "round-trip changed the render length");
     let max_diff = a
         .iter()
         .zip(&b)
         .fold(0.0f32, |m, (x, y)| m.max((x - y).abs()));
-    assert_eq!(max_diff, 0.0, "round-trip changed the audio: {max_diff:.3e}");
+    assert_eq!(
+        max_diff, 0.0,
+        "round-trip changed the audio: {max_diff:.3e}"
+    );
     println!("round-trip: {} samples, identical", a.len());
 }
 
@@ -92,7 +146,11 @@ fn view_models_describe_the_project() {
 
     let tracks: serde_json::Value =
         serde_json::from_str(&engine.tracks_json().expect("tracks")).expect("tracks json");
-    assert_eq!(tracks.as_array().unwrap().len(), 1, "demo song has one track");
+    assert_eq!(
+        tracks.as_array().unwrap().len(),
+        1,
+        "demo song has one track"
+    );
 
     let notes: serde_json::Value =
         serde_json::from_str(&engine.notes_json(0).expect("notes")).expect("notes json");
@@ -101,7 +159,10 @@ fn view_models_describe_the_project() {
     let note_list = parts[0]["notes"].as_array().expect("notes");
     assert_eq!(note_list.len(), 4, "demo song has 4 notes");
     // Notes are reported in project order.
-    let positions: Vec<i64> = note_list.iter().map(|n| n["position"].as_i64().unwrap()).collect();
+    let positions: Vec<i64> = note_list
+        .iter()
+        .map(|n| n["position"].as_i64().unwrap())
+        .collect();
     let mut sorted = positions.clone();
     sorted.sort_unstable();
     assert_eq!(positions, sorted, "notes are not in tick order");
@@ -154,8 +215,12 @@ fn command_edit_renders_like_yaml_edit() {
         out
     };
 
-    let a = engine.render_project(&via_command, 0).expect("render via command");
-    let b = engine.render_project(&via_yaml, 0).expect("render via yaml");
+    let a = engine
+        .render_project(&via_command, 0)
+        .expect("render via command");
+    let b = engine
+        .render_project(&via_yaml, 0)
+        .expect("render via yaml");
     assert_eq!(a.len(), b.len(), "command vs yaml render length differs");
     let max_diff = a
         .iter()
@@ -185,11 +250,19 @@ fn undo_and_redo_restore_the_document() {
     assert!(engine.can_undo());
 
     engine.undo().expect("undo");
-    assert_eq!(engine.project_yaml(), before, "undo did not restore the state");
+    assert_eq!(
+        engine.project_yaml(),
+        before,
+        "undo did not restore the state"
+    );
     assert!(engine.can_redo(), "redo should be available after undo");
 
     engine.redo().expect("redo");
-    assert_eq!(engine.project_yaml(), moved, "redo did not re-apply the edit");
+    assert_eq!(
+        engine.project_yaml(),
+        moved,
+        "redo did not re-apply the edit"
+    );
 }
 
 /// A rejected command must leave the project untouched and out of the undo
@@ -215,7 +288,10 @@ fn invalid_command_leaves_the_project_untouched() {
             before,
             "project changed after a rejected command: {bad}"
         );
-        assert!(!engine.can_undo(), "rejected command entered the undo stack: {bad}");
+        assert!(
+            !engine.can_undo(),
+            "rejected command entered the undo stack: {bad}"
+        );
     }
 }
 
@@ -236,7 +312,9 @@ fn group_edits_into_one_undo_step() {
     engine
         .apply_command(r#"{"cmd":"change_tone","part":0,"note":1,"tone":61}"#)
         .expect("edit 2");
-    engine.apply_command(r#"{"cmd":"group_end"}"#).expect("group_end");
+    engine
+        .apply_command(r#"{"cmd":"group_end"}"#)
+        .expect("group_end");
 
     let grouped = engine.project_yaml();
     assert_ne!(grouped, before);

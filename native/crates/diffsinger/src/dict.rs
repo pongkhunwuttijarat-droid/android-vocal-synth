@@ -31,7 +31,9 @@ impl LyricDict {
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
                 let lower = name.to_lowercase();
-                if lower.starts_with("dsdict") && (lower.ends_with(".yaml") || lower.ends_with(".txt")) {
+                if lower.starts_with("dsdict")
+                    && (lower.ends_with(".yaml") || lower.ends_with(".txt"))
+                {
                     candidates.push(e.path());
                 }
             }
@@ -41,8 +43,17 @@ impl LyricDict {
         // dict overrides them.
         candidates.sort_by(|a, b| {
             let rank = |p: &PathBuf| -> u8 {
-                let name = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
-                if name == "dsdict.yaml" { 0 } else if name == "dsdict.txt" { 1 } else { 2 }
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                if name == "dsdict.yaml" {
+                    0
+                } else if name == "dsdict.txt" {
+                    1
+                } else {
+                    2
+                }
             };
             rank(a).cmp(&rank(b)).then_with(|| a.cmp(b))
         });
@@ -76,8 +87,8 @@ impl LyricDict {
 }
 
 fn load_file(path: &Path) -> Result<LyricDict, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let is_yaml = path
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase() == "yaml")
@@ -104,8 +115,8 @@ fn load_file(path: &Path) -> Result<LyricDict, String> {
             #[serde(default)]
             entries: Vec<G2pEntry>,
         }
-        let data: G2pData = serde_yaml::from_str(&text)
-            .map_err(|e| format!("parse {}: {e}", path.display()))?;
+        let data: G2pData =
+            serde_yaml::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))?;
         for s in data.symbols {
             let t = s.r#type.to_lowercase();
             if t == "vowel" || t == "v" {
@@ -145,8 +156,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("dsdict.txt"), "sa\ts a\nno\tn O\n").unwrap();
         let d = LyricDict::load(&dir).unwrap();
-        assert_eq!(d.lookup("sa").unwrap(), &vec!["s".to_string(), "a".to_string()]);
-        assert_eq!(d.lookup("no").unwrap(), &vec!["n".to_string(), "O".to_string()]);
+        assert_eq!(
+            d.lookup("sa").unwrap(),
+            &vec!["s".to_string(), "a".to_string()]
+        );
+        assert_eq!(
+            d.lookup("no").unwrap(),
+            &vec!["n".to_string(), "O".to_string()]
+        );
         assert!(d.lookup("ra").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -161,7 +178,10 @@ mod tests {
         )
         .unwrap();
         let d = LyricDict::load(&dir).unwrap();
-        assert_eq!(d.lookup("sa").unwrap(), &vec!["s".to_string(), "a".to_string()]);
+        assert_eq!(
+            d.lookup("sa").unwrap(),
+            &vec!["s".to_string(), "a".to_string()]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

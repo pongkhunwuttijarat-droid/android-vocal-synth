@@ -16,8 +16,8 @@ pub const GROUP_NAMES: [&str; N_GROUPS] = ["vowel", "plosive", "fricative", "nas
 
 /// Vowel nuclei (single symbols and diphthongs).
 const VOWELS: &[&str] = &[
-    "a", "e", "i", "o", "u", "3", "@", "I", "E", "O", "U", "A", "V",
-    "aI", "aU", "OI", "i3", "u@", "eI", "oU",
+    "a", "e", "i", "o", "u", "3", "@", "I", "E", "O", "U", "A", "V", "aI", "aU", "OI", "i3", "u@",
+    "eI", "oU",
 ];
 /// Plosives (stops).
 const PLOSIVES: &[&str] = &["p", "b", "t", "d", "k", "g"];

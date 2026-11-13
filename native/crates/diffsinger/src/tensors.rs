@@ -53,11 +53,7 @@ fn parse_bpm_hint(hint: &str) -> Option<f64> {
     // "120bpm 4/4" → 120
     let bpm = hint
         .split_whitespace()
-        .find_map(|tok| {
-            tok.strip_suffix("bpm").or_else(|| {
-                tok.strip_suffix("BPM")
-            })
-        })?;
+        .find_map(|tok| tok.strip_suffix("bpm").or_else(|| tok.strip_suffix("BPM")))?;
     bpm.parse().ok()
 }
 
@@ -93,8 +89,7 @@ fn sample_curve(
             let i0 = index.floor() as usize;
             let i1 = i0 + 1;
             let frac = index - i0 as f64;
-            let value =
-                grid[i0] as f64 + (grid[i1] as f64 - grid[i0] as f64) * frac;
+            let value = grid[i0] as f64 + (grid[i1] as f64 - grid[i0] as f64) * frac;
             result.push(convert(value));
         }
     }
@@ -381,6 +376,7 @@ mod tests {
             duration_ms: 1000.0,
             leading_ms: 0.7,
             leading_ticks: 1,
+            tempo_map: vec![],
             time_axis_hint: Some("120bpm 4/4".to_string()),
         }
     }
@@ -397,6 +393,10 @@ mod tests {
                     leading_ms: 0.7,
                     overlap_ms: 0.0,
                     tone: 60,
+                    adjusted_tempo: 120.0,
+                    consonant_velocity: 100.0,
+                    volume: 100.0,
+                    modulation: 0.0,
                     tone_shift: 0,
                     index: 0,
                     parent_note: 0,
@@ -408,12 +408,19 @@ mod tests {
                     leading_ms: 0.0,
                     overlap_ms: 0.0,
                     tone: 60,
+                    adjusted_tempo: 120.0,
+                    consonant_velocity: 100.0,
+                    volume: 100.0,
+                    modulation: 0.0,
                     tone_shift: 0,
                     index: 1,
                     parent_note: 0,
                 },
             ],
             pitches_cents: vec![6000; 220],
+            pitches_cents_f32: vec![6000.0; 220],
+            curve_grid_start_tick: 384,
+            render_origin_ms: 479.3,
             curves: feed::render_input::Curves {
                 dynamics: vec![],
                 gender: vec![],
@@ -433,7 +440,8 @@ mod tests {
         table.insert("SP".to_string(), 0);
         table.insert("l".to_string(), 1);
         table.insert("A".to_string(), 2);
-        let ai = build_acoustic_inputs(&input(), &table, 11.61, &LyricDict::default(), None).unwrap();
+        let ai =
+            build_acoustic_inputs(&input(), &table, 11.61, &LyricDict::default(), None).unwrap();
         assert_eq!(ai.tokens, vec![0, 1, 2, 0]);
         assert_eq!(ai.durations.len(), 4);
         assert_eq!(ai.total_frames, ai.f0.len());
@@ -445,7 +453,8 @@ mod tests {
         let mut table = HashMap::new();
         table.insert("SP".to_string(), 0);
         table.insert("l".to_string(), 1);
-        let err = build_acoustic_inputs(&input(), &table, 11.61, &LyricDict::default(), None).unwrap_err();
+        let err = build_acoustic_inputs(&input(), &table, 11.61, &LyricDict::default(), None)
+            .unwrap_err();
         assert!(err.contains("not in the table"));
     }
 
@@ -466,6 +475,10 @@ mod tests {
                 leading_ms: 0.0,
                 overlap_ms: 0.0,
                 tone: 60,
+                adjusted_tempo: 120.0,
+                consonant_velocity: 100.0,
+                volume: 100.0,
+                modulation: 0.0,
                 tone_shift: 0,
                 index: 0,
                 parent_note: 0,
@@ -477,6 +490,10 @@ mod tests {
                 leading_ms: 0.0,
                 overlap_ms: 0.0,
                 tone: 60,
+                adjusted_tempo: 120.0,
+                consonant_velocity: 100.0,
+                volume: 100.0,
+                modulation: 0.0,
                 tone_shift: 0,
                 index: 1,
                 parent_note: 0,
@@ -502,7 +519,9 @@ mod tests {
         // The pipeline phonemizes the romaji lyrics against the Teto oto
         // (pairs: "sa" is a direct oto alias → ONE phoneme "sa"); the DS
         // tokenizer letter-splits it to s+a — matching the bank's dict.
-        let lyrics = ["sa", "ku", "ra", "sa", "ku", "ra", "no", "ya", "ma", "mo", "sa", "to", "ni"];
+        let lyrics = [
+            "sa", "ku", "ra", "sa", "ku", "ra", "no", "ya", "ma", "mo", "sa", "to", "ni",
+        ];
         let phonemes: Vec<feed::render_input::RenderPhoneme> = lyrics
             .iter()
             .enumerate()
@@ -513,6 +532,10 @@ mod tests {
                 leading_ms: 0.0,
                 overlap_ms: 0.0,
                 tone: 60,
+                adjusted_tempo: 120.0,
+                consonant_velocity: 100.0,
+                volume: 100.0,
+                modulation: 0.0,
                 tone_shift: 0,
                 index: i as i32,
                 parent_note: i,
@@ -537,7 +560,9 @@ mod tests {
                 None => l.chars().map(|c| c.to_string()).collect(),
             };
             for p in phs {
-                let tok = *table.get(&p).unwrap_or_else(|| panic!("dict phoneme {p} not in table"));
+                let tok = *table
+                    .get(&p)
+                    .unwrap_or_else(|| panic!("dict phoneme {p} not in table"));
                 expected.push(tok);
             }
         }
@@ -551,7 +576,8 @@ mod tests {
         table.insert("SP".to_string(), 0);
         table.insert("l".to_string(), 1);
         table.insert("A".to_string(), 2);
-        let ai = build_acoustic_inputs(&input(), &table, 11.61, &LyricDict::default(), None).unwrap();
+        let ai =
+            build_acoustic_inputs(&input(), &table, 11.61, &LyricDict::default(), None).unwrap();
         // 6000 cents = C4 = 261.6 Hz — every frame (flat pitch).
         assert!((ai.f0[10] - 261.6255).abs() < 0.1);
         assert_eq!(ai.f0.len(), ai.total_frames);

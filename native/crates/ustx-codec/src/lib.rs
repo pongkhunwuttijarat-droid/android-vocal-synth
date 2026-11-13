@@ -200,10 +200,7 @@ fn json_to_project(json: &JsonProject) -> Result<UProject, String> {
         // `voice_parts` (the `parts` field is #[serde(skip)] in-memory);
         // after_load merges voice_parts → parts. Keep both in sync.
         project.parts.push(UPart::Voice(part.clone()));
-        project
-            .voice_parts
-            .get_or_insert_with(Vec::new)
-            .push(part);
+        project.voice_parts.get_or_insert_with(Vec::new).push(part);
     }
     project
         .time_axis
@@ -227,14 +224,17 @@ pub extern "C" fn UstxDecode(input: *const c_char) -> *mut c_char {
         Ok(s) => s,
         Err(_) => return ptr::null_mut(),
     };
-    let mut project: UProject = match serde_yaml::from_str(yaml) {
+    // `UProject::parse_yaml` is the canonical loader and strips the UTF-8 BOM
+    // every OpenUtau-written `.ustx` starts with. Parsing with serde_yaml
+    // directly here made this FFI entry reject every real project, with a
+    // misleading "more than one document" error (the files have zero `---`).
+    let project: UProject = match UProject::parse_yaml(yaml) {
         Ok(p) => p,
-        Err(_) => return ptr::null_mut(),
+        Err(e) => {
+            eprintln!("ustx-codec: {e}");
+            return ptr::null_mut();
+        }
     };
-    if let Err(e) = project.after_load() {
-        eprintln!("ustx-codec: after_load: {e}");
-        return ptr::null_mut();
-    }
     match project_to_json(&project) {
         Ok(view) => match serde_json::to_string(&view) {
             Ok(s) => match CString::new(s) {
@@ -354,6 +354,33 @@ parts:
     }
 
     #[test]
+    fn decode_accepts_a_utf8_bom_like_every_real_openutau_file() {
+        // OpenUtau saves with `File.WriteAllText(..., Encoding.UTF8)`, which
+        // emits a BOM preamble (`core/OpenUtau.Core/Format/USTx.cs`). Before
+        // this entry used `UProject::parse_yaml`, a BOM made serde_yaml see two
+        // documents and this returned NULL for every real project — with a
+        // misleading "more than one document" error, on files that contain no
+        // document separators at all.
+        let body = SAMPLE.replace("parts:", "voice_parts:");
+        let with_bom = CString::new(format!("\u{feff}{body}")).unwrap();
+        let out = UstxDecode(with_bom.as_ptr());
+        assert!(
+            !out.is_null(),
+            "UstxDecode must accept a BOM-prefixed .ustx — this is what every \
+             real OpenUtau file starts with"
+        );
+        let s = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_string();
+        unsafe { UstxFree(out) };
+        let view: JsonProject = serde_json::from_str(&s).expect("decode json");
+        assert_eq!(view.tracks.len(), 1);
+        assert_eq!(view.tracks[0].name, "Vocal Scale");
+        assert_eq!(
+            view.tracks[0].notes[0].lyric, "la[l A]",
+            "a BOM must not change the decoded document"
+        );
+    }
+
+    #[test]
     fn curves_round_trip_through_encode_decode() {
         // The JSON view carries the track's expression curves; they must
         // survive encode → decode (the editor's drawn curve is saved via
@@ -378,14 +405,20 @@ parts:
         let c = CString::new(json.to_string()).unwrap();
         let yaml_out = UstxEncode(c.as_ptr());
         assert!(!yaml_out.is_null());
-        let yaml = unsafe { CStr::from_ptr(yaml_out) }.to_str().unwrap().to_string();
+        let yaml = unsafe { CStr::from_ptr(yaml_out) }
+            .to_str()
+            .unwrap()
+            .to_string();
         unsafe { UstxFree(yaml_out) };
 
         // Decode back and check the curve survived.
         let c2 = CString::new(yaml).unwrap();
         let json_out = UstxDecode(c2.as_ptr());
         assert!(!json_out.is_null());
-        let s = unsafe { CStr::from_ptr(json_out) }.to_str().unwrap().to_string();
+        let s = unsafe { CStr::from_ptr(json_out) }
+            .to_str()
+            .unwrap()
+            .to_string();
         unsafe { UstxFree(json_out) };
         let view: JsonProject = serde_json::from_str(&s).unwrap();
         let curves = &view.tracks[0].curves;

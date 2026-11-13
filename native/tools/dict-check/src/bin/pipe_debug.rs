@@ -6,8 +6,8 @@ use synth_cli::pipeline::{self, PhonemizerKind};
 use voicebank::load_voicebank as load_vb;
 
 fn main() {
-    let project = pipeline::load_project(std::path::Path::new("/tmp/ml_demo2.ustx"))
-        .expect("load project");
+    let project =
+        pipeline::load_project(std::path::Path::new("/tmp/ml_demo2.ustx")).expect("load project");
     let vb = load_vb(std::path::Path::new(
         "/home/seal/project/android-voice-synth/test/golden/teto-english/library",
     ))

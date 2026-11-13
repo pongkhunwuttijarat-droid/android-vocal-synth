@@ -156,7 +156,12 @@ impl MixerChain {
         // Bands are always configured (valid coefficients even when EQ is
         // off and no processing runs), exactly like the C++ ctor.
         chain.low = low_shelf(200.0, parse_param(p, "low_gain", 0.0), s, sample_rate);
-        chain.mid = peak(1000.0, parse_param(p, "mid_gain", 0.0), parse_param(p, "eq_mid_q", 1.0), sample_rate);
+        chain.mid = peak(
+            1000.0,
+            parse_param(p, "mid_gain", 0.0),
+            parse_param(p, "eq_mid_q", 1.0),
+            sample_rate,
+        );
         chain.high = high_shelf(4000.0, parse_param(p, "high_gain", 0.0), s, sample_rate);
         chain
     }
@@ -253,6 +258,9 @@ mod tests {
         let peak_before = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         chain.process(&mut samples, 0.0);
         let peak_after = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-        assert!(peak_after > peak_before * 1.5, "{peak_before} -> {peak_after}");
+        assert!(
+            peak_after > peak_before * 1.5,
+            "{peak_before} -> {peak_after}"
+        );
     }
 }

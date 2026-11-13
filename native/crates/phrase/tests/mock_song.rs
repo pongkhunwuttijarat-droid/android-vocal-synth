@@ -164,6 +164,86 @@ fn phrase_builder_builds_render_input_from_mock_song() {
 }
 
 #[test]
+fn phrase_builder_uses_openutau_vibrato_pitch_reference() {
+    let mut project = mock_song();
+    let part = match &mut project.parts[0] {
+        UPart::Voice(part) => part,
+        UPart::Wave(_) => panic!("expected a voice part"),
+    };
+    let note = &mut part.notes[0];
+    note.tuning = 17;
+    note.vibrato.set_length(100.0);
+    note.vibrato.set_period(180.0);
+    note.vibrato.set_depth(37.5);
+    note.vibrato.set_in(17.5);
+    note.vibrato.set_out(22.5);
+    note.vibrato.set_shift(12.5);
+    note.vibrato.set_drift(-40.0);
+
+    let track = &project.tracks[0];
+    let part = voice_part(&project);
+    let phonemes = derive_phonemes(&project, part, &mock_voicebank());
+    let groups = PhraseGrouping::group(&phonemes);
+    let input = PhraseBuilder::new(&project, track, part, None)
+        .build(&groups[0])
+        .expect("build vibrato RenderInput");
+
+    // C# UVibrato.Evaluate references for nPos .25/.5/.75/.98 with
+    // nPeriod = 180 ms / 500 ms. The phrase pitch grid is 5 ticks (5.2 ms)
+    // so the first three values land at exact quarter-note positions; .98 is
+    // the nearest final sample before the note end.
+    for (index, expected_cents) in [(24, 5968), (48, 5999), (72, 6038), (94, 6013)] {
+        let actual = input.pitches_cents[index];
+        assert_eq!(
+            actual, expected_cents,
+            "pitch sample {index}: expected rounded C# {expected_cents:?} cents"
+        );
+    }
+}
+
+#[test]
+fn phrase_builder_vibrato_volume_link_matches_openutau_reference() {
+    let cases = [
+        (55.0, [0.58576536_f32, 0.81103224, 1.1006296, 0.963654]),
+        (-55.0, [1.0842347_f32, 0.8589677, 0.5693704, 1.0057905]),
+    ];
+    for (vol_link, expected) in cases {
+        let mut project = mock_song();
+        let part = match &mut project.parts[0] {
+            UPart::Voice(part) => part,
+            UPart::Wave(_) => panic!("expected a voice part"),
+        };
+        let vibrato = &mut part.notes[0].vibrato;
+        vibrato.set_length(100.0);
+        vibrato.set_period(180.0);
+        vibrato.set_depth(37.5);
+        vibrato.set_in(17.5);
+        vibrato.set_out(22.5);
+        vibrato.set_shift(12.5);
+        vibrato.set_drift(-40.0);
+        vibrato.set_vol_link(vol_link);
+
+        let track = &project.tracks[0];
+        let part = voice_part(&project);
+        let phonemes = derive_phonemes(&project, part, &mock_voicebank());
+        let groups = PhraseGrouping::group(&phonemes);
+        let input = PhraseBuilder::new(&project, track, part, None)
+            .build(&groups[0])
+            .expect("build vibrato-volume-linked RenderInput");
+
+        // OpenUtau Core UVibrato.EvaluateVolume vectors at nPos .25/.5/.75/.9791667,
+        // with nPeriod = 180 ms / 500 ms and the selected signed volLink.
+        for (index, expected) in [24, 48, 72, 94].into_iter().zip(expected) {
+            let actual = input.curves.dynamics[index];
+            assert!(
+                (actual - expected).abs() <= 2.0e-5,
+                "volLink={vol_link} sample {index}: expected C# {expected:?}, got Rust {actual:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn phrase_builder_fills_sample_based_for_mapped_phonemes() {
     let project = domain::UProject::create();
     let vb = mock_voicebank();

@@ -32,8 +32,7 @@ fn open_session(path: &Path, what: &str) -> Result<Session, String> {
     if !path.is_file() {
         return Err(format!("{what} model not found: {}", path.display()));
     }
-    let mut builder = Session::builder()
-        .map_err(|e| format!("{what} builder: {e}"))?;
+    let mut builder = Session::builder().map_err(|e| format!("{what} builder: {e}"))?;
     // Android GPU/NPU via the NNAPI EP (CPU fallback per-op — the
     // diffusion models' exotic ops fall back automatically).
     #[cfg(target_os = "android")]
@@ -57,9 +56,12 @@ impl DsDur {
         // The dsdur/ subdir's own dsconfig (modern banks) — also carries
         // the dsdur speaker embed list.
         let sub = model_dir.join("dsdur");
-        let sub_config: Option<DsConfig> =
-            serde_yaml::from_str(&std::fs::read_to_string(sub.join("dsconfig.yaml")).map_err(|_| String::new()).unwrap_or_default())
-                .ok();
+        let sub_config: Option<DsConfig> = serde_yaml::from_str(
+            &std::fs::read_to_string(sub.join("dsconfig.yaml"))
+                .map_err(|_| String::new())
+                .unwrap_or_default(),
+        )
+        .ok();
         let (ling, dur) = match (&config.linguistic, &config.dur) {
             (Some(l), Some(d)) => (model_dir.join(l), model_dir.join(d)),
             _ => match sub_config.as_ref() {
@@ -72,34 +74,42 @@ impl DsDur {
         };
         let linguistic = open_session(&ling, "linguistic")?;
         let duration = open_session(&dur, "duration")?;
-        let dur_inputs: Vec<String> = duration.inputs().iter().map(|i| i.name().to_string()).collect();
+        let dur_inputs: Vec<String> = duration
+            .inputs()
+            .iter()
+            .map(|i| i.name().to_string())
+            .collect();
         // The dsdur's own speaker embed (the dsdur/dsconfig speakers list
         // — "<dir>/<name>.emb" relative to the dsdur dir).
         let spk_embed = match &sub_config {
-            Some(c) => c.speakers.first().map(|spk| {
-                let path = sub.join(format!("{spk}.emb"));
-                let bytes = std::fs::read(&path)
-                    .map_err(|e| format!("dsdur speaker embed {}: {e}", path.display()))?;
-                let hidden = c.hidden_size.max(1) as usize;
-                if bytes.len() < hidden * 4 {
-                    return Err(format!(
-                        "dsdur speaker embed {}: {} bytes, expected {}",
-                        path.display(),
-                        bytes.len(),
-                        hidden * 4
-                    ));
-                }
-                let mut v = Vec::with_capacity(hidden);
-                for i in 0..hidden {
-                    v.push(f32::from_le_bytes([
-                        bytes[i * 4],
-                        bytes[i * 4 + 1],
-                        bytes[i * 4 + 2],
-                        bytes[i * 4 + 3],
-                    ]));
-                }
-                Ok(v)
-            }).transpose()?,
+            Some(c) => c
+                .speakers
+                .first()
+                .map(|spk| {
+                    let path = sub.join(format!("{spk}.emb"));
+                    let bytes = std::fs::read(&path)
+                        .map_err(|e| format!("dsdur speaker embed {}: {e}", path.display()))?;
+                    let hidden = c.hidden_size.max(1) as usize;
+                    if bytes.len() < hidden * 4 {
+                        return Err(format!(
+                            "dsdur speaker embed {}: {} bytes, expected {}",
+                            path.display(),
+                            bytes.len(),
+                            hidden * 4
+                        ));
+                    }
+                    let mut v = Vec::with_capacity(hidden);
+                    for i in 0..hidden {
+                        v.push(f32::from_le_bytes([
+                            bytes[i * 4],
+                            bytes[i * 4 + 1],
+                            bytes[i * 4 + 2],
+                            bytes[i * 4 + 3],
+                        ]));
+                    }
+                    Ok(v)
+                })
+                .transpose()?,
             None => None,
         };
         Ok(Some(DsDur {
@@ -145,7 +155,8 @@ impl DsDur {
         // start a NEW note group; consonants join the CURRENT group (the
         // C# appends each word's onset to the PREVIOUS note's group).
         // Token 0 (SP) forms the leading group.
-        let mut tok_to_sym: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+        let mut tok_to_sym: std::collections::HashMap<i64, String> =
+            std::collections::HashMap::new();
         for (k, v) in table {
             tok_to_sym.entry(*v).or_insert_with(|| k.clone());
         }
@@ -183,7 +194,7 @@ impl DsDur {
         // positions (framesBetweenTickPos — the SP group sits at tick -1).
         let word_div: Vec<i64> = group_counts.iter().map(|&c| c as i64).collect();
         let frames_at = |ms_v: f64| (ms_v / frame_ms) as i64; // C# (int) — truncation, not floor
-        // The phrase end (the C# endTick): the last phoneme's end.
+                                                              // The phrase end (the C# endTick): the last phoneme's end.
         let phrase_end_ms = input
             .phonemes
             .last()
@@ -215,21 +226,14 @@ impl DsDur {
         if wd.is_empty() {
             wd.push(1);
         }
-        let tokens_val = ort::value::Tensor::from_array((
-            [1usize, n],
-            tokens.to_vec().into_boxed_slice(),
-        ))
-        .map_err(|e| format!("tokens tensor: {e}"))?;
-        let div_val = ort::value::Tensor::from_array((
-            [1usize, w],
-            word_div.clone().into_boxed_slice(),
-        ))
-        .map_err(|e| format!("word_div tensor: {e}"))?;
-        let dur_val = ort::value::Tensor::from_array((
-            [1usize, w],
-            wd.into_boxed_slice(),
-        ))
-        .map_err(|e| format!("word_dur tensor: {e}"))?;
+        let tokens_val =
+            ort::value::Tensor::from_array(([1usize, n], tokens.to_vec().into_boxed_slice()))
+                .map_err(|e| format!("tokens tensor: {e}"))?;
+        let div_val =
+            ort::value::Tensor::from_array(([1usize, w], word_div.clone().into_boxed_slice()))
+                .map_err(|e| format!("word_div tensor: {e}"))?;
+        let dur_val = ort::value::Tensor::from_array(([1usize, w], wd.into_boxed_slice()))
+            .map_err(|e| format!("word_dur tensor: {e}"))?;
         let mut ling = self
             .linguistic
             .lock()
@@ -274,12 +278,14 @@ impl DsDur {
 
         // --- dur: encoder_out, x_masks, ph_midi (+ spk_embed) → frames ---
         let has_dur_spk = self.dur_inputs.iter().any(|n| n == "spk_embed");
-        let mut dur_inputs_vec: Vec<(std::borrow::Cow<'static, str>, ort::session::SessionInputValue)> =
-            vec![
-                ("encoder_out".into(), enc_val.into()),
-                ("x_masks".into(), masks_val.into()),
-                ("ph_midi".into(), midi_val.into()),
-            ];
+        let mut dur_inputs_vec: Vec<(
+            std::borrow::Cow<'static, str>,
+            ort::session::SessionInputValue,
+        )> = vec![
+            ("encoder_out".into(), enc_val.into()),
+            ("x_masks".into(), masks_val.into()),
+            ("ph_midi".into(), midi_val.into()),
+        ];
         if has_dur_spk {
             let embed = self.spk_embed.as_ref().ok_or_else(|| {
                 "duration model wants spk_embed but the bank has no dsdur speaker embed".to_string()
@@ -289,11 +295,9 @@ impl DsDur {
             for _ in 0..n {
                 spk.extend_from_slice(embed);
             }
-            let v = ort::value::Tensor::from_array((
-                [1usize, n, embed.len()],
-                spk.into_boxed_slice(),
-            ))
-            .map_err(|e| format!("dsdur spk_embed tensor: {e}"))?;
+            let v =
+                ort::value::Tensor::from_array(([1usize, n, embed.len()], spk.into_boxed_slice()))
+                    .map_err(|e| format!("dsdur spk_embed tensor: {e}"))?;
             dur_inputs_vec.push(("spk_embed".into(), v.into()));
         }
         let mut dur_s = self
@@ -370,8 +374,9 @@ impl DsDur {
         // from the PHRASE START — its duration includes the leading
         // (preutter): the C# s@-103ms (start) for a 92.9ms leading + the
         // predicted s frame.
-        let first_group_start =
-            align_points[0].1 - input.phrase.leading_ms - first_group.iter().sum::<f64>() * frame_ms;
+        let first_group_start = align_points[0].1
+            - input.phrase.leading_ms
+            - first_group.iter().sum::<f64>() * frame_ms;
         positions.extend(stretch(&first_group, frame_ms, align_points[0].1));
         for pair in align_points.windows(2) {
             let (curr, next) = (pair[0], pair[1]);
@@ -382,7 +387,11 @@ impl DsDur {
                 .copied()
                 .collect();
             let sum: f64 = group.iter().sum();
-            let ratio = if sum > 0.0 { (next.1 - curr.1) / sum } else { frame_ms };
+            let ratio = if sum > 0.0 {
+                (next.1 - curr.1) / sum
+            } else {
+                frame_ms
+            };
             positions.extend(stretch(&group, ratio, next.1));
         }
         // Convert the positions to per-phoneme durations (ms). The

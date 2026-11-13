@@ -73,14 +73,15 @@ fn main() -> std::process::ExitCode {
 
 fn default_so() -> PathBuf {
     // tools/world-oracle → native/
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../build/build-linux/libworldline.so")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../build/build-linux/libworldline.so")
 }
 
 fn run(mode: &str, wav: &Path, so_path: &Path, json: bool, extra: &str) -> Result<(), String> {
     if mode == "bench" {
         if extra.is_empty() {
-            return Err("bench mode needs: world-oracle bench <project.ustx> <voicebank-dir>".into());
+            return Err(
+                "bench mode needs: world-oracle bench <project.ustx> <voicebank-dir>".into(),
+            );
         }
         return run_bench(wav, Path::new(extra));
     }
@@ -97,7 +98,9 @@ fn run(mode: &str, wav: &Path, so_path: &Path, json: bool, extra: &str) -> Resul
     }
     if mode == "phrase" {
         if extra.is_empty() {
-            return Err("phrase mode needs: world-oracle phrase <project.ustx> <voicebank-dir>".into());
+            return Err(
+                "phrase mode needs: world-oracle phrase <project.ustx> <voicebank-dir>".into(),
+            );
         }
         return run_phrase(wav, Path::new(extra), so_path, json);
     }
@@ -118,7 +121,10 @@ fn run(mode: &str, wav: &Path, so_path: &Path, json: bool, extra: &str) -> Resul
         data.channels,
         mono.len() as f64 * 1000.0 / f64::from(SAMPLE_RATE)
     );
-    println!("oracle: {} (fft={FFT_SIZE} hop={HOP_SIZE} fs={SAMPLE_RATE})", so_path.display());
+    println!(
+        "oracle: {} (fft={FFT_SIZE} hop={HOP_SIZE} fs={SAMPLE_RATE})",
+        so_path.display()
+    );
 
     let frame_ms = f64::from(HOP_SIZE) * 1000.0 / f64::from(SAMPLE_RATE);
     let f0 = f0_for(&mono, wav, frame_ms);
@@ -145,8 +151,9 @@ fn run(mode: &str, wav: &Path, so_path: &Path, json: bool, extra: &str) -> Resul
         min_f0_hz: f64::from(config.f0_floor),
         max_f0_hz: 1100.0,
     };
-    let features = world_rs::analysis::analyze_world_audio_with_f0(&mono, rs_config, Some(&f0), &())
-        .map_err(|e| format!("world-rs analysis: {e:?}"))?;
+    let features =
+        world_rs::analysis::analyze_world_audio_with_f0(&mono, rs_config, Some(&f0), &())
+            .map_err(|e| format!("world-rs analysis: {e:?}"))?;
 
     let sp_stats = log_spectrum_stats(&sp_so, &features.spectral, features.bin_count);
     let ap_stats = ratio_stats(&ap_so, &features.aperiodicity, features.bin_count);
@@ -189,7 +196,16 @@ fn run(mode: &str, wav: &Path, so_path: &Path, json: bool, extra: &str) -> Resul
 
     let y_len = 1 + ((frames as f64 - 1.0) * frame_ms / 1000.0 * f64::from(SAMPLE_RATE)) as usize;
 
-    let so_out = so_synthesis(&analysis, &f0[..frames], &sp_so, &ap_so, sp_size, frame_ms, &neutral, y_len);
+    let so_out = so_synthesis(
+        &analysis,
+        &f0[..frames],
+        &sp_so,
+        &ap_so,
+        sp_size,
+        frame_ms,
+        &neutral,
+        y_len,
+    );
     println!();
     println!("== stage B: synthesis (identical so-derived features) ==");
     println!("  so output: {} samples", so_out.len());
@@ -199,7 +215,8 @@ fn run(mode: &str, wav: &Path, so_path: &Path, json: bool, extra: &str) -> Resul
         .map_err(|e| format!("features: {e:?}"))?;
     f_so.f0.copy_from_slice(&f0[..frames]);
     f_so.spectral.copy_from_slice(&sp_so[..frames * sp_size]);
-    f_so.aperiodicity.copy_from_slice(&ap_so[..frames * sp_size]);
+    f_so.aperiodicity
+        .copy_from_slice(&ap_so[..frames * sp_size]);
     let rs_from_so = rs_synthesis(&f_so, frame_ms, y_len)?;
     println!("  rs output: {} samples", rs_from_so.len());
     print_pcm_stats("  so-features: so vs rs", &so_out, &rs_from_so);
@@ -219,7 +236,11 @@ fn run(mode: &str, wav: &Path, so_path: &Path, json: bool, extra: &str) -> Resul
     print_pcm_stats("  rs-features: so vs rs", &so_from_rs, &rs_from_rs);
     print_pcm_stats("  same-features so vs rs-features so", &so_out, &so_from_rs);
     print_pcm_stats("  same-features rs vs rs-features rs", &so_out, &rs_from_rs);
-    print_pcm_stats("  end-to-end: so(so feat) vs rs(rs feat)", &so_out, &rs_from_rs);
+    print_pcm_stats(
+        "  end-to-end: so(so feat) vs rs(rs feat)",
+        &so_out,
+        &rs_from_rs,
+    );
 
     if json {
         let a = pcm_stats(&so_out, &rs_from_so);
@@ -240,10 +261,6 @@ fn run(mode: &str, wav: &Path, so_path: &Path, json: bool, extra: &str) -> Resul
     }
     Ok(())
 }
-
-
-
-
 
 /// Time the full render pipeline (chunking + mixing, exactly like
 /// `synth-cli render` / the server) for the pure-Rust engine.
@@ -268,13 +285,8 @@ fn run_bench(project_path: &Path, voicebank_path: &Path) -> Result<(), String> {
             if v.track_no != 0 {
                 continue;
             }
-            let phrases = synth_cli::pipeline::build_phrase_inputs(
-                &project,
-                track,
-                v,
-                &voicebank,
-                kind,
-            )?;
+            let phrases =
+                synth_cli::pipeline::build_phrase_inputs(&project, track, v, &voicebank, kind)?;
             for phrase in &phrases {
                 chunks += synth_cli::chunking::plan_chunks(
                     &phrase.input.phonemes,
@@ -332,7 +344,11 @@ fn run_bench(project_path: &Path, voicebank_path: &Path) -> Result<(), String> {
         audio_s,
         best,
         audio_s / (best / 1000.0),
-        times.iter().map(|t| format!("{t:.0}")).collect::<Vec<_>>().join("/")
+        times
+            .iter()
+            .map(|t| format!("{t:.0}"))
+            .collect::<Vec<_>>()
+            .join("/")
     );
     Ok(())
 }
@@ -345,7 +361,11 @@ fn run_bench(project_path: &Path, voicebank_path: &Path) -> Result<(), String> {
 /// differently on the two engines.
 fn run_pyin(wav: &Path, so_path: &Path, json: bool) -> Result<(), String> {
     let data = voicebank::read_wav(wav).map_err(|e| format!("read {}: {e}", wav.display()))?;
-    let mono: Vec<f32> = if data.channels > 1 { data.to_mono() } else { data.samples.clone() };
+    let mono: Vec<f32> = if data.channels > 1 {
+        data.to_mono()
+    } else {
+        data.samples.clone()
+    };
     let mono64: Vec<f64> = mono.iter().map(|s| f64::from(*s)).collect();
     let fs = data.sample_rate as i32;
     let frame_ms = 512.0 * 1000.0 / 44100.0;
@@ -363,7 +383,11 @@ fn run_pyin(wav: &Path, so_path: &Path, json: bool) -> Result<(), String> {
     // `PyinEstimator::Estimate` drops the FIRST raw frame (`copy(raw + 1,
     // raw + f0_len)`), so the `.so` curve is `raw[1..]`. Comparing `so[i]`
     // against `raw[i]` shifts everything by one frame.
-    let rust_f0: Vec<f64> = if raw.len() > 1 { raw[1..].to_vec() } else { Vec::new() };
+    let rust_f0: Vec<f64> = if raw.len() > 1 {
+        raw[1..].to_vec()
+    } else {
+        Vec::new()
+    };
 
     println!("input: {} ({} samples, {fs} Hz)", wav.display(), mono.len());
     println!(
@@ -386,8 +410,12 @@ fn run_pyin(wav: &Path, so_path: &Path, json: bool) -> Result<(), String> {
     for i in 0..n {
         let a = so_f0[i];
         let b = rust_f0[i];
-        if a > 0.0 { voiced_so += 1; }
-        if b > 0.0 { voiced_rs += 1; }
+        if a > 0.0 {
+            voiced_so += 1;
+        }
+        if b > 0.0 {
+            voiced_rs += 1;
+        }
         if (a > 0.0) == (b > 0.0) {
             agree += 1;
         }
@@ -398,7 +426,11 @@ fn run_pyin(wav: &Path, so_path: &Path, json: bool) -> Result<(), String> {
             max_cents = max_cents.max(cents);
         }
     }
-    let mean_cents = if cents_n > 0 { cents_sum / cents_n as f64 } else { 0.0 };
+    let mean_cents = if cents_n > 0 {
+        cents_sum / cents_n as f64
+    } else {
+        0.0
+    };
     println!(
         "  voiced so={voiced_so} rust={voiced_rs}  voicing agreement={:.1}%  mean |cents|={mean_cents:.2}  max={max_cents:.2}",
         100.0 * agree as f64 / n as f64
@@ -493,7 +525,13 @@ fn run_classic(
         let request = &request;
 
         // ---- C++ Resample ----
-        let so_out = call_so_resample(&so_resample, request, &mono_f64, wav.sample_rate, frq.as_deref());
+        let so_out = call_so_resample(
+            &so_resample,
+            request,
+            &mono_f64,
+            wav.sample_rate,
+            frq.as_deref(),
+        );
 
         // ---- Rust resampler ----
         let rs_out = worldline_rs::resampler::resample(
@@ -641,11 +679,7 @@ fn run_phrase(
         &voicebank,
         synth_cli::pipeline::PhonemizerKind::Universal,
     )?;
-    println!(
-        "phrase: {} | {} phrase(s)",
-        project.name,
-        phrases.len()
-    );
+    println!("phrase: {} | {} phrase(s)", project.name, phrases.len());
 
     let so_renderer = worldline_plugin::WorldlineRenderer::open(so_path)
         .map_err(|e| format!("open {}: {e}", so_path.display()))?;
@@ -660,8 +694,9 @@ fn run_phrase(
     let mut all_so: Vec<f32> = Vec::new();
     let mut all_rs: Vec<f32> = Vec::new();
     for (index, phrase) in phrases.iter().enumerate() {
-        let so_out = worldline_plugin::WorldlineRenderer::render_phrase(&so_renderer, &phrase.input)
-            .map_err(|e| format!("so render: {e}"))?;
+        let so_out =
+            worldline_plugin::WorldlineRenderer::render_phrase(&so_renderer, &phrase.input)
+                .map_err(|e| format!("so render: {e}"))?;
         let rs_out = worldline_rs::render_phrase(&phrase.input, curve_frame_ms)?;
         println!(
             "  phrase {index} @{:.0} ms: so={} samples ({:.1} ms)  rs={} samples ({:.1} ms)  diff={} samples",
@@ -779,7 +814,8 @@ fn rs_synthesis(
         output_length: Some(y_len),
         ..Default::default()
     };
-    world_rs::synthesis::synthesize(features, config, &()).map_err(|e| format!("world-rs synth: {e:?}"))
+    world_rs::synthesis::synthesize(features, config, &())
+        .map_err(|e| format!("world-rs synth: {e:?}"))
 }
 
 /// F0 for the analysis: the voicebank's own `.frq` when present (the
@@ -806,16 +842,19 @@ fn f0_for(mono: &[f32], wav: &Path, frame_ms: f64) -> Vec<f64> {
                             count += 1;
                         }
                     }
-                    *value = if count > 0 { sum / f64::from(count) } else { 0.0 };
+                    *value = if count > 0 {
+                        sum / f64::from(count)
+                    } else {
+                        0.0
+                    };
                 }
             }
             return out;
         }
     }
     // No usable .frq → DIO through the reference .so (method 0).
-    let so = std::env::var("WORLDLINE_SO").unwrap_or_else(|_| {
-        default_so().to_string_lossy().into_owned()
-    });
+    let so = std::env::var("WORLDLINE_SO")
+        .unwrap_or_else(|_| default_so().to_string_lossy().into_owned());
     match worldline_sys::Analysis::open(&so) {
         Ok(a) => a.f0(mono, SAMPLE_RATE, frame_ms, 0),
         Err(_) => vec![0.0; frames],
@@ -879,8 +918,16 @@ fn log_spectrum_stats(so: &[f64], rs: &[f64], bins: usize) -> LogStats {
         db_max,
         mean_so_db: mean_so,
         mean_rs_db: mean_rs,
-        lin_rel_mae: if ref_sum > 0.0 { abs_sum / ref_sum } else { 0.0 },
-        db_mae_loud: if loud_kept > 0 { db_sum_loud / loud_kept as f64 } else { 0.0 },
+        lin_rel_mae: if ref_sum > 0.0 {
+            abs_sum / ref_sum
+        } else {
+            0.0
+        },
+        db_mae_loud: if loud_kept > 0 {
+            db_sum_loud / loud_kept as f64
+        } else {
+            0.0
+        },
         db_max_loud,
         loud_kept,
         loud_total: n,
@@ -996,7 +1043,11 @@ fn pcm_stats(so: &[f32], rs: &[f32]) -> PcmStats {
         duration_diff_ms: (rs.len() as f64 - so.len() as f64) * 1000.0 / f64::from(SAMPLE_RATE),
         max_abs_diff,
         rms_diff,
-        rms_diff_dbfs: if rms_diff > 0.0 { 20.0 * rms_diff.log10() } else { f64::NEG_INFINITY },
+        rms_diff_dbfs: if rms_diff > 0.0 {
+            20.0 * rms_diff.log10()
+        } else {
+            f64::NEG_INFINITY
+        },
     }
 }
 

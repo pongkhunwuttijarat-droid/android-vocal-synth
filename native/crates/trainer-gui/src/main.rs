@@ -5,10 +5,10 @@
 
 #![recursion_limit = "256"]
 
-use std::sync::{Arc, RwLock, atomic::AtomicBool};
+use std::sync::{atomic::AtomicBool, Arc, RwLock};
 
 use axum::Router;
-use trainer_gui::server::{AppState, Status, router};
+use trainer_gui::server::{router, AppState, Status};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -57,10 +57,12 @@ fn main() {
     rt.block_on(async move {
         let app: Router = router(state);
         let addr = format!("{host}:{port}");
-        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap_or_else(|e| {
-            eprintln!("bind {addr}: {e}");
-            std::process::exit(1);
-        });
+        let listener = tokio::net::TcpListener::bind(&addr)
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("bind {addr}: {e}");
+                std::process::exit(1);
+            });
         println!("trainer-gui on http://{addr}  (GET / = GUI, /api/status = JSON)");
         axum::serve(listener, app).await.expect("server error");
     });

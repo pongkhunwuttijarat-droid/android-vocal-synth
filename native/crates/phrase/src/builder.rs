@@ -21,8 +21,10 @@
 //! * neural inputs are left `None` — tokenization is renderer-specific and
 //!   out of scope here.
 
-use domain::{UNote, UPhoneme, UProject, UTrack, UVoicePart, CLR, DYN, PITD, SHFT};
-use feed::render_input::{Curves, NamedCurve, RenderInput, RenderNote, RenderPhoneme, SampleBased};
+use domain::{UNote, UPhoneme, UProject, UTrack, UVoicePart, CLR, DYN, MOD, PITD, SHFT, VEL, VOL};
+use feed::render_input::{
+    Curves, NamedCurve, RenderInput, RenderNote, RenderPhoneme, SampleBased, TempoMapPoint,
+};
 use feed::{decibel_to_linear, sample_curve, EnvelopeBuilder, FeedError, OtoMapper, PitchComputer};
 use voicebank::Voicebank;
 
@@ -95,9 +97,10 @@ impl<'a> PhraseBuilder<'a> {
             return Err(PhraseError::Empty);
         }
 
-        // ValidateOverlap pass on a working copy: caps preutter/overlap
-        // against the previous phoneme and fills the tail fields, exactly
-        // like the reference does before building envelopes.
+        // TimingEngine has already applied per-phoneme VEL and adjacency
+        // caps before phrase grouping. Re-run only the envelope adjacency
+        // pass on this phrase-local copy to derive tailIntrude/tailOverlap;
+        // scaling VEL here would apply the consonant stretch twice.
         let mut phonemes = group.phonemes.clone();
         EnvelopeBuilder::compute_adjacency(&mut phonemes);
 
@@ -147,6 +150,7 @@ impl<'a> PhraseBuilder<'a> {
             pitd,
         );
         let pitches = pitch_computer.compute();
+        let pitches_cents_f32 = pitches.clone();
         let pitches_cents: Vec<i32> = pitches.iter().map(|&p| p.round() as i32).collect();
         let pitch_start = pitch_computer.pitch_start();
         let length = pitch_computer.length();
@@ -154,7 +158,8 @@ impl<'a> PhraseBuilder<'a> {
         // Curves: every Curve-type expression of the project, sampled on
         // the pitch grid. Missing curves sample to the descriptor default
         // (the reference creates an empty `UCurve(descriptor)`).
-        let curves = self.sample_curves(pitch_start, length);
+        let mut curves = self.sample_curves(pitch_start, length);
+        self.apply_vibrato_volume_link(&mut curves.dynamics, phrase_notes, pitch_start, length);
 
         // Notes (project order, as the reference selects them).
         let mut render_notes = Vec::with_capacity(phrase_notes.len());
@@ -187,6 +192,18 @@ impl<'a> PhraseBuilder<'a> {
                 .get_expression(note, self.project, self.track, SHFT)
                 .map(|(v, _)| v as i32)
                 .unwrap_or(0);
+            let consonant_velocity = ph
+                .get_expression(note, self.project, self.track, VEL)
+                .map(|(v, _)| v)
+                .unwrap_or(100.0);
+            let volume = ph
+                .get_expression(note, self.project, self.track, VOL)
+                .map(|(v, _)| v)
+                .unwrap_or(100.0);
+            let modulation = ph
+                .get_expression(note, self.project, self.track, MOD)
+                .map(|(v, _)| v)
+                .unwrap_or(0.0);
             render_phonemes.push(RenderPhoneme {
                 phoneme: ph.phoneme.clone(),
                 position_ms: ph.position_ms,
@@ -194,6 +211,14 @@ impl<'a> PhraseBuilder<'a> {
                 leading_ms: ph.leading_ms,
                 overlap_ms: ph.overlap_ms,
                 tone: ph.tone,
+                adjusted_tempo: if ph.duration_ms > 0.0 {
+                    ph.duration as f64 * 125.0 / ph.duration_ms
+                } else {
+                    120.0
+                },
+                consonant_velocity,
+                volume,
+                modulation,
                 tone_shift,
                 index: ph.index,
                 parent_note: parent - note_start,
@@ -208,12 +233,16 @@ impl<'a> PhraseBuilder<'a> {
                 duration_ms: group.duration_ms,
                 leading_ms: first.leading_ms,
                 leading_ticks,
+                tempo_map: self.tempo_map(),
                 time_axis_hint: self.time_axis_hint(),
             },
             notes: render_notes,
             phonemes: render_phonemes,
             pitches_cents,
+            pitches_cents_f32,
             curves,
+            curve_grid_start_tick: self.part.position + pitch_start,
+            render_origin_ms: group.position_ms - first.leading_ms,
             sample_based,
             neural: None,
         })
@@ -275,6 +304,68 @@ impl<'a> PhraseBuilder<'a> {
         }
         curves.extra = extra;
         curves
+    }
+
+    /// Apply OpenUtau's `UVibrato.EvaluateVolume` to sampled DYN, after the
+    /// project curve is sampled and before renderer input is constructed.
+    fn apply_vibrato_volume_link(
+        &self,
+        dynamics: &mut Vec<f32>,
+        notes: &[domain::UNote],
+        pitch_start: i32,
+        length: usize,
+    ) {
+        if dynamics.is_empty() {
+            dynamics.resize(length, 1.0);
+        }
+        for note in notes {
+            let vibrato = &note.vibrato;
+            if vibrato.length <= 0.0 || vibrato.vol_link == 0.0 || note.duration <= 0 {
+                continue;
+            }
+            let start = (((note.position - pitch_start) as f32
+                / feed::pitch::PITCH_INTERVAL as f32)
+                .ceil()
+                .max(0.0)) as usize;
+            let end = (((note.end() - pitch_start) / feed::pitch::PITCH_INTERVAL).max(0) as usize)
+                .min(length);
+            let duration_ms = self.project.time_axis.ms_between_ticks(
+                (self.part.position + note.position) as f64,
+                (self.part.position + note.end()) as f64,
+            ) as f32;
+            if duration_ms <= 0.0 {
+                continue;
+            }
+            let n_period = vibrato.period / duration_ms;
+            let n_start = 1.0 - vibrato.length / 100.0;
+            let n_in = vibrato.length / 100.0 * vibrato.r#in / 100.0;
+            let n_in_pos = n_start + n_in;
+            let n_out = vibrato.length / 100.0 * vibrato.out / 100.0;
+            let n_out_pos = 1.0 - n_out;
+            let mut shift = vibrato.shift;
+            let vol_link = if vibrato.vol_link < 0.0 {
+                shift = (shift + 50.0) % 100.0;
+                -vibrato.vol_link
+            } else {
+                vibrato.vol_link
+            };
+            for (i, gain) in dynamics.iter_mut().enumerate().take(end).skip(start) {
+                let n_pos = (pitch_start + i as i32 * feed::pitch::PITCH_INTERVAL - note.position)
+                    as f32
+                    / note.duration as f32;
+                let t = (n_pos - n_start) / n_period + shift / 100.0;
+                let mut reduction =
+                    (-(2.0 * std::f32::consts::PI * t).sin() / 2.0 + 0.3) * vol_link / 100.0;
+                if n_pos < n_start {
+                    reduction = 0.0;
+                } else if n_pos < n_in_pos && n_in > 0.0 {
+                    reduction *= (n_pos - n_start) / n_in;
+                } else if n_pos > n_out_pos && n_out > 0.0 {
+                    reduction *= (1.0 - n_pos) / n_out;
+                }
+                *gain *= 1.0 - reduction;
+            }
+        }
     }
 
     /// Sample-based section: oto entries (mapped via [`feed::OtoMapper`]),
@@ -344,5 +435,17 @@ impl<'a> PhraseBuilder<'a> {
             "{}bpm {}/{}",
             tempo.bpm, sig.beat_per_bar, sig.beat_unit
         ))
+    }
+
+    fn tempo_map(&self) -> Vec<TempoMapPoint> {
+        self.project
+            .tempos
+            .iter()
+            .map(|tempo| TempoMapPoint {
+                tick_pos: tempo.position,
+                ms_pos: self.project.time_axis.tick_to_ms(tempo.position as f64),
+                bpm: tempo.bpm,
+            })
+            .collect()
     }
 }

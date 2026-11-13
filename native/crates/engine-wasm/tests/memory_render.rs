@@ -82,7 +82,11 @@ fn memory_source_render_matches_disk_render() {
     let mut engine = Engine::new();
     install_teto(&mut engine, &library);
     assert!(engine.alias_count() > 100, "otos: {}", engine.alias_count());
-    assert!(engine.sample_count() > 100, "samples: {}", engine.sample_count());
+    assert!(
+        engine.sample_count() > 100,
+        "samples: {}",
+        engine.sample_count()
+    );
 
     let project_yaml = String::from_utf8(read(&demo_song())).expect("utf8 project");
     let mem_pcm = engine

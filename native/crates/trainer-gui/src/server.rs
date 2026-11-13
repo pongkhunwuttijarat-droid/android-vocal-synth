@@ -104,7 +104,11 @@ impl AppState {
         // Durable mirror next to the train set.
         if let Some(path) = path {
             use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
                 let _ = writeln!(f, "{entry}");
             }
         }
@@ -145,15 +149,33 @@ pub struct StartParams {
     #[serde(default)]
     pub gpu_cap: Option<usize>,
 }
-fn d_epochs() -> usize { 8 }
-fn d_expert_epochs() -> usize { 10 }
-fn d_batch() -> usize { 1024 }
-fn d_lr() -> f64 { 1e-3 }
-fn d_eval() -> f64 { 0.1 }
-fn d_backend() -> String { "wgpu".into() }
-fn d_hidden() -> usize { moe_train::baseline::DEFAULT_HIDDEN }
-fn d_depth() -> usize { moe_train::baseline::DEFAULT_DEPTH }
-fn d_mode() -> String { "general".into() }
+fn d_epochs() -> usize {
+    8
+}
+fn d_expert_epochs() -> usize {
+    10
+}
+fn d_batch() -> usize {
+    1024
+}
+fn d_lr() -> f64 {
+    1e-3
+}
+fn d_eval() -> f64 {
+    0.1
+}
+fn d_backend() -> String {
+    "wgpu".into()
+}
+fn d_hidden() -> usize {
+    moe_train::baseline::DEFAULT_HIDDEN
+}
+fn d_depth() -> usize {
+    moe_train::baseline::DEFAULT_DEPTH
+}
+fn d_mode() -> String {
+    "general".into()
+}
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -197,7 +219,13 @@ pub struct ProcInfo {
 }
 
 /// Binary-name markers for "our" processes.
-const AI_PROC_MARKERS: [&str; 5] = ["trainer-gui", "moe-train", "train-prep", "moe-train-gui", "synth-cli"];
+const AI_PROC_MARKERS: [&str; 5] = [
+    "trainer-gui",
+    "moe-train",
+    "train-prep",
+    "moe-train-gui",
+    "synth-cli",
+];
 
 /// Scan /proc for our own processes: (pid → jiffies) delta gives CPU%.
 fn scan_ai_processes(last: &mut std::collections::HashMap<i32, u64>) -> Vec<ProcInfo> {
@@ -218,7 +246,9 @@ fn scan_ai_processes(last: &mut std::collections::HashMap<i32, u64>) -> Vec<Proc
             Err(_) => continue,
         };
         // comm may contain ')' — split after the last ')'.
-        let Some(close) = stat.rfind(')') else { continue };
+        let Some(close) = stat.rfind(')') else {
+            continue;
+        };
         let comm = stat[..close].rsplit('(').next().unwrap_or("?").to_string();
         let rest: Vec<&str> = stat[close + 1..].split_whitespace().collect();
         if rest.len() < 12 {
@@ -242,7 +272,11 @@ fn scan_ai_processes(last: &mut std::collections::HashMap<i32, u64>) -> Vec<Proc
         let cmd = cmd.trim().chars().take(80).collect::<String>();
         let rss_mb = std::fs::read_to_string(format!("/proc/{pid}/statm"))
             .ok()
-            .and_then(|s| s.split_whitespace().nth(1).and_then(|v| v.parse::<f64>().ok()))
+            .and_then(|s| {
+                s.split_whitespace()
+                    .nth(1)
+                    .and_then(|v| v.parse::<f64>().ok())
+            })
             .map(|pages| pages * page_kb / 1024.0)
             .unwrap_or(0.0);
 
@@ -376,8 +410,12 @@ pub struct PhraseInfo {
 
 /// GET /api/phrases — the phrase index → aliases lookup table so the
 /// GUI (and agents) can pick a phrase instead of guessing indices.
-async fn api_phrases(State(state): State<AppState>) -> Result<Json<Vec<PhraseInfo>>, (StatusCode, String)> {
-    let set = state.get_train_set().map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+async fn api_phrases(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<PhraseInfo>>, (StatusCode, String)> {
+    let set = state
+        .get_train_set()
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let mut out = Vec::with_capacity(set.phrases.len());
     let mut frames_by_phrase: Vec<usize> = vec![0; set.phrases.len()];
     for s in &set.samples {
@@ -411,10 +449,7 @@ async fn api_start(
     {
         let st = state.status.read().unwrap();
         if st.state == "running" || st.state == "loading" {
-            return Err((
-                StatusCode::CONFLICT,
-                format!("already {}", st.state),
-            ));
+            return Err((StatusCode::CONFLICT, format!("already {}", st.state)));
         }
     }
     // Reset + mark loading, then spawn the blocking training thread.
@@ -456,7 +491,9 @@ pub struct RenderParams {
     #[serde(default)]
     pub gpu_cap: Option<usize>,
 }
-fn d_gain() -> f32 { 1.0 }
+fn d_gain() -> f32 {
+    1.0
+}
 
 /// Render one phrase with the trained MoE and return the WAV bytes
 /// (audio/wav) — the GUI plays it inline; an agent can curl it too.
@@ -474,11 +511,17 @@ async fn api_render(
         return Err((StatusCode::CONFLICT, "training in progress".into()));
     }
     drop(st);
-    let set = state.get_train_set().map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let set = state
+        .get_train_set()
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     if params.phrase_idx >= set.phrases.len() {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("phrase {0} out of range (0..{1})", params.phrase_idx, set.phrases.len()),
+            format!(
+                "phrase {0} out of range (0..{1})",
+                params.phrase_idx,
+                set.phrases.len()
+            ),
         ));
     }
     let prefix = state.model_path();
@@ -488,31 +531,48 @@ async fn api_render(
             let device = burn::backend::wgpu::WgpuDevice::IntegratedGpu(0);
             let moe = load_moe::<Backend>(&set, &prefix, params.hidden, params.depth, &device)
                 .map_err(|e| (StatusCode::NOT_FOUND, e))?;
-            render_phrase_wav::<Backend>(&moe, &set, params.phrase_idx, &state.vocoder_path(), params.gain, &device)
+            render_phrase_wav::<Backend>(
+                &moe,
+                &set,
+                params.phrase_idx,
+                &state.vocoder_path(),
+                params.gain,
+                &device,
+            )
         }
         "wgpu" => {
             type Backend = burn::backend::Wgpu;
             let device = burn::backend::wgpu::WgpuDevice::IntegratedGpu(0);
             let moe = load_moe::<Backend>(&set, &prefix, params.hidden, params.depth, &device)
                 .map_err(|e| (StatusCode::NOT_FOUND, e))?;
-            render_phrase_wav::<Backend>(&moe, &set, params.phrase_idx, &state.vocoder_path(), params.gain, &device)
+            render_phrase_wav::<Backend>(
+                &moe,
+                &set,
+                params.phrase_idx,
+                &state.vocoder_path(),
+                params.gain,
+                &device,
+            )
         }
         "ndarray" => {
             type Backend = burn::backend::NdArray;
             let device = Default::default();
             let moe = load_moe::<Backend>(&set, &prefix, params.hidden, params.depth, &device)
                 .map_err(|e| (StatusCode::NOT_FOUND, e))?;
-            render_phrase_wav::<Backend>(&moe, &set, params.phrase_idx, &state.vocoder_path(), params.gain, &device)
+            render_phrase_wav::<Backend>(
+                &moe,
+                &set,
+                params.phrase_idx,
+                &state.vocoder_path(),
+                params.gain,
+                &device,
+            )
         }
         other => return Err((StatusCode::BAD_REQUEST, format!("unknown backend: {other}"))),
     }
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    Ok((
-        [(axum::http::header::CONTENT_TYPE, "audio/wav")],
-        bytes,
-    )
-        .into_response())
+    Ok(([(axum::http::header::CONTENT_TYPE, "audio/wav")], bytes).into_response())
 }
 
 impl AppState {
@@ -574,46 +634,27 @@ fn run_training(state: AppState, params: StartParams) {
         log_state.log(&format!("epoch {epoch}: train={train:.4} val={val:.4}"));
     };
 
-    let result: Result<(f64, f64, bool, Vec<Vec<f64>>), String> =
-        match params.backend.as_str() {
-            "wgpu" => {
-                type Backend = burn::backend::Wgpu;
-                type AB = burn::backend::Autodiff<Backend>;
-                let device = burn::backend::wgpu::WgpuDevice::IntegratedGpu(0);
-                run_training_on::<AB>(
-                    &set,
-                    &params,
-                    &state,
-                    &mut progress,
-                    &device,
-                )
-            }
-            "wgpu-f16" => {
-                type Backend = burn::backend::Wgpu<burn::tensor::f16, i32>;
-                type AB = burn::backend::Autodiff<Backend>;
-                let device = burn::backend::wgpu::WgpuDevice::IntegratedGpu(0);
-                run_training_on::<AB>(
-                    &set,
-                    &params,
-                    &state,
-                    &mut progress,
-                    &device,
-                )
-            }
-            "ndarray" => {
-                type Backend = burn::backend::NdArray;
-                type AB = burn::backend::Autodiff<Backend>;
-                let device = Default::default();
-                run_training_on::<AB>(
-                    &set,
-                    &params,
-                    &state,
-                    &mut progress,
-                    &device,
-                )
-            }
-            other => Err(format!("unknown backend: {other}")),
-        };
+    let result: Result<(f64, f64, bool, Vec<Vec<f64>>), String> = match params.backend.as_str() {
+        "wgpu" => {
+            type Backend = burn::backend::Wgpu;
+            type AB = burn::backend::Autodiff<Backend>;
+            let device = burn::backend::wgpu::WgpuDevice::IntegratedGpu(0);
+            run_training_on::<AB>(&set, &params, &state, &mut progress, &device)
+        }
+        "wgpu-f16" => {
+            type Backend = burn::backend::Wgpu<burn::tensor::f16, i32>;
+            type AB = burn::backend::Autodiff<Backend>;
+            let device = burn::backend::wgpu::WgpuDevice::IntegratedGpu(0);
+            run_training_on::<AB>(&set, &params, &state, &mut progress, &device)
+        }
+        "ndarray" => {
+            type Backend = burn::backend::NdArray;
+            type AB = burn::backend::Autodiff<Backend>;
+            let device = Default::default();
+            run_training_on::<AB>(&set, &params, &state, &mut progress, &device)
+        }
+        other => Err(format!("unknown backend: {other}")),
+    };
 
     let mut st = state.status.write().unwrap();
     st.elapsed_s = started.elapsed().as_secs_f64();
@@ -677,7 +718,12 @@ fn run_training_on<B: burn::tensor::backend::AutodiffBackend>(
         Ok((train, val, stopped, report))
     } else {
         let init = if params.resume {
-            moe_train::baseline::try_load_model::<B>(&state.model_path(), params.hidden, params.depth, device)?
+            moe_train::baseline::try_load_model::<B>(
+                &state.model_path(),
+                params.hidden,
+                params.depth,
+                device,
+            )?
         } else {
             None
         };

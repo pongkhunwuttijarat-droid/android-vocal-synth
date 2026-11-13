@@ -1,0 +1,24 @@
+[package]
+name = "moe-wasm"
+version.workspace = true
+edition.workspace = true
+description = "Run the burn MoE acoustic forward inside wasm32 (browser harness for task-4)"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The real engine code (feature-gated: no ort / no wgpu on wasm).
+moe-train = { path = "../moe-train", default-features = false }
+burn = { version = "0.21", default-features = false, features = ["ndarray", "std"] }
+wasm-bindgen = "0.2"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# rand 0.10 (via burn-ndarray) needs getrandom 0.4's wasm_js backend.
+# Only the crate feature is required - no RUSTFLAGS (see docs/planning/wasm-r2-poc.md).
+getrandom = { version = "0.4", features = ["wasm_js"] }
+js-sys = "0.3"
+
+[[bin]]
+name = "moe-ref"
+path = "src/bin/moe_ref.rs"

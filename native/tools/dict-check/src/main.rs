@@ -1,7 +1,7 @@
 // พิมพ์ phonemes ที่ Machine Love chorus ผลิต — หา mismatch
 use phonemizer::english::EnglishCvvcPhonemizer;
-use phonemizer::lilt_dict::lilt_demo_g2p;
 use phonemizer::phonemizer::Phonemizer;
+use phonemizer::rusted_utau_dict::rusted_utau_demo_g2p;
 use std::collections::BTreeSet;
 use voicebank::load_voicebank;
 
@@ -10,7 +10,7 @@ fn main() {
         "/home/seal/project/android-voice-synth/test/golden/teto-english/library",
     ))
     .expect("load");
-    let g2p = lilt_demo_g2p();
+    let g2p = rusted_utau_demo_g2p();
     let ph = EnglishCvvcPhonemizer::with_g2p(g2p);
 
     let words: Vec<&str> = "so can we wander for a spell and live in parallel i want it to be true to be like you my heart sings a chorus out of tune and i could leave it on a shelf"
@@ -20,33 +20,33 @@ fn main() {
     let mut total = 0;
     for w in &words {
         for tone in [55, 60, 72] {
-        let note = domain::UNote {
-            lyric: w.to_string(),
-            tone,
-            position: 0,
-            duration: 480,
-            phoneme_expressions: Default::default(),
-            phoneme_overrides: Default::default(),
-            phonemizer_override: None,
-            pitch: Default::default(),
-            vibrato: Default::default(),
-            tuning: 0,
-        };
-        let phs = ph.process(&[note], Some(&vb));
-        for p in &phs {
-            total += 1;
-            if vb.lookup(&p.phoneme, tone).is_none() {
-                bad.insert(format!("{}@t{tone}", p.phoneme));
+            let note = domain::UNote {
+                lyric: w.to_string(),
+                tone,
+                position: 0,
+                duration: 480,
+                phoneme_expressions: Default::default(),
+                phoneme_overrides: Default::default(),
+                phonemizer_override: None,
+                pitch: Default::default(),
+                vibrato: Default::default(),
+                tuning: 0,
+            };
+            let phs = ph.process(&[note], Some(&vb));
+            for p in &phs {
+                total += 1;
+                if vb.lookup(&p.phoneme, tone).is_none() {
+                    bad.insert(format!("{}@t{tone}", p.phoneme));
+                }
             }
-        }
-        if phs.is_empty() {
-            println!("{w}: NO PHONEMES");
-        }
-        for p in &phs {
-            if vb.lookup(&p.phoneme, tone).is_none() {
-                println!("  {w}@t{tone}: phoneme '{}' NO ALIAS", p.phoneme);
+            if phs.is_empty() {
+                println!("{w}: NO PHONEMES");
             }
-        }
+            for p in &phs {
+                if vb.lookup(&p.phoneme, tone).is_none() {
+                    println!("  {w}@t{tone}: phoneme '{}' NO ALIAS", p.phoneme);
+                }
+            }
         }
     }
     println!("total phonemes: {total}, unmapped: {bad:?}");

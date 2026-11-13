@@ -110,7 +110,7 @@ mod tests {
         let d = vec![500.0, 500.0];
         let frames = padded_phone_durations(&d, 11.61, 8, 8).unwrap();
         assert_eq!(frames.len(), 4); // head + 2 phones + tail
-        // 8 * 11.61 = 92.88ms -> 92.88/11.61 + 0.5 = 8.5 -> half-even -> 8
+                                     // 8 * 11.61 = 92.88ms -> 92.88/11.61 + 0.5 = 8.5 -> half-even -> 8
         assert_eq!(frames[0], 8);
     }
 

@@ -11,8 +11,10 @@
 //! ```
 
 pub mod chain;
+pub mod openutau;
 
 pub use chain::MixerChain;
+pub use openutau::OpenUtauTrackFx;
 
 #[cfg(feature = "ffi")]
 use std::ffi::{c_char, c_void, CString};
@@ -90,7 +92,12 @@ mod ffi {
                     .get(b"MxFxProcess\0")
                     .map_err(|e| format!("symbol MxFxProcess: {e}"))?;
                 if !samples.is_empty() {
-                    process(self.handle, samples.as_mut_ptr(), samples.len() as i32, pos_ms);
+                    process(
+                        self.handle,
+                        samples.as_mut_ptr(),
+                        samples.len() as i32,
+                        pos_ms,
+                    );
                 }
                 Ok(())
             }
@@ -107,7 +114,6 @@ mod ffi {
             }
         }
     }
-
 }
 
 #[cfg(feature = "ffi")]

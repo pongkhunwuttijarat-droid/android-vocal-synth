@@ -52,7 +52,10 @@ fn main() {
             }
             "--chain-max" => {
                 i += 1;
-                chain_max = args.get(i).and_then(|v| v.parse().ok()).unwrap_or(chain_max);
+                chain_max = args
+                    .get(i)
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(chain_max);
             }
             "--tones" => {
                 i += 1;
@@ -167,17 +170,14 @@ fn run(
             &dump_dir,
             dump_wav,
         )?;
-        let entries: Vec<train_prep::TrainEntry> =
-            pairs.iter().map(|(e, _)| e.clone()).collect();
+        let entries: Vec<train_prep::TrainEntry> = pairs.iter().map(|(e, _)| e.clone()).collect();
         let (passed_entries, stats) = train_prep::filter::apply(&entries);
         eprintln!(
             "[filter] total={} passed={} too_short={} unvoiced={} flat_mel={}",
-            stats.total, stats.passed, stats.too_short, stats.unvoiced,
-            stats.flat_mel
+            stats.total, stats.passed, stats.too_short, stats.unvoiced, stats.flat_mel
         );
         let mut file = std::io::BufWriter::new(
-            std::fs::File::create(out)
-                .map_err(|e| format!("create {}: {e}", out.display()))?,
+            std::fs::File::create(out).map_err(|e| format!("create {}: {e}", out.display()))?,
         );
         let mut k = 0usize;
         for (entry, audio) in pairs.iter() {
@@ -190,21 +190,25 @@ fn run(
                 wavwriter::write_wav_file(&p, &wav)
                     .map_err(|e| format!("write {}: {e}", p.display()))?;
             }
-            let line = serde_json::to_string(entry)
-                .map_err(|e| format!("json: {e}"))?;
+            let line = serde_json::to_string(entry).map_err(|e| format!("json: {e}"))?;
             file.write_all(line.as_bytes())
                 .and_then(|_| file.write_all(b"\n"))
                 .map_err(|e| format!("write: {e}"))?;
             k += 1;
         }
         file.flush().map_err(|e| format!("flush: {e}"))?;
-        train_prep::extract::write_tsbin(
-            &out.with_extension("tsbin"),
-            &passed_entries,
-        )?;
+        train_prep::extract::write_tsbin(&out.with_extension("tsbin"), &passed_entries)?;
         return Ok((passed_entries.len(), stats.total - passed_entries.len(), 0));
     }
-    let specs = phrases_for_bank(&vb, tones, durs, max_singles, chain, chain_max, only_aliases);
+    let specs = phrases_for_bank(
+        &vb,
+        tones,
+        durs,
+        max_singles,
+        chain,
+        chain_max,
+        only_aliases,
+    );
     eprintln!(
         "bank {}: {} oto entries -> {} phrase specs",
         bank_dir.display(),

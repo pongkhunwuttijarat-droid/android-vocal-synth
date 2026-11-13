@@ -80,9 +80,13 @@ impl<B: Backend> ContextAcoustic<B> {
     pub fn forward(&self, ids: Tensor<B, 2, Int>, feats: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = self.emb.forward(ids).flatten(1, 2); // [B, W*64]
         let x = Tensor::cat(vec![x, feats], 1); // [B, W*64+2]
-        let mut x = self.dropout.forward(burn::tensor::activation::relu(self.fc_in.forward(x)));
+        let mut x = self
+            .dropout
+            .forward(burn::tensor::activation::relu(self.fc_in.forward(x)));
         for h in &self.hiddens {
-            x = self.dropout.forward(burn::tensor::activation::relu(h.forward(x)));
+            x = self
+                .dropout
+                .forward(burn::tensor::activation::relu(h.forward(x)));
         }
         self.out.forward(x)
     }
@@ -112,7 +116,6 @@ pub fn try_load_model<B: Backend>(
         Err(e) => Err(format!("resume load {path}: {e}")),
     }
 }
-
 
 /// Read the GPU busy % from amdgpu sysfs (first card that has the file).
 fn gpu_busy_percent() -> Option<f64> {
@@ -168,10 +171,8 @@ mod f16_smoke {
             TensorData::new(vec![1i64; 8 * WINDOW], vec![8, WINDOW]),
             &device,
         );
-        let feats = Tensor::<B, 2>::from_data(
-            TensorData::new(vec![0.5f32; 16], vec![8, 2]),
-            &device,
-        );
+        let feats =
+            Tensor::<B, 2>::from_data(TensorData::new(vec![0.5f32; 16], vec![8, 2]), &device);
         let pred = m.forward(ids, feats);
         let target = Tensor::<B, 2>::from_data(
             TensorData::new(vec![1.0f32; 8 * 128], vec![8, 128]),
@@ -195,10 +196,8 @@ mod f16_smoke {
             TensorData::new(vec![1i64; 8 * WINDOW], vec![8, WINDOW]),
             &device,
         );
-        let feats2 = Tensor::<B, 2>::from_data(
-            TensorData::new(vec![0.5f32; 16], vec![8, 2]),
-            &device,
-        );
+        let feats2 =
+            Tensor::<B, 2>::from_data(TensorData::new(vec![0.5f32; 16], vec![8, 2]), &device);
         let pred2 = model.forward(ids2, feats2);
         let loss2 = mse_loss(pred2, target);
         let v2: f32 = loss2.into_scalar().elem();
@@ -229,7 +228,8 @@ pub fn train_context<B: AutodiffBackend>(
     stop: &AtomicBool,
 ) -> (ContextAcoustic<B>, f64, f64, bool) {
     // +1 for the pad token used by context windows at phrase edges.
-    let mut model = init.unwrap_or_else(|| ContextAcoustic::<B>::new(set.vocab.len() + 1, hidden, depth, device));
+    let mut model = init
+        .unwrap_or_else(|| ContextAcoustic::<B>::new(set.vocab.len() + 1, hidden, depth, device));
     // epsilon 1e-3 (not 1e-5): 1e-5 underflows f16's min normal (6.1e-5)
     // → division by ~0 → NaN on the wgpu-f16 backend.
     let mut optimizer = AdamConfig::new()
@@ -302,7 +302,11 @@ pub fn train_context<B: AutodiffBackend>(
             // GPU utilization cap: duty-cycle + adaptive busy correction.
             pace_gpu(gpu_cap, start.elapsed().as_secs_f64());
         }
-        last_train = if sampled > 0 { epoch_loss / sampled as f64 } else { 0.0 };
+        last_train = if sampled > 0 {
+            epoch_loss / sampled as f64
+        } else {
+            0.0
+        };
 
         // Validation pass (no grad, dropout off).
         let mut val_loss = 0.0f64;
@@ -468,7 +472,9 @@ fn train_group_expert<B: AutodiffBackend>(
     init: Option<ContextAcoustic<B>>,
     stop: &AtomicBool,
 ) -> (ContextAcoustic<B>, f64) {
-    let mut model = init.unwrap_or_else(|| ContextAcoustic::<B>::new(set.vocab.len() + 1, EXPERT_HIDDEN, EXPERT_DEPTH, device));
+    let mut model = init.unwrap_or_else(|| {
+        ContextAcoustic::<B>::new(set.vocab.len() + 1, EXPERT_HIDDEN, EXPERT_DEPTH, device)
+    });
     // epsilon 1e-3 (not 1e-5): 1e-5 underflows f16's min normal (6.1e-5)
     // → division by ~0 → NaN on the wgpu-f16 backend.
     let mut optimizer = AdamConfig::new()
@@ -507,7 +513,11 @@ fn train_group_expert<B: AutodiffBackend>(
             // GPU utilization cap: duty-cycle + adaptive busy correction.
             pace_gpu(gpu_cap, start.elapsed().as_secs_f64());
         }
-        last = if sampled > 0 { acc / sampled as f64 } else { 0.0 };
+        last = if sampled > 0 {
+            acc / sampled as f64
+        } else {
+            0.0
+        };
     }
     (model, last)
 }
@@ -560,10 +570,16 @@ pub fn train_moe<B: AutodiffBackend>(
     // Use the exact same deterministic phrase holdout as the general
     // model. Group experts must not see validation phrases.
     let val_phrases = heldout_phrases(set.phrases.len(), eval_frac);
-    let train_samples: Vec<&FrameSample> = set.samples.iter()
-        .filter(|s| !val_phrases.contains(&s.phrase_id)).collect();
-    let val_samples: Vec<&FrameSample> = set.samples.iter()
-        .filter(|s| val_phrases.contains(&s.phrase_id)).collect();
+    let train_samples: Vec<&FrameSample> = set
+        .samples
+        .iter()
+        .filter(|s| !val_phrases.contains(&s.phrase_id))
+        .collect();
+    let val_samples: Vec<&FrameSample> = set
+        .samples
+        .iter()
+        .filter(|s| val_phrases.contains(&s.phrase_id))
+        .collect();
 
     // 2. Per-group residual experts.
     let mut general_inner: ContextAcoustic<B::InnerBackend> = general.valid();
@@ -573,21 +589,36 @@ pub fn train_moe<B: AutodiffBackend>(
     let mut val_moe_weighted = 0.0f64;
     let mut val_elements = 0usize;
     for g in 0..N_GROUPS {
-        let frames: Vec<&FrameSample> = train_samples.iter().copied()
-            .filter(|s| s.group_id == g).collect();
-        let val_frames: Vec<&FrameSample> = val_samples.iter().copied()
-            .filter(|s| s.group_id == g).collect();
+        let frames: Vec<&FrameSample> = train_samples
+            .iter()
+            .copied()
+            .filter(|s| s.group_id == g)
+            .collect();
+        let val_frames: Vec<&FrameSample> = val_samples
+            .iter()
+            .copied()
+            .filter(|s| s.group_id == g)
+            .collect();
         if frames.len() < 200 {
             println!("[moe] group {g}: skip (only {} frames)", frames.len());
             continue;
         }
         let residuals = compute_residuals(&general_inner, set, &frames, batch_size, device)?;
         let val_residuals = compute_residuals::<B::InnerBackend>(
-            &general_inner, set, &val_frames, batch_size, device,
+            &general_inner,
+            set,
+            &val_frames,
+            batch_size,
+            device,
         )?;
         let before = mean_mse(&val_residuals);
         let expert_init = if resume {
-            try_load_model::<B>(&format!("{prefix}-g{g}"), EXPERT_HIDDEN, EXPERT_DEPTH, device)?
+            try_load_model::<B>(
+                &format!("{prefix}-g{g}"),
+                EXPERT_HIDDEN,
+                EXPERT_DEPTH,
+                device,
+            )?
         } else {
             None
         };
@@ -604,21 +635,31 @@ pub fn train_moe<B: AutodiffBackend>(
             stop,
         );
         save_model(&expert, &format!("{prefix}-g{g}"))?;
-        let after = mean_prediction_mse(&mut expert, set, &val_frames, &val_residuals, batch_size, device);
+        let after = mean_prediction_mse(
+            &mut expert,
+            set,
+            &val_frames,
+            &val_residuals,
+            batch_size,
+            device,
+        );
         let elements = val_frames.len() * 128;
         val_base_weighted += before * elements as f64;
         val_moe_weighted += after * elements as f64;
         val_elements += elements;
         println!(
             "[moe] group {g}: train_frames={} val_frames={} residual_mse {before:.4} -> {after:.4}",
-            frames.len(), val_frames.len()
+            frames.len(),
+            val_frames.len()
         );
         report.push((g, before, after));
     }
     if val_elements > 0 {
-        println!("[moe] heldout_mel_mse: base={:.6} moe={:.6}",
+        println!(
+            "[moe] heldout_mel_mse: base={:.6} moe={:.6}",
             val_base_weighted / val_elements as f64,
-            val_moe_weighted / val_elements as f64);
+            val_moe_weighted / val_elements as f64
+        );
     }
     Ok(report)
 }
@@ -637,10 +678,16 @@ fn heldout_phrases(n_phrases: usize, eval_frac: f64) -> std::collections::HashSe
 }
 
 fn mean_prediction_mse<B: AutodiffBackend>(
-    model: &mut ContextAcoustic<B>, set: &TrainSet, samples: &[&FrameSample],
-    residuals: &[[f32; 128]], batch_size: usize, device: &B::Device,
+    model: &mut ContextAcoustic<B>,
+    set: &TrainSet,
+    samples: &[&FrameSample],
+    residuals: &[[f32; 128]],
+    batch_size: usize,
+    device: &B::Device,
 ) -> f64 {
-    if samples.is_empty() { return f64::NAN; }
+    if samples.is_empty() {
+        return f64::NAN;
+    }
     let saved_dropout = model.dropout.prob;
     model.dropout.prob = 0.0;
     let idx: Vec<usize> = (0..samples.len()).collect();
@@ -648,8 +695,12 @@ fn mean_prediction_mse<B: AutodiffBackend>(
     let mut count = 0usize;
     for chunk in idx.chunks(batch_size.max(1)) {
         let (ids, feats, _) = build_batch(set, samples, chunk, device);
-        let pred: Vec<f32> = model.forward(ids, feats).into_data().convert::<f32>()
-            .to_vec::<f32>().unwrap_or_default();
+        let pred: Vec<f32> = model
+            .forward(ids, feats)
+            .into_data()
+            .convert::<f32>()
+            .to_vec::<f32>()
+            .unwrap_or_default();
         for (row, &sample_idx) in chunk.iter().enumerate() {
             for bin in 0..128 {
                 let d = pred[row * 128 + bin] - residuals[sample_idx][bin];
@@ -664,10 +715,7 @@ fn mean_prediction_mse<B: AutodiffBackend>(
 
 /// Serialize the trained module to a burn checkpoint file
 /// (NamedMpk recorder; the extension is appended automatically).
-pub fn save_model<B: Backend>(
-    model: &ContextAcoustic<B>,
-    path: &str,
-) -> Result<(), String> {
+pub fn save_model<B: Backend>(model: &ContextAcoustic<B>, path: &str) -> Result<(), String> {
     let recorder = NamedMpkFileRecorder::<FullPrecisionSettings>::new();
     model
         .clone()

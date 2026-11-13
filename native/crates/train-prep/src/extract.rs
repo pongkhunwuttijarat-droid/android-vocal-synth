@@ -51,10 +51,7 @@ pub fn write_tsbin(path: &Path, entries: &[TrainEntry]) -> Result<(), String> {
 /// Build a RenderInput for a phrase spec — mirrors
 /// `pipeline::synth_note_input` but for 1..n notes (each alias as a
 /// phonetic hint so the phonemizer emits it verbatim).
-pub fn phrase_input(
-    vb: &Voicebank,
-    spec: &PhraseSpec,
-) -> Result<pipeline::PhraseInput, String> {
+pub fn phrase_input(vb: &Voicebank, spec: &PhraseSpec) -> Result<pipeline::PhraseInput, String> {
     let project = domain_lite_project(spec)?;
     let part = &project.1;
     let phrases = pipeline::build_phrase_inputs(
@@ -68,7 +65,10 @@ pub fn phrase_input(
         // bank can't render; Universal letter-splits + NearestPhoneme-maps.
         pipeline::PhonemizerKind::Universal,
     )?;
-    phrases.into_iter().next().ok_or_else(|| "no phrase derived".to_string())
+    phrases
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no phrase derived".to_string())
 }
 
 fn domain_lite_project(
@@ -191,8 +191,9 @@ pub fn extract_bank(
         .unwrap_or(4)
         .min(8);
     eprintln!("[extract] {n} specs, {workers} workers");
-    let results: std::sync::Arc<std::sync::Mutex<Vec<Option<Result<(TrainEntry, Vec<f32>), String>>>>> =
-        std::sync::Arc::new(std::sync::Mutex::new(vec![None; n]));
+    let results: std::sync::Arc<
+        std::sync::Mutex<Vec<Option<Result<(TrainEntry, Vec<f32>), String>>>>,
+    > = std::sync::Arc::new(std::sync::Mutex::new(vec![None; n]));
     let next = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|s| {
         for _ in 0..workers {
@@ -243,7 +244,8 @@ pub fn extract_bank(
     );
     // Write teacher wavs + JSONL for PASSED entries, index = passed order.
     let mut file = std::io::BufWriter::new(
-        std::fs::File::create(out_path).map_err(|e| format!("create {}: {e}", out_path.display()))?,
+        std::fs::File::create(out_path)
+            .map_err(|e| format!("create {}: {e}", out_path.display()))?,
     );
     let mut passed_order: Vec<usize> = Vec::new();
     for (i, e) in entries.iter().enumerate() {
@@ -258,7 +260,8 @@ pub fn extract_bank(
         if let Some(w) = wav_dir {
             let wav = wavwriter::write_wav_16(audio, 44100);
             let p = w.join(format!("{k:05}.wav"));
-            wavwriter::write_wav_file(&p, &wav).map_err(|e| format!("write {}: {e}", p.display()))?;
+            wavwriter::write_wav_file(&p, &wav)
+                .map_err(|e| format!("write {}: {e}", p.display()))?;
         }
         let line = serde_json::to_string(entry).map_err(|e| format!("json: {e}"))?;
         file.write_all(line.as_bytes())
@@ -268,5 +271,9 @@ pub fn extract_bank(
     file.flush().map_err(|e| format!("flush: {e}"))?;
     // Compact binary sibling (same entries, same order).
     write_tsbin(&out_path.with_extension("tsbin"), &passed_entries)?;
-    Ok((passed_order.len(), stats.total - passed_order.len(), skipped))
+    Ok((
+        passed_order.len(),
+        stats.total - passed_order.len(),
+        skipped,
+    ))
 }
