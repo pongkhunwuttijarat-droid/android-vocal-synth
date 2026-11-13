@@ -13,9 +13,9 @@ enum PianoRollTool { view, select, draw, pencil, split, erase }
 /// What the select tool acts on (OM-style sub-modes).
 enum SelectTarget { all, notes, curve }
 
-/// Piano-roll editor widget: toolbar, note grid with continuous pitch curve,
-/// and transport bar. Mirrors ui-mock/index.html. POC-quality — all state
-/// lives here, no provider/bloc dependencies.
+/// Piano-roll presentation and gesture input. The engine snapshot supplies
+/// project data; this widget keeps only transient interaction state and
+/// dispatches edits through its callbacks.
 class PianoRoll extends StatefulWidget {
   const PianoRoll({
     super.key,
@@ -26,6 +26,9 @@ class PianoRoll extends StatefulWidget {
     this.onInitialSync,
     this.onNotesChanged,
     this.onCurveChanged,
+    this.onVibratoChanged,
+    this.onEditGroupBegin,
+    this.onEditGroupEnd,
     this.curvesByTrack,
     this.showPhonemes = true,
     this.showFxOverlay = false,
@@ -97,6 +100,14 @@ class PianoRoll extends StatefulWidget {
   /// curves are silently dropped).
   final void Function(List<PitchPoint> points)? onCurveChanged;
 
+  /// Persist a note's OpenUtau vibrato settings through the parent session.
+  final Future<void> Function(String noteId, Map<String, dynamic> vibrato)?
+  onVibratoChanged;
+
+  /// Engine transaction hooks for multi-event gestures.
+  final void Function(String name)? onEditGroupBegin;
+  final VoidCallback? onEditGroupEnd;
+
   /// SynthV-style: show phoneme labels above the notes (default true).
   /// Purely visual — the roll's editing logic is unchanged.
   final bool showPhonemes;
@@ -123,8 +134,7 @@ const double _baseNoteHeight = 24.0; // at 32px row → 75% of the row
 /// Note height scales with the Y zoom (75% of the row height), so notes
 /// stay proportional to the piano-roll scale when the user zooms the Y
 /// axis — the old const 24px broke the proportion at other zooms.
-double _noteHeightFor(double rowHeight) =>
-    rowHeight * (_baseNoteHeight / 32.0);
+double _noteHeightFor(double rowHeight) => rowHeight * (_baseNoteHeight / 32.0);
 const double _basePxPerBeat = 80.0; // px per beat at 100% zoom
 
 // OpenUtau Mobile dark theme values from ui-mock/index-om.html.
@@ -189,10 +199,23 @@ class _PianoRollState extends State<PianoRoll>
   double _dragStartBeats = 0;
   int _dragStartPitch = 0;
   bool _dragMoved = false;
+  bool _editingGroup = false;
 
   /// Resize mode: dragging the right edge of a note changes its duration.
   Note? _resizeNote;
   double _resizeStartDur = 0;
+
+  void _beginEngineGroup(String name) {
+    if (_editingGroup) return;
+    _editingGroup = true;
+    widget.onEditGroupBegin?.call(name);
+  }
+
+  void _endEngineGroup() {
+    if (!_editingGroup) return;
+    _editingGroup = false;
+    widget.onEditGroupEnd?.call();
+  }
 
   /// True while the lyric dialog is open (guards against double-open).
   bool _lyricDialogOpen = false;
@@ -218,9 +241,11 @@ class _PianoRollState extends State<PianoRoll>
 
   // Default to View (pan) — safe browse mode; editing is an explicit tool.
   PianoRollTool _tool = PianoRollTool.view;
+
   /// Select sub-mode: all / notes only / curve only.
   SelectTarget _selectTarget = SelectTarget.all;
   bool _showPitch = true;
+
   /// Two-axis zoom: X = pixels per beat, Y = row height.
   /// Defaults: X 90% (ppb 72), Y 100% (row 32px) — same geometry as the
   /// original single-axis zoom, so tests/UX stay stable.
@@ -252,10 +277,8 @@ class _PianoRollState extends State<PianoRoll>
     // Content coords of the anchor BEFORE the zoom.
     final kx = nx / _zoomX;
     final ky = ny / _zoomY;
-    final cx = viewportPoint.dx +
-        (_hScroll.hasClients ? _hScroll.offset : 0);
-    final cy = viewportPoint.dy +
-        (_vScroll.hasClients ? _vScroll.offset : 0);
+    final cx = viewportPoint.dx + (_hScroll.hasClients ? _hScroll.offset : 0);
+    final cy = viewportPoint.dy + (_vScroll.hasClients ? _vScroll.offset : 0);
     setState(() {
       _zoomX = nx;
       _zoomY = ny;
@@ -263,23 +286,31 @@ class _PianoRollState extends State<PianoRoll>
     // After layout, keep the anchor's viewport offset constant.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_hScroll.hasClients) {
-        _hScroll.jumpTo((cx * kx - viewportPoint.dx)
-            .clamp(0.0, _hScroll.position.maxScrollExtent));
+        _hScroll.jumpTo(
+          (cx * kx - viewportPoint.dx).clamp(
+            0.0,
+            _hScroll.position.maxScrollExtent,
+          ),
+        );
       }
       if (_vScroll.hasClients) {
-        _vScroll.jumpTo((cy * ky - viewportPoint.dy)
-            .clamp(0.0, _vScroll.position.maxScrollExtent));
+        _vScroll.jumpTo(
+          (cy * ky - viewportPoint.dy).clamp(
+            0.0,
+            _vScroll.position.maxScrollExtent,
+          ),
+        );
       }
     });
   }
 
   /// Viewport center in the roll's own coords (used by slider/button zoom).
   Offset get _viewportCenter {
-    final box =
-        _rollKey.currentContext?.findRenderObject() as RenderBox?;
+    final box = _rollKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null) return Offset.zero;
     return box.size.center(Offset.zero);
   }
+
   int _revision = 0; // bumped on every edit so the painter repaints
 
   /// Snap grid in beats (1/1, 1/2, 1/4, 1/8, 1/16). Used when dragging notes
@@ -289,7 +320,6 @@ class _PianoRollState extends State<PianoRoll>
   /// Editable pitch-curve points — the curve is its own object, independent
   /// from notes. Each point is (beat, semitones from the note reference).
   late List<PitchPoint> _curvePoints;
-
 
   /// View (pan) tool: start position + scroll offsets at pointer-down.
   bool _panning = false;
@@ -316,8 +346,10 @@ class _PianoRollState extends State<PianoRoll>
   double _captureStep = 0.125;
 
   late final AnimationController _playCtrl;
+
   /// Real-audio position subscription (position-driven playhead mode).
   StreamSubscription<double>? _posSub;
+
   /// Real-audio duration subscription (overrides the beats estimate).
   StreamSubscription<double>? _durSub;
   bool _playing = false;
@@ -325,6 +357,7 @@ class _PianoRollState extends State<PianoRoll>
   final ScrollController _hScroll = ScrollController();
 
   double get _ppb => _basePxPerBeat * _zoomX / 100;
+
   /// Row height (px per semitone) — zoomable on the Y axis.
   double get _rowHeight => 32.0 * _zoomY / 100;
   double get _totalBeats =>
@@ -343,12 +376,13 @@ class _PianoRollState extends State<PianoRoll>
 
   Color get _trackColor {
     final t = _activeTrack;
-    if (t == null) return LiltColors.purple;
-    return LiltColors.trackColors[t.colorSeed % LiltColors.trackColors.length];
+    if (t == null) return RustedUtauColors.purple;
+    return RustedUtauColors.trackColors[t.colorSeed % RustedUtauColors.trackColors.length];
   }
 
   double _noteTopY(int pitch) =>
-      (_topPitch - pitch) * _rowHeight + (_rowHeight - _noteHeightFor(_rowHeight)) / 2;
+      (_topPitch - pitch) * _rowHeight +
+      (_rowHeight - _noteHeightFor(_rowHeight)) / 2;
 
   Rect _noteRect(Note n) => Rect.fromLTWH(
     n.position * _ppb,
@@ -457,8 +491,8 @@ class _PianoRollState extends State<PianoRoll>
     _playCtrl = AnimationController(vsync: this)
       ..addStatusListener(_onPlayStatus);
     _notes = List.of(_activeTrack?.notes ?? const []);
-    // Restore the SAVED curve when the parent has one for this track
-    // (the parent persists edits in `_editedCurves`; without this the
+    // Restore the engine-provided curve when the parent has one for this track
+    // (without this the
     // curve resets to the note-anchor defaults every time the roll is
     // recreated — "curve หายตอนย้ายหน้า"). Only when missing do we
     // derive anchors from the notes.
@@ -484,9 +518,8 @@ class _PianoRollState extends State<PianoRoll>
         final lowest = _notes
             .map((n) => n.pitch)
             .reduce((a, b) => a < b ? a : b);
-        final target =
-            ((_topPitch - lowest) * _rowHeight - _rowHeight * 10)
-                .clamp(0.0, _vScroll.position.maxScrollExtent);
+        final target = ((_topPitch - lowest) * _rowHeight - _rowHeight * 10)
+            .clamp(0.0, _vScroll.position.maxScrollExtent);
         _vScroll.jumpTo(target);
       }
     });
@@ -523,17 +556,21 @@ class _PianoRollState extends State<PianoRoll>
         });
       }
     }
-    if (widget.selectedTrackIndex != oldWidget.selectedTrackIndex) {
+    if (widget.selectedTrackIndex != oldWidget.selectedTrackIndex ||
+        !identical(widget.tracks, oldWidget.tracks)) {
       _notes = List.of(_activeTrack?.notes ?? const []);
       _selectedNote = null;
       _dragNote = null;
-      _syncCurveFromNotes();
+      final saved = widget.curvesByTrack?[widget.selectedTrackIndex];
+      if (saved != null && saved.isNotEmpty) {
+        _curvePoints = List.of(saved);
+      } else {
+        _syncCurveFromNotes();
+      }
       // CRITICAL: sync the freshly loaded track back to the parent — the
       // roll's internal copy just changed, and export/play render the
       // parent's notes. Without this, switching tracks plays the PREVIOUS
       // track's melody ("the track that comes out is a different one").
-      _notifyNotesChanged();
-      _notifyCurveChanged();
     }
   }
 
@@ -588,12 +625,10 @@ class _PianoRollState extends State<PianoRoll>
   Future<void> _startPlayback() async {
     final req = widget.onPlayRequested;
     if (req != null) {
-      final started = await req()
-          .then((_) => true)
-          .catchError((Object e) {
-            debugPrint('playback request failed: $e');
-            return false;
-          });
+      final started = await req().then((_) => true).catchError((Object e) {
+        debugPrint('playback request failed: $e');
+        return false;
+      });
       if (!started || !mounted) return;
     }
     final ms = (_totalBeats * widget.secondsPerBeat * 1000).round();
@@ -653,6 +688,7 @@ class _PianoRollState extends State<PianoRoll>
     }
     // Pencil tool: freehand pitch drawing starts immediately.
     if (_tool == PianoRollTool.pencil && _showPitch) {
+      _beginEngineGroup('Draw pitch curve');
       setState(() => _pencilWrite(pos));
       return;
     }
@@ -665,10 +701,23 @@ class _PianoRollState extends State<PianoRoll>
     // OM-style line editing: dragging reshapes the curve under the finger
     // — no point handles. Active on empty space in All mode, anywhere in
     // Curve mode; never in Notes-only mode.
-    final lineDrag = (_tool == PianoRollTool.select &&
+    final lineDrag =
+        (_tool == PianoRollTool.select &&
         _showPitch &&
         (_selectTarget == SelectTarget.curve ||
             (_selectTarget == SelectTarget.all && hit == null)));
+    if (lineDrag) _beginEngineGroup('Draw pitch curve');
+    if (_tool == PianoRollTool.draw && hit == null) {
+      _beginEngineGroup('Draw note');
+    }
+    if (_tool == PianoRollTool.select &&
+        hit != null &&
+        _selectTarget != SelectTarget.curve) {
+      _beginEngineGroup('Edit note');
+    }
+    if (_tool == PianoRollTool.erase && hit != null) {
+      _beginEngineGroup('Erase note');
+    }
     setState(() {
       if (lineDrag) {
         _selectedNote = null;
@@ -692,6 +741,7 @@ class _PianoRollState extends State<PianoRoll>
           _selectedNote = null;
           _revision++;
           _notifyNotesChanged();
+          _notifyCurveChanged();
         } else if (_tool == PianoRollTool.select) {
           // Right-edge grab (8px) resizes the note instead of moving it.
           final rect = _noteRect(hit);
@@ -731,10 +781,14 @@ class _PianoRollState extends State<PianoRoll>
       final dx = e.localPosition.dx - _panStart.dx;
       final dy = e.localPosition.dy - _panStart.dy;
       if (_hScroll.hasClients) {
-        _hScroll.jumpTo((_panH0 - dx).clamp(0.0, _hScroll.position.maxScrollExtent));
+        _hScroll.jumpTo(
+          (_panH0 - dx).clamp(0.0, _hScroll.position.maxScrollExtent),
+        );
       }
       if (_vScroll.hasClients) {
-        _vScroll.jumpTo((_panV0 - dy).clamp(0.0, _vScroll.position.maxScrollExtent));
+        _vScroll.jumpTo(
+          (_panV0 - dy).clamp(0.0, _vScroll.position.maxScrollExtent),
+        );
       }
       return;
     }
@@ -742,8 +796,7 @@ class _PianoRollState extends State<PianoRoll>
     // ~3px resolution (dense capture — the user asked for a higher input
     // capture rate than the old 0.1-beat thinning) ---
     if (_tool == PianoRollTool.pencil ||
-        (_tool == PianoRollTool.select && _showPitch &&
-            _pencilLastDx >= 0)) {
+        (_tool == PianoRollTool.select && _showPitch && _pencilLastDx >= 0)) {
       if ((e.localPosition.dx - _pencilLastDx).abs() > _capturePx) {
         setState(() => _pencilWrite(e.localPosition));
       }
@@ -841,6 +894,7 @@ class _PianoRollState extends State<PianoRoll>
     if (tapEditIdx != null && mounted) {
       _editLyric(tapEditIdx!);
     }
+    _endEngineGroup();
   }
 
   /// Show a context menu for the given note (OM long-press popup).
@@ -865,7 +919,7 @@ class _PianoRollState extends State<PianoRoll>
               const SizedBox(width: 8),
               Text(
                 'Edit lyrics…',
-                style: TextStyle(fontSize: 13, color: LiltColors.text),
+                style: TextStyle(fontSize: 13, color: RustedUtauColors.text),
               ),
             ],
           ),
@@ -882,7 +936,7 @@ class _PianoRollState extends State<PianoRoll>
               const SizedBox(width: 8),
               Text(
                 'Move up',
-                style: TextStyle(fontSize: 13, color: LiltColors.text),
+                style: TextStyle(fontSize: 13, color: RustedUtauColors.text),
               ),
             ],
           ),
@@ -899,7 +953,7 @@ class _PianoRollState extends State<PianoRoll>
               const SizedBox(width: 8),
               Text(
                 'Move down',
-                style: TextStyle(fontSize: 13, color: LiltColors.text),
+                style: TextStyle(fontSize: 13, color: RustedUtauColors.text),
               ),
             ],
           ),
@@ -1027,8 +1081,103 @@ class _PianoRollState extends State<PianoRoll>
     _curvePoints.sort((a, b) => a.beat.compareTo(b.beat));
     _selectedNote = _notes.last;
     _revision++;
-    _notifyCurveChanged();
     _notifyNotesChanged();
+    _notifyCurveChanged();
+  }
+
+  Future<void> _editVibrato() async {
+    final note = _selectedNote;
+    final noteId = note?.engineId;
+    final callback = widget.onVibratoChanged;
+    if (note == null || noteId == null || callback == null) return;
+    final value = <String, dynamic>{
+      'length': 0.0,
+      'period': 175.0,
+      'depth': 25.0,
+      'in': 10.0,
+      'out': 10.0,
+      'shift': 0.0,
+      'drift': 0.0,
+      'vol_link': 0.0,
+      ...note.vibrato,
+    };
+    var enabled = (value['length'] as num).toDouble() > 0;
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          Widget slider(String label, String key, double min, double max) {
+            final current = (value[key] as num)
+                .toDouble()
+                .clamp(min, max)
+                .toDouble();
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('$label: ${current.toStringAsFixed(1)}'),
+                Slider(
+                  value: current,
+                  min: min,
+                  max: max,
+                  divisions: 100,
+                  onChanged: (next) => setDialogState(() => value[key] = next),
+                ),
+              ],
+            );
+          }
+
+          return AlertDialog(
+            title: Text('Vibrato · ${note.lyric}'),
+            content: SizedBox(
+              width: 420,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SwitchListTile(
+                      title: const Text('Enabled'),
+                      value: enabled,
+                      onChanged: (next) => setDialogState(() {
+                        enabled = next;
+                        if (next && (value['length'] as num) == 0)
+                          value['length'] = 75.0;
+                      }),
+                    ),
+                    slider('Length (%)', 'length', 0, 100),
+                    slider('Period (ms)', 'period', 5, 500),
+                    slider('Depth (cents)', 'depth', 5, 200),
+                    slider('Fade in (%)', 'in', 0, 100),
+                    slider('Fade out (%)', 'out', 0, 100),
+                    slider('Phase shift (%)', 'shift', 0, 100),
+                    slider('Drift', 'drift', -100, 100),
+                    slider('Volume link (%)', 'vol_link', -100, 100),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  final fadeIn = (value['in'] as num).toDouble();
+                  final fadeOut = (value['out'] as num).toDouble();
+                  if (fadeIn + fadeOut > 100) value['out'] = 100 - fadeIn;
+                  Navigator.pop(context, {
+                    ...value,
+                    'length': enabled ? value['length'] : 0.0,
+                  });
+                },
+                child: const Text('Apply'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    if (result != null) await callback(noteId, result);
   }
 
   // --- build ---
@@ -1153,19 +1302,21 @@ class _PianoRollState extends State<PianoRoll>
               _selectTarget == SelectTarget.notes
                   ? Icons.music_note_outlined
                   : (_selectTarget == SelectTarget.curve
-                      ? Icons.show_chart_rounded
-                      : Icons.select_all_rounded),
+                        ? Icons.show_chart_rounded
+                        : Icons.select_all_rounded),
               _selectTarget == SelectTarget.all
                   ? 'Select All'
-                  : (_selectTarget == SelectTarget.notes ? 'Select Notes' : 'Select Curve'),
+                  : (_selectTarget == SelectTarget.notes
+                        ? 'Select Notes'
+                        : 'Select Curve'),
               _tool == PianoRollTool.select,
               () => setState(() {
                 _tool = PianoRollTool.select;
                 _selectTarget = _selectTarget == SelectTarget.all
                     ? SelectTarget.notes
                     : (_selectTarget == SelectTarget.notes
-                        ? SelectTarget.curve
-                        : SelectTarget.all);
+                          ? SelectTarget.curve
+                          : SelectTarget.all);
               }),
             ),
             const SizedBox(width: 10),
@@ -1181,6 +1332,18 @@ class _PianoRollState extends State<PianoRoll>
               'FX',
               _showFxOverlay,
               () => setState(() => _showFxOverlay = !_showFxOverlay),
+            ),
+            const SizedBox(width: 4),
+            IconButton(
+              tooltip: _selectedNote?.engineId == null
+                  ? 'Select a saved note to edit vibrato'
+                  : 'Edit selected note vibrato',
+              onPressed:
+                  _selectedNote?.engineId != null &&
+                      widget.onVibratoChanged != null
+                  ? _editVibrato
+                  : null,
+              icon: const Icon(Icons.graphic_eq_rounded, size: 18),
             ),
             const SizedBox(width: 2),
             PopupMenuButton<double>(
@@ -1202,15 +1365,14 @@ class _PianoRollState extends State<PianoRoll>
                       style: TextStyle(
                         fontSize: 12,
                         color: v == _captureStep
-                            ? LiltColors.purple
-                            : LiltColors.text,
+                            ? RustedUtauColors.purple
+                            : RustedUtauColors.text,
                       ),
                     ),
                   ),
               ],
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                 decoration: BoxDecoration(
                   color: const Color(0xFF2A263B),
                   borderRadius: BorderRadius.circular(5),
@@ -1257,8 +1419,8 @@ class _PianoRollState extends State<PianoRoll>
                       style: TextStyle(
                         fontSize: 12,
                         color: d == _snapBeat
-                            ? LiltColors.purple
-                            : LiltColors.text,
+                            ? RustedUtauColors.purple
+                            : RustedUtauColors.text,
                       ),
                     ),
                   ),
@@ -1299,14 +1461,20 @@ class _PianoRollState extends State<PianoRoll>
               visualDensity: VisualDensity.compact,
               tooltip: 'Zoom X out',
               onPressed: () => _applyZoom(
-                (_zoomX - 10).clamp(30, 300), _zoomY, _viewportCenter),
+                (_zoomX - 10).clamp(30, 300),
+                _zoomY,
+                _viewportCenter,
+              ),
             ),
             IconButton(
               icon: const Icon(Icons.zoom_in_rounded, size: 18),
               visualDensity: VisualDensity.compact,
               tooltip: 'Zoom X in',
               onPressed: () => _applyZoom(
-                (_zoomX + 10).clamp(30, 300), _zoomY, _viewportCenter),
+                (_zoomX + 10).clamp(30, 300),
+                _zoomY,
+                _viewportCenter,
+              ),
             ),
             const SizedBox(width: 8),
             IconButton(
@@ -1314,14 +1482,20 @@ class _PianoRollState extends State<PianoRoll>
               visualDensity: VisualDensity.compact,
               tooltip: 'Zoom Y out',
               onPressed: () => _applyZoom(
-                _zoomX, (_zoomY - 10).clamp(30, 300), _viewportCenter),
+                _zoomX,
+                (_zoomY - 10).clamp(30, 300),
+                _viewportCenter,
+              ),
             ),
             IconButton(
               icon: const Icon(Icons.zoom_in_rounded, size: 18),
               visualDensity: VisualDensity.compact,
               tooltip: 'Zoom Y in',
               onPressed: () => _applyZoom(
-                _zoomX, (_zoomY + 10).clamp(30, 300), _viewportCenter),
+                _zoomX,
+                (_zoomY + 10).clamp(30, 300),
+                _viewportCenter,
+              ),
             ),
           ],
         ),
@@ -1393,9 +1567,7 @@ class _PianoRollState extends State<PianoRoll>
         // consume the pointer, so without this the scroll view steals the
         // drag (curve edits scroll the roll instead of reshaping it).
         final physics =
-            (_dragNote != null ||
-                    _resizeNote != null ||
-                    _pencilLastDx >= 0)
+            (_dragNote != null || _resizeNote != null || _pencilLastDx >= 0)
             ? const NeverScrollableScrollPhysics()
             : null;
         return ColoredBox(
@@ -1428,14 +1600,17 @@ class _PianoRollState extends State<PianoRoll>
                       _zoomYStart = _zoomY.toDouble();
                     },
                     onScaleUpdate: (d) {
-                      final nx =
-                          (_zoomStart * d.scale).clamp(30.0, 300.0).round();
-                      final ny =
-                          (_zoomYStart * d.scale).clamp(30.0, 300.0).round();
+                      final nx = (_zoomStart * d.scale)
+                          .clamp(30.0, 300.0)
+                          .round();
+                      final ny = (_zoomYStart * d.scale)
+                          .clamp(30.0, 300.0)
+                          .round();
                       if ((nx - _zoomX).abs() >= 1 ||
                           (ny - _zoomY).abs() >= 1) {
-                        final box = _rollKey.currentContext?.findRenderObject()
-                            as RenderBox?;
+                        final box =
+                            _rollKey.currentContext?.findRenderObject()
+                                as RenderBox?;
                         final local = box == null
                             ? Offset.zero
                             : box.globalToLocal(d.focalPoint);
@@ -1443,96 +1618,95 @@ class _PianoRollState extends State<PianoRoll>
                       }
                     },
                     child: SingleChildScrollView(
-                    controller: _hScroll,
-                    scrollDirection: Axis.horizontal,
-                    physics: physics,
-                    child: SizedBox(
-                      width: contentW,
-                      height: contentH,
-                      child: Listener(
-                        behavior: HitTestBehavior.opaque,
-                        onPointerDown: _onPointerDown,
-                        onPointerMove: _onPointerMove,
-                        onPointerUp: _onPointerUp,
-                        onPointerCancel: _onPointerUp,
-                        child: Stack(
-                          children: [
-                            // Layer 1 (bottom): grid + notes + playhead.
-                            CustomPaint(
-                              size: Size(contentW, contentH),
-                              painter: _RollPainter(
-                                notes: _notes,
-                                ppb: _ppb,
-                                topPitch: _topPitch,
-                                rowHeight: _rowHeight,
-                                trackColor: _trackColor,
-                                playheadBeat: playheadBeat,
-                                contentWidth: contentW,
-                                contentHeight: contentH,
-                                revision: _revision,
-                                showPhonemes: _showPhonemes,
-                              ),
-                            ),
-                            // Layer 2: the continuous orange pitch curve —
-                            // a separate overlay object, like the mock's
-                            // .curve-layer (z-index above notes/playhead).
-                            CustomPaint(
-                              size: Size(contentW, contentH),
-                              painter: _CurvePainter(
-                                curvePoints: _curvePoints,
-                                ppb: _ppb,
-                                topPitch: _topPitch,
-                                rowHeight: _rowHeight,
-                                showPitch: _showPitch,
-                                hasSelection:
-                                    _selectedNote != null,
-                                contentWidth: contentW,
-                                contentHeight: contentH,
-                              ),
-                            ),
-                            // Layer 3: FX affected-area overlay (chunk
-                            // marks + GR curve + hot rings) — above the
-                            // curve, below the selection outline.
-                            if (_showFxOverlay)
+                      controller: _hScroll,
+                      scrollDirection: Axis.horizontal,
+                      physics: physics,
+                      child: SizedBox(
+                        width: contentW,
+                        height: contentH,
+                        child: Listener(
+                          behavior: HitTestBehavior.opaque,
+                          onPointerDown: _onPointerDown,
+                          onPointerMove: _onPointerMove,
+                          onPointerUp: _onPointerUp,
+                          onPointerCancel: _onPointerUp,
+                          child: Stack(
+                            children: [
+                              // Layer 1 (bottom): grid + notes + playhead.
                               CustomPaint(
                                 size: Size(contentW, contentH),
-                                painter: _FxOverlayPainter(
+                                painter: _RollPainter(
                                   notes: _notes,
                                   ppb: _ppb,
+                                  topPitch: _topPitch,
+                                  rowHeight: _rowHeight,
+                                  trackColor: _trackColor,
+                                  playheadBeat: playheadBeat,
                                   contentWidth: contentW,
                                   contentHeight: contentH,
-                                  chunkPx: 230,
+                                  revision: _revision,
+                                  showPhonemes: _showPhonemes,
                                 ),
                               ),
-                            // Layer 4 (top): selected note outline (white),
-                            // above the curve like the mock's z-order.
-                            CustomPaint(
-                              size: Size(contentW, contentH),
-                              painter: _SelectionPainter(
-                                note: _selectedNote,
-                                ppb: _ppb,
-                                topPitch: _topPitch,
-                                rowHeight: _rowHeight,
-                                trackColor: _trackColor,
-                              ),
-                            ),
-                            // OpenUtau Mobile's black timeline is an overlay
-                            // over the first 22px of the roll.
-                            Positioned(
-                              left: 0,
-                              top: 0,
-                              right: 0,
-                              height: _timelineHeight,
-                              child: IgnorePointer(
-                                child: CustomPaint(
-                                  painter: _RollTimelinePainter(ppb: _ppb),
+                              // Layer 2: the continuous orange pitch curve —
+                              // a separate overlay object, like the mock's
+                              // .curve-layer (z-index above notes/playhead).
+                              CustomPaint(
+                                size: Size(contentW, contentH),
+                                painter: _CurvePainter(
+                                  curvePoints: _curvePoints,
+                                  ppb: _ppb,
+                                  topPitch: _topPitch,
+                                  rowHeight: _rowHeight,
+                                  showPitch: _showPitch,
+                                  hasSelection: _selectedNote != null,
+                                  contentWidth: contentW,
+                                  contentHeight: contentH,
                                 ),
                               ),
-                            ),
-                          ],
+                              // Layer 3: FX affected-area overlay (chunk
+                              // marks + GR curve + hot rings) — above the
+                              // curve, below the selection outline.
+                              if (_showFxOverlay)
+                                CustomPaint(
+                                  size: Size(contentW, contentH),
+                                  painter: _FxOverlayPainter(
+                                    notes: _notes,
+                                    ppb: _ppb,
+                                    contentWidth: contentW,
+                                    contentHeight: contentH,
+                                    chunkPx: 230,
+                                  ),
+                                ),
+                              // Layer 4 (top): selected note outline (white),
+                              // above the curve like the mock's z-order.
+                              CustomPaint(
+                                size: Size(contentW, contentH),
+                                painter: _SelectionPainter(
+                                  note: _selectedNote,
+                                  ppb: _ppb,
+                                  topPitch: _topPitch,
+                                  rowHeight: _rowHeight,
+                                  trackColor: _trackColor,
+                                ),
+                              ),
+                              // OpenUtau Mobile's black timeline is an overlay
+                              // over the first 22px of the roll.
+                              Positioned(
+                                left: 0,
+                                top: 0,
+                                right: 0,
+                                height: _timelineHeight,
+                                child: IgnorePointer(
+                                  child: CustomPaint(
+                                    painter: _RollTimelinePainter(ppb: _ppb),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
                     ),
                   ),
                 ),
@@ -1561,7 +1735,8 @@ class _PianoRollState extends State<PianoRoll>
               AnimatedBuilder(
                 animation: _playCtrl,
                 builder: (context, _) {
-                  final t = _playCtrl.value * _totalBeats * widget.secondsPerBeat;
+                  final t =
+                      _playCtrl.value * _totalBeats * widget.secondsPerBeat;
                   return Text(
                     '${_fmtTime(t)} / ${_fmtTime(_totalBeats * widget.secondsPerBeat)}',
                     style: const TextStyle(
@@ -1682,7 +1857,7 @@ class _KeysPainter extends CustomPainter {
           style: TextStyle(
             fontSize: 10,
             fontWeight: isC ? FontWeight.w700 : FontWeight.w400,
-            color: isC ? LiltColors.text : const Color(0xFF777D91),
+            color: isC ? RustedUtauColors.text : const Color(0xFF777D91),
           ),
         ),
         textDirection: TextDirection.ltr,
@@ -1695,7 +1870,7 @@ class _KeysPainter extends CustomPainter {
     canvas.drawLine(
       Offset(size.width - 0.5, 0),
       Offset(size.width - 0.5, size.height),
-      Paint()..color = LiltColors.line,
+      Paint()..color = RustedUtauColors.line,
     );
   }
 
@@ -1786,12 +1961,32 @@ class _RollPainter extends CustomPainter {
   /// compares upper-cased letters). Used by [_phonemesOf] to resolve a
   /// hint-less lyric letter-by-letter into real voicebank phonemes.
   static const Set<String> _otoAliases = {
-    '3', 'A', 'B', 'D', 'E', 'F', 'G', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
-    'P', 'S', 'T', 'U', 'V', 'W', 'Z',
+    '3',
+    'A',
+    'B',
+    'D',
+    'E',
+    'F',
+    'G',
+    'I',
+    'J',
+    'K',
+    'L',
+    'M',
+    'N',
+    'O',
+    'P',
+    'S',
+    'T',
+    'U',
+    'V',
+    'W',
+    'Z',
   };
 
   double _noteTopY(int pitch) =>
-      (topPitch - pitch) * rowHeight + (rowHeight - _noteHeightFor(rowHeight)) / 2;
+      (topPitch - pitch) * rowHeight +
+      (rowHeight - _noteHeightFor(rowHeight)) / 2;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1922,7 +2117,12 @@ class _RollPainter extends CustomPainter {
           height: 1.0,
         );
         for (var i = 0; i < nSegs; i++) {
-          final box = Rect.fromLTWH(rect.left + i * (boxW + 2), top, boxW, boxH);
+          final box = Rect.fromLTWH(
+            rect.left + i * (boxW + 2),
+            top,
+            boxW,
+            boxH,
+          );
           canvas.drawRRect(
             RRect.fromRectAndRadius(box, const Radius.circular(3)),
             Paint()..color = const Color(0xB3000000),
@@ -2044,12 +2244,14 @@ class _CurvePainter extends CustomPainter {
           final t = s / steps;
           final t2 = t * t;
           final t3 = t2 * t;
-          final x = 0.5 *
+          final x =
+              0.5 *
               ((2 * p1.dx) +
                   (-p0.dx + p2.dx) * t +
                   (2 * p0.dx - 5 * p1.dx + 4 * p2.dx - p3.dx) * t2 +
                   (-p0.dx + 3 * p1.dx - 3 * p2.dx + p3.dx) * t3);
-          final y = 0.5 *
+          final y =
+              0.5 *
               ((2 * p1.dy) +
                   (-p0.dy + p2.dy) * t +
                   (2 * p0.dy - 5 * p1.dy + 4 * p2.dy - p3.dy) * t2 +
@@ -2183,7 +2385,10 @@ class _FxOverlayPainter extends CustomPainter {
       canvas.drawPath(dash, chunkPaint);
       final label = TextPainter(
         text: TextSpan(
-          text: ((x * 2654435761) % 0x1000000).toInt().toRadixString(16).padLeft(6, '0'),
+          text: ((x * 2654435761) % 0x1000000)
+              .toInt()
+              .toRadixString(16)
+              .padLeft(6, '0'),
           style: const TextStyle(
             fontSize: 8,
             color: Color(0xFF55D7DE),
@@ -2259,7 +2464,8 @@ class _SelectionPainter extends CustomPainter {
   final Color trackColor;
 
   double _noteTopY(int pitch) =>
-      (topPitch - pitch) * rowHeight + (rowHeight - _noteHeightFor(rowHeight)) / 2;
+      (topPitch - pitch) * rowHeight +
+      (rowHeight - _noteHeightFor(rowHeight)) / 2;
 
   @override
   void paint(Canvas canvas, Size size) {

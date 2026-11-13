@@ -2,8 +2,8 @@
 library;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lilt/api/engine_client.dart';
-import 'package:lilt/screens/editor_screen.dart';
+import 'package:rusted_utau/api/engine_client.dart';
+import 'package:rusted_utau/screens/editor_screen.dart';
 
 /// Live smoke test against a RUNNING synth-server (CONTRACT-v1).
 ///

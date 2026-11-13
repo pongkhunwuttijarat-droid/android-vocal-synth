@@ -5,11 +5,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:lilt/api/engine_client.dart';
-import 'package:lilt/main.dart';
-import 'package:lilt/screens/editor_screen.dart';
-import 'package:lilt/screens/settings_screen.dart';
-import 'package:lilt/screens/voicebanks_screen.dart';
+import 'package:rusted_utau/api/engine_client.dart';
+import 'package:rusted_utau/main.dart';
+import 'package:rusted_utau/screens/editor_screen.dart';
+import 'package:rusted_utau/screens/settings_screen.dart';
+import 'package:rusted_utau/screens/voicebanks_screen.dart';
 
 const _liveVoicebanks = {
   'voicebanks': [
@@ -73,7 +73,7 @@ void main() {
   testWidgets('AppShell renders, loads live voicebanks, switches tabs', (
     tester,
   ) async {
-    await tester.pumpWidget(LiltApp(client: liveClient()));
+    await tester.pumpWidget(RustedUtauApp(client: liveClient()));
     await tester.pumpAndSettle();
 
     expect(find.text('Editor'), findsWidgets);
@@ -101,7 +101,7 @@ void main() {
 
   testWidgets('Voicebanks falls back to mock list + offline banner when '
       'server is unreachable', (tester) async {
-    await tester.pumpWidget(LiltApp(client: offlineClient()));
+    await tester.pumpWidget(RustedUtauApp(client: offlineClient()));
     // Switch to the Voicebanks tab (its content is offstage in the
     // IndexedStack until then).
     await tester.tap(find.text('Voicebanks').first);
@@ -136,12 +136,12 @@ void main() {
     // EnginePaths.saveWav resolves (null = "not on Android") instead of
     // hanging the platform channel.
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-      const MethodChannel('com.lilt.lilt/engine'),
+      const MethodChannel('com.rustedutau.app/engine'),
       (call) async => null,
     );
     addTearDown(() {
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-        const MethodChannel('com.lilt.lilt/engine'),
+        const MethodChannel('com.rustedutau.app/engine'),
         null,
       );
     });
@@ -172,7 +172,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('⬇  Export audio'));
     await tester.pumpAndSettle();
-    expect(renderedProject, '/tmp/lilt-editor-song.ustx');
+    expect(renderedProject, '/tmp/rusted-utau-editor-song.ustx');
     expect(renderedVoicebank, kDemoRenderVoicebank);
     expect(find.textContaining('Rendered'), findsOneWidget);
     expect(find.textContaining('86 KB'), findsOneWidget);

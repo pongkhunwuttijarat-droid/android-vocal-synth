@@ -1,28 +1,19 @@
 import 'dart:async';
-import 'dart:io' show File, Platform;
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../api/engine_client.dart';
 import '../api/engine_paths.dart';
-import '../data/badapple_demo.dart';
-import '../editor_ustx.dart';
 import '../models.dart';
-import '../project/project_doc.dart';
+import '../project/engine_project_session.dart';
 import '../project/server_project_store.dart';
 import '../theme.dart';
-import '../widgets/mixer_panel.dart';
 import '../widgets/piano_roll.dart';
+import '../widgets/track_fx_panel.dart';
 
-/// v1 demo render target (CONTRACT-v1 §4/§5): export always renders the
-/// FIXED demo project on the engine machine — note editing → .ustx project
-/// is out of scope for v1.
-///
-/// On Android the bundled server runs inside the app and the paths come
-/// from the platform channel (EnginePaths); on desktop dev these host-side
-/// defaults are used.
 const String kDemoRenderProject =
     '/home/seal/project/android-voice-synth/native/test-data/demo-song.ustx';
 const String kDemoRenderVoicebank =
@@ -42,58 +33,12 @@ class EditorScreen extends StatefulWidget {
 }
 
 class _EditorScreenState extends State<EditorScreen> {
-  static final List<Track> _defaultTracks = [
-    // Vocal scale demo — "la la la" (l A): C major, 2 octaves up + down.
-    // Phonemes l/A exist as singles AND as the "l A" pair in Teto English,
-    // so the scale renders gap-free (unlike the previous song demos).
-    Track(
-      name: 'Vocal Scale',
-      colorSeed: 0,
-      notes: [
-        Note(lyric: 'la[l A]', pitch: 0, position: 0.0, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 2, position: 0.5, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 4, position: 1.0, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 5, position: 1.5, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 7, position: 2.0, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 9, position: 2.5, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 11, position: 3.0, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 12, position: 3.5, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 14, position: 4.0, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 16, position: 4.5, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 17, position: 5.0, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 19, position: 5.5, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 21, position: 6.0, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 23, position: 6.5, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 24, position: 7.0, duration: 0.5),
-        // Descending: C6 → C4 (14 notes)
-        Note(lyric: 'la[l A]', pitch: 23, position: 7.5, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 21, position: 8.0, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 19, position: 8.5, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 17, position: 9.0, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 16, position: 9.5, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 14, position: 10.0, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 12, position: 10.5, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 11, position: 11.0, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 9, position: 11.5, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 7, position: 12.0, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 5, position: 12.5, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 4, position: 13.0, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 2, position: 13.5, duration: 0.5),
-        Note(lyric: 'la[l A]', pitch: 0, position: 14.0, duration: 1.0),
-      ],
-    ),
-    // The DiffSinger demo — "Bad Apple!!" (full UST, 867 notes, tempo
-    // 138) — Japanese romaji lyrics; the no7's ja/ voice renders the
-    // Japanese accent. Select the "DiffSinger" engine + this track.
-    ...badappleDemoTracks(),
-  ];
-
-  int _selectedTrack = 1;
+  int _selectedTrack = 0;
 
   /// Side panel (Project/Sections) collapsed — mirrors ui-mock's ◀ toggle.
   bool _panelCollapsed = false;
 
-  /// Mixer bottom panel visibility — mirrors ui-mock's ⊞ Mixer toggle.
+  /// Selected-track FX panel visibility.
   bool _mixerOpen = false;
 
   late final ApiClient _client = widget.client ?? ApiClient();
@@ -106,6 +51,7 @@ class _EditorScreenState extends State<EditorScreen> {
   /// audio, never a linear estimate).
   final StreamController<double> _playbackPositions =
       StreamController<double>.broadcast();
+
   /// Real audio duration (seconds) — the playhead clamps against THIS so
   /// it reaches the end exactly when the audio ends (engine switches
   /// change the rendered wav length; a beats-based estimate never
@@ -131,23 +77,20 @@ class _EditorScreenState extends State<EditorScreen> {
       }
     });
   }
+
   bool _exporting = false;
+
   /// A render is in flight — the ⋯ menu shows Stop instead of Export.
   bool _renderActive = false;
 
   /// Debounce timer for re-render-on-edit (fires 500ms after the last edit).
   Timer? _editDebounce;
 
-  /// Latest RAW rendered audio (synth only — NO mixer FX). Re-rendered on
-  /// edit; the mixer FX is applied separately at playback time via
-  /// `/post-fx`, so fader/EQ drags never re-synthesize.
-  Uint8List? _rawAudio;
-
   /// Server phonemizer labels per note index (current track) — pushed to
   /// the roll for the SynthV labels above the notes.
   Map<int, List<String>>? _phonemesByNote;
 
-  /// Latest FINAL audio (raw + current mixer FX). This is what Play uses.
+  /// Latest session-rendered track audio, including its authoritative FX.
   Uint8List? _latestAudio;
 
   /// True when the rendered audio no longer matches the project (notes,
@@ -163,21 +106,24 @@ class _EditorScreenState extends State<EditorScreen> {
   /// NO way to stop a playing track: "ยังขัดไม่ได้").
   bool _isPlaying = false;
 
-  /// Current mixer FX params JSON (from the MixerPanel); null = no FX
-  /// (play the raw synth). Applied via `/post-fx` at playback time.
-  String? _mixerParams;
-
   /// Synthesis engine: "r1" (WORLDLINE-R — C++ PhraseSynth, default),
   /// "r2" (WORLDLINE-R2 — neural mel→HiFiGAN), "classic"
   /// (WORLDLINE-R Classic — SynthFeatures → C++ WorldSynthesis).
-  String _engine = 'diffsinger';
+  String _engine = 'r1';
 
-  /// Current project tracks (default demo, replaced by Open project).
-  List<Track> _tracks = List.of(_defaultTracks);
+  /// Disposable editor view of the Rust-owned session snapshot.
+  EngineProjectSession? _session;
+  List<Track> _tracks = const [];
+  Map<int, List<PitchPoint>> _sessionCurves = const {};
+  final Map<int, List<Note>> _pendingNotes = {};
+  Future<void> _sessionQueue = Future<void>.value();
+  String? _activeGroupId;
+  String? _activeCurveId;
+  int _currentRevision = 0;
+  bool _sessionReady = false;
 
-  /// Name of the current project (used for the save file name). Defaults
-  /// to the demo; renamed by Save As / Open.
-  String _projectName = 'Lilt Editor Song';
+  /// Display name mirrors the current engine snapshot.
+  String _projectName = 'Demo Song';
 
   /// Path of the last successful save — null until the first save. The
   /// autosave cycle writes here (no Save As dialog on every edit).
@@ -188,104 +134,26 @@ class _EditorScreenState extends State<EditorScreen> {
   /// the app never loses work ("ควรทำระบบ save cycle ได้แล้ว").
   Timer? _autosaveTimer;
 
-  /// The project store (server-backed — ALL project data lives on the
-  /// server; the app only ships the JSON view over HTTP).
+  /// Used only for the server-owned project list UI.
   ServerProjectStore? _store;
 
-  /// Project tempo — the Vocal Scale demo is authored at 110 BPM. This must
-  /// match the demo or the rendered audio differs from the engine reference
-  /// (beat→ms conversion uses it for notes AND curve points).
-  final int _bpm = 110;
+  int get _bpm => _session?.bpm.round() ?? 120;
 
-  /// Edited notes per track index (preserved across track switches — the
-  /// roll reloads from here instead of the const originals, so edits are
-  /// NOT lost when switching tracks).
-  final Map<int, List<Note>> _editedNotes = {};
-
-  /// Edited pitch curves per track index (same preservation rule).
-  final Map<int, List<PitchPoint>> _editedCurves = {};
-
-  /// Tracks handed to the roll: originals with any per-track edits merged
-  /// in, so a switch back to an edited track shows the edited notes.
-  /// Phonemes for the SynthV labels are derived from the lyric's
-  /// `word[ph ph]` hint when present (the editor's notes carry them, e.g.
-  /// 'la[l A]'), otherwise the lyric is shown without phoneme boxes.
-  List<Track> get _editableTracks => [
-    for (var i = 0; i < _tracks.length; i++)
-      Track(
-        name: _tracks[i].name,
-        colorSeed: _tracks[i].colorSeed,
-        notes: [
-          for (final n in _editedNotes[i] ?? _tracks[i].notes)
-            n.copyWith(phoneme: _phonemeFromLyric(n.lyric)),
-        ],
-      ),
-  ];
-
-  /// Extract the phoneme hint from a lyric: `word[ph1 ph2]` → "ph1 ph2".
-  /// No hint → empty (no labels). This mirrors how the ustx writer
-  /// already embeds hints for the phonemizer.
-  static String _phonemeFromLyric(String lyric) {
-    final m = RegExp(r'\[([^\]]+)\]').firstMatch(lyric);
-    return m?.group(1)?.trim() ?? '';
-  }
-
-  /// Resolve the render target for this platform: build a .ustx from the
-  /// editor's CURRENT notes (all tracks) and persist it where the engine
-  /// can read it — filesDir/engine/ on Android (via channel), a temp file
-  /// on desktop. Returns (projectPath, voicebankName).
-  Future<(String project, String voicebank)> _renderTarget() async {
-    final ustx = _buildCurrentUstx();
-    if (!kIsWeb && Platform.isAndroid) {
-      final paths = await EnginePaths.tryResolve();
-      if (paths != null) {
-        final written = await EnginePaths.writeProject(
-          ustx,
-          fileName: 'editor-song.ustx',
-        );
-        if (written != null) {
-          return (written, 'teto-english');
-        }
-      }
-    }
-    // Desktop dev: write to a temp file the host server can read.
-    final tmp = File('/tmp/lilt-editor-song.ustx');
-    tmp.writeAsStringSync(ustx);
-    return (tmp.path, kDemoRenderVoicebank);
-  }
-
-  /// Serialize the editor's current state (every track + its curve).
-  String _buildCurrentUstx() {
-    return buildUstx(
-      name: 'Lilt Editor Song',
-      bpm: _bpm,
-      tracks: [
-        for (var i = 0; i < _editableTracks.length; i++)
-          TrackNotes(
-            name: _editableTracks[i].name,
-            notes: _editedNotes[i] ?? const [],
-          ),
-      ],
-      curvesByTrack: _editedCurves,
-    );
-  }
-
-  /// Save the current project via the store (Rust .ustx codec). Returns
-  /// the saved path, or null on failure.
+  /// Save the authoritative Rust session, including its stable-ID sidecar.
   Future<String?> _saveProject() async {
     try {
-      final store = _store ??= ServerProjectStore(_client);
-      final doc = ProjectDoc(
+      final session = _session;
+      if (session == null)
+        throw const ApiException('project session is not ready');
+      await _client.saveProjectSession(
+        sessionId: session.sessionId,
         name: _projectName,
-        bpm: _bpm.toDouble(),
-        tracks: _editableTracks,
-        curvesByTrack: Map.of(_editedCurves),
+        expectedRevision: session.revision,
       );
-      final path = await store.save(doc);
-      _lastSavedPath = path;
-      debugPrint('saved project → $path');
+      _lastSavedPath = _projectName;
+      debugPrint('saved project session → $_projectName');
       if (mounted) _showSnack('💾 Saved: $_projectName');
-      return path;
+      return _projectName;
     } catch (e) {
       debugPrint('save project failed: $e');
       return null;
@@ -343,24 +211,18 @@ class _EditorScreenState extends State<EditorScreen> {
   /// tracks + curves into the editor.
   Future<bool> _openProject(String path) async {
     try {
-      final store = _store ??= ServerProjectStore(_client);
-      final doc = await store.load(path);
-      if (doc == null || doc.tracks.isEmpty) return false;
-      setState(() {
-        _tracks = doc.tracks;
-        _projectName = doc.name;
-        _lastSavedPath = path;
-        _editedNotes
-          ..clear()
-          ..addAll({
-            for (var i = 0; i < doc.tracks.length; i++)
-              i: List.of(doc.tracks[i].notes),
-          });
-        _editedCurves
-          ..clear()
-          ..addAll(doc.curvesByTrack ?? const {});
-        _selectedTrack = 0;
-      });
+      final opened = await _client.openProjectSession(
+        source: {'type': 'stored_project', 'name': path},
+      );
+      final snap = (opened['snapshot'] as Map).cast<String, dynamic>();
+      final sessionId = opened['session_id'] as String? ?? '';
+      final normalized = Map<String, dynamic>.from(snap)
+        ..['session_id'] = sessionId;
+      final view = EngineProjectSession.fromJson(normalized);
+      if (view.tracks.isEmpty) return false;
+      await _replaceSession(view);
+      _projectName = view.name;
+      _lastSavedPath = path;
       return true;
     } catch (e) {
       debugPrint('open project failed: $e');
@@ -410,11 +272,322 @@ class _EditorScreenState extends State<EditorScreen> {
 
   /// Display name for an engine id (r1/r2/classic).
   String _engineLabel(String id) => switch (id) {
-        'r2' => 'WORLDLINE-R2',
-        'classic' => 'Classic',
-        'diffsinger' => 'DiffSinger',
-        _ => 'WORLDLINE-R',
-      };
+    'r2' => 'WORLDLINE-R2',
+    'classic' => 'Classic',
+    'diffsinger' => 'DiffSinger',
+    _ => 'WORLDLINE-R',
+  };
+
+  Future<void> _initializeSession() async {
+    try {
+      final yaml = await rootBundle.loadString(
+        'android/app/src/main/assets/engine/demo-song.ustx',
+      );
+      final opened = await _client.openProjectSession(
+        source: {'type': 'imported_ustx', 'name': 'Demo Song', 'ustx': yaml},
+      );
+      final snapshot = (opened['snapshot'] as Map).cast<String, dynamic>();
+      final normalized = Map<String, dynamic>.from(snapshot)
+        ..['session_id'] = opened['session_id'];
+      await _replaceSession(EngineProjectSession.fromJson(normalized));
+      if (mounted) _scheduleReRender();
+    } catch (e) {
+      debugPrint('open project session failed: $e');
+      if (mounted) _showSnack('Could not open project: $e');
+    }
+  }
+
+  Future<void> _replaceSession(EngineProjectSession next) async {
+    final previous = _session;
+    if (previous != null && previous.sessionId != next.sessionId) {
+      try {
+        await _client.closeProjectSession(previous.sessionId);
+      } catch (e) {
+        debugPrint('close previous project session failed: $e');
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _session = next;
+      _currentRevision = next.revision;
+      _tracks = next.tracks;
+      _sessionCurves = next.curvesByTrack;
+      _projectName = next.name;
+      _selectedTrack = _selectedTrack
+          .clamp(0, (next.tracks.length - 1).clamp(0, 999))
+          .toInt();
+      _pendingNotes
+        ..clear()
+        ..addAll({
+          for (var i = 0; i < next.tracks.length; i++) i: next.tracks[i].notes,
+        });
+      _activeGroupId = null;
+      _activeCurveId = _findPitchCurveId(next);
+      _sessionReady = true;
+      _audioDirty = true;
+      _latestAudio = null;
+    });
+    _refreshPhonemes();
+  }
+
+  String? _findPitchCurveId(EngineProjectSession session) {
+    final parts = session.trackParts(_selectedTrack);
+    if (parts.isEmpty) return null;
+    final curves = (parts.first['curves'] as List? ?? const [])
+        .whereType<Map<String, dynamic>>();
+    for (final curve in curves) {
+      if (curve['abbr'] == 'pitd') return curve['id'] as String?;
+    }
+    return null;
+  }
+
+  void _enqueueSession(Future<void> Function() operation) {
+    _sessionQueue = _sessionQueue.then((_) async {
+      try {
+        await operation();
+      } catch (e) {
+        debugPrint('project session operation failed: $e');
+        _activeGroupId = null;
+        final current = _session;
+        if (current != null) await _refreshSessionSnapshot(current.sessionId);
+        if (mounted) _showSnack('Edit rejected: $e');
+      }
+    });
+  }
+
+  void _beginEditGroup(String label) {
+    if (!_sessionReady) return;
+    _enqueueSession(() async {
+      final session = _session;
+      if (session == null || _activeGroupId != null) return;
+      final result = await _client.beginProjectGroup(
+        sessionId: session.sessionId,
+        expectedRevision: _currentRevision,
+        name: label,
+      );
+      _activeGroupId = result['group_id'] as String?;
+    });
+  }
+
+  void _endEditGroup() {
+    _enqueueSession(() async {
+      final session = _session;
+      final groupId = _activeGroupId;
+      if (session == null || groupId == null) return;
+      await _client.finishProjectGroup(
+        sessionId: session.sessionId,
+        groupId: groupId,
+        expectedRevision: _currentRevision,
+      );
+      _activeGroupId = null;
+      await _refreshSessionSnapshot(session.sessionId);
+      _audioDirty = true;
+      _scheduleReRender();
+      _scheduleAutosave();
+    });
+  }
+
+  void _onNotesChanged(List<Note> notes) {
+    if (!_sessionReady || _selectedTrack >= _tracks.length) return;
+    final trackIndex = _selectedTrack;
+    final before = List<Note>.of(
+      _pendingNotes[trackIndex] ?? _tracks[trackIndex].notes,
+    );
+    final after = List<Note>.of(notes);
+    _pendingNotes[trackIndex] = after;
+    _enqueueSession(() async {
+      final session = _session;
+      if (session == null) return;
+      final afterByKey = {for (final note in after) note.localKey: note};
+      final beforeKeys = {for (final note in before) note.localKey};
+      for (final old in before) {
+        final updated = afterByKey[old.localKey];
+        if (updated == null) {
+          if (old.engineId != null) {
+            await _sendSessionCommand({
+              'type': 'note.remove',
+              'note_id': old.engineId,
+            });
+          }
+          continue;
+        }
+        final noteId = old.engineId ?? updated.engineId;
+        if (noteId == null) continue;
+        final deltaPosition = ((updated.position - old.position) * 480).round();
+        final deltaTone = updated.pitch - old.pitch;
+        if (deltaPosition != 0 || deltaTone != 0) {
+          await _sendSessionCommand({
+            'type': 'note.move',
+            'note_id': noteId,
+            'delta_position_ticks': deltaPosition,
+            'delta_tone': deltaTone,
+          });
+        }
+        final deltaDuration = ((updated.duration - old.duration) * 480).round();
+        if (deltaDuration != 0) {
+          await _sendSessionCommand({
+            'type': 'note.resize',
+            'note_id': noteId,
+            'delta_duration_ticks': deltaDuration,
+            'from_start': false,
+          });
+        }
+        if (updated.lyric != old.lyric) {
+          await _sendSessionCommand({
+            'type': 'note.set_lyric',
+            'note_id': noteId,
+            'lyric': updated.lyric,
+          });
+        }
+      }
+      for (final note in after.where((n) => !beforeKeys.contains(n.localKey))) {
+        final partId = note.enginePartId ?? _tracks[trackIndex].enginePartId;
+        if (partId == null)
+          throw const ApiException('track has no editable voice part');
+        final partStart = note.enginePartPositionTicks != 0
+            ? note.enginePartPositionTicks
+            : _tracks[trackIndex].enginePartPositionTicks;
+        final result = await _sendSessionCommand({
+          'type': 'note.add',
+          'part_id': partId,
+          'position_ticks': (note.position * 480).round() - partStart,
+          'duration_ticks': (note.duration * 480).round(),
+          'tone': note.pitch + 60,
+          'lyric': note.lyric,
+        });
+        final changes = result['changes'] as List? ?? const [];
+        for (final raw in changes.whereType<Map<String, dynamic>>()) {
+          if (raw['kind'] == 'note.added' && raw['note_id'] is String) {
+            final index = after.indexWhere(
+              (item) => item.localKey == note.localKey,
+            );
+            if (index >= 0)
+              after[index] = note.copyWith(engineId: raw['note_id'] as String);
+          }
+        }
+        _pendingNotes[trackIndex] = after;
+      }
+      if (_activeGroupId == null) {
+        await _refreshSessionSnapshot(session.sessionId);
+        _scheduleReRender();
+        _scheduleAutosave();
+      }
+    });
+  }
+
+  Future<Map<String, dynamic>> _sendSessionCommand(
+    Map<String, dynamic> command,
+  ) async {
+    final session = _session;
+    if (session == null)
+      throw const ApiException('project session is not ready');
+    final result = await _client.applyProjectCommand(
+      sessionId: session.sessionId,
+      expectedRevision: _currentRevision,
+      command: command,
+      groupId: _activeGroupId,
+    );
+    _currentRevision =
+        (result['revision'] as num?)?.toInt() ?? _currentRevision;
+    for (final raw
+        in (result['changes'] as List? ?? const [])
+            .whereType<Map<String, dynamic>>()) {
+      if (raw['abbr'] == 'pitd' && raw['curve_id'] is String) {
+        _activeCurveId = raw['curve_id'] as String;
+      }
+    }
+    return result;
+  }
+
+  void _onCurveChanged(List<PitchPoint> points) {
+    if (!_sessionReady || _selectedTrack >= _tracks.length) return;
+    final trackIndex = _selectedTrack;
+    final track = _tracks[trackIndex];
+    final parts = _session?.trackParts(trackIndex) ?? const [];
+    if (parts.isEmpty || track.enginePartId == null) return;
+    final part = parts.first;
+    final partStart = (part['position_ticks'] as num?)?.toInt() ?? 0;
+    final partDuration = (part['duration_ticks'] as num?)?.toInt() ?? 0;
+    if (partDuration <= 0) return;
+    final notes = _pendingNotes[trackIndex] ?? track.notes;
+    _enqueueSession(() async {
+      final session = _session;
+      if (session == null) return;
+      final curvePoints = points
+          .map((point) {
+            final base = _baseNotePitch(notes, point.beat);
+            return {
+              'tick': ((point.beat * 480).round() - partStart).clamp(
+                0,
+                partDuration,
+              ),
+              'value': ((point.semitones - base) * 100).round(),
+            };
+          })
+          .toList(growable: false);
+      final create = _activeCurveId == null;
+      await _sendSessionCommand({
+        'type': 'curve.apply_stroke',
+        'part_id': track.enginePartId,
+        'curve_id': create ? null : _activeCurveId,
+        'abbr': 'pitd',
+        'create': create,
+        'mode': 'replace',
+        'start_tick': 0,
+        'end_tick': partDuration,
+        'points': curvePoints,
+      });
+      if (_activeGroupId == null) {
+        await _refreshSessionSnapshot(session.sessionId);
+        _scheduleReRender();
+        _scheduleAutosave();
+      }
+    });
+  }
+
+  double _baseNotePitch(List<Note> notes, double beat) {
+    if (notes.isEmpty) return 0;
+    final nearest = notes.reduce((a, b) {
+      final da = (a.position + a.duration / 2 - beat).abs();
+      final db = (b.position + b.duration / 2 - beat).abs();
+      return da <= db ? a : b;
+    });
+    return nearest.pitch.toDouble();
+  }
+
+  Future<void> _refreshSessionSnapshot(String sessionId) async {
+    final json = await _client.readProjectSession(sessionId);
+    final next = EngineProjectSession.fromJson(json);
+    if (!mounted) return;
+    setState(() {
+      _session = next;
+      _currentRevision = next.revision;
+      _tracks = next.tracks;
+      _sessionCurves = next.curvesByTrack;
+      _pendingNotes
+        ..clear()
+        ..addAll({
+          for (var i = 0; i < next.tracks.length; i++) i: next.tracks[i].notes,
+        });
+      _activeCurveId = _findPitchCurveId(next);
+    });
+    _refreshPhonemes();
+  }
+
+  void _changeHistory({required bool undo}) {
+    _enqueueSession(() async {
+      final session = _session;
+      if (session == null) return;
+      await _client.changeProjectHistory(
+        sessionId: session.sessionId,
+        undo: undo,
+      );
+      await _refreshSessionSnapshot(session.sessionId);
+      _audioDirty = true;
+      _scheduleReRender();
+      _scheduleAutosave();
+    });
+  }
 
   /// Re-render quietly 500ms after the last edit (debounced). Uses the
   /// engine render cache, so an unchanged edit round-trips fast; stores
@@ -437,55 +610,26 @@ class _EditorScreenState extends State<EditorScreen> {
   /// Falls back to the painter's hint/letter-split when the engine is
   /// down — labels never block playback.
   Future<void> _refreshPhonemes() async {
-    try {
-      final (project, voicebank) = await _renderTarget();
-      final resp = await _client.phonemize(
-        project: project,
-        voicebank: voicebank,
-        track: _selectedTrack,
-      );
-      final notes = resp['notes'] as List<dynamic>?;
-      if (notes == null || !mounted) return;
-      final map = <int, List<String>>{};
-      for (var i = 0; i < notes.length; i++) {
-        final ph = (notes[i] as Map<String, dynamic>)['phonemes'];
-        map[i] = (ph as List<dynamic>? ?? const [])
-            .map((e) => e.toString())
-            .toList();
-      }
-      setState(() => _phonemesByNote = map);
-    } catch (e) {
-      debugPrint('phonemize failed (labels fall back to hints): $e');
-    }
+    // The legacy phonemize endpoint requires a saved project path. A
+    // session-scoped read model is not part of the frozen v2 contract yet.
+    _phonemesByNote = null;
   }
 
-  /// Render the current project through the engine (synth only — no mixer
-  /// FX), store the raw wav, then re-apply the current mixer FX so
-  /// [_latestAudio] stays fresh.
+  /// Render the selected track from the authoritative session. The engine
+  /// applies that track's fader, pan and UMixFx and returns stereo WAV.
   Future<void> _renderRaw() async {
-    final (project, voicebank) = await _renderTarget();
-    final wav = await _client.render(
-      project: project,
-      voicebank: voicebank,
+    final session = _session;
+    if (session == null) return;
+    final wav = await _client.renderProjectSession(
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      voicebank: 'teto-english',
       engine: _engine,
+      track: _selectedTrack,
     );
-    _rawAudio = wav;
-    _latestAudio = await _applyMixerFx(wav);
+    _latestAudio = wav;
     _audioDirty = false;
-    debugPrint('rendered raw: ${wav.length} bytes');
-  }
-
-  /// Apply the current mixer FX to a raw wav via `/post-fx` (post-synth —
-  /// no re-synthesis). Returns the raw wav unchanged when no FX is set.
-  Future<Uint8List> _applyMixerFx(Uint8List raw) async {
-    final params = _mixerParams;
-    if (params == null || params.isEmpty) return raw;
-    try {
-      return await _client.postFx(rawWav: raw, paramsJson: params);
-    } catch (e) {
-      debugPrint('post-fx failed (playing raw): $e');
-      return raw;
-    }
+    debugPrint('rendered stereo track: ${wav.length} bytes');
   }
 
   /// Play button → ensure fresh audio (render if stale, re-FX if mixer
@@ -547,13 +691,7 @@ class _EditorScreenState extends State<EditorScreen> {
   @override
   void initState() {
     super.initState();
-    // Pre-render the song in the background right after the first frame:
-    // Play becomes instant instead of blocking on the first full render
-    // ("Rendering… (first time takes a while)"). Debounced + error-caught
-    // inside _scheduleReRender, so a cold start with no server just logs.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scheduleReRender();
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _initializeSession());
   }
 
   @override
@@ -567,11 +705,10 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   /// Export → `POST /render` on the engine server (CONTRACT-v1 §4), then
-  /// SAVE the wav to public Downloads/Lilt/ via MediaStore so the user can
-  /// find the file (Files app → Downloads → Lilt).
+  /// SAVE the wav to public Downloads/rusted Utau/ via MediaStore so the user can
+  /// find the file (Files app → Downloads → rusted Utau).
   ///
-  /// v1 renders the fixed demo project ([kDemoRenderProject] /
-  /// [kDemoRenderVoicebank]).
+  /// Render the current Rust session and save its audio artifact.
   Future<void> _exportAudio() async {
     if (_exporting) return;
     final messenger = ScaffoldMessenger.of(context);
@@ -579,7 +716,7 @@ class _EditorScreenState extends State<EditorScreen> {
       ..hideCurrentSnackBar()
       ..showSnackBar(
         const SnackBar(
-          content: Text('Rendering demo project on engine…'),
+          content: Text('Rendering current project…'),
           behavior: SnackBarBehavior.floating,
           duration: Duration(seconds: 2),
         ),
@@ -588,21 +725,22 @@ class _EditorScreenState extends State<EditorScreen> {
       _exporting = true;
       _renderActive = true;
     });
-    final epoch = _client.renderEpoch;
     try {
-      final (project, voicebank) = await _renderTarget();
-      final wav = await _client.render(
-        project: project,
-        voicebank: voicebank,
+      final session = _session;
+      if (session == null)
+        throw const ApiException('project session is not ready');
+      final wav = await _client.renderProjectSession(
+        sessionId: session.sessionId,
+        expectedRevision: session.revision,
+        voicebank: 'teto-english',
         engine: _engine,
-        epoch: epoch,
+        track: _selectedTrack,
       );
-      // 16-bit mono @ 44100 Hz (worldline SAMPLE_RATE).
-      final durationMs = (wav.length / (2 * 44100) * 1000).round();
+      final durationMs = _wavDurationMillis(wav);
 
-      // Save to public Downloads/Lilt (Android 10+ MediaStore — no runtime
+      // Save to public Downloads/rusted Utau (Android 10+ MediaStore — no runtime
       // permission needed). On desktop/tests the channel is absent → null.
-      final name = 'lilt-${DateTime.now().millisecondsSinceEpoch}.wav';
+      final name = 'rusted-utau-${DateTime.now().millisecondsSinceEpoch}.wav';
       final uri = await EnginePaths.saveWav(wav, name);
 
       if (!mounted) return;
@@ -612,11 +750,11 @@ class _EditorScreenState extends State<EditorScreen> {
           SnackBar(
             content: Text(
               uri != null
-                  ? 'Saved: Downloads/Lilt/$name · ${_formatBytes(wav.length)} · ~$durationMs ms'
+                  ? 'Saved: Downloads/rusted Utau/$name · ${_formatBytes(wav.length)} · ~$durationMs ms'
                   : 'Rendered ${_formatBytes(wav.length)} · ~$durationMs ms (save only on Android)',
             ),
             behavior: SnackBarBehavior.floating,
-            backgroundColor: LiltColors.green.withValues(alpha: 0.85),
+            backgroundColor: RustedUtauColors.green.withValues(alpha: 0.85),
             duration: const Duration(seconds: 6),
           ),
         );
@@ -633,7 +771,7 @@ class _EditorScreenState extends State<EditorScreen> {
             ),
             behavior: SnackBarBehavior.floating,
             backgroundColor: e.message == 'render cancelled'
-                ? LiltColors.green.withValues(alpha: 0.85)
+                ? RustedUtauColors.green.withValues(alpha: 0.85)
                 : const Color(0xFF8A3B3B),
             duration: const Duration(seconds: 6),
           ),
@@ -693,22 +831,44 @@ class _EditorScreenState extends State<EditorScreen> {
       );
   }
 
-  /// Mixer panel changes → store the params and re-apply the FX to the
-  /// RAW audio via `/post-fx` (post-synth — milliseconds, NO re-render).
-  /// Debounced: fader drags fire dozens of events per second.
-  Timer? _mixerDebounce;
-  void _onMixerParams(String paramsJson) {
-    _mixerParams = paramsJson;
-    _mixerDebounce?.cancel();
-    _mixerDebounce = Timer(const Duration(milliseconds: 250), () async {
-      try {
-        final raw = _rawAudio;
-        if (raw == null) return; // nothing rendered yet — Play will FX
-        _latestAudio = await _applyMixerFx(raw);
-      } catch (e) {
-        debugPrint('mixer fx failed: $e');
-      }
+  Future<void> _applyTrackFx(Map<String, dynamic>? value) async {
+    final trackIndex = _selectedTrack;
+    _enqueueSession(() async {
+      final session = _session;
+      if (session == null || trackIndex >= session.trackViews.length) return;
+      final trackId = session.trackViews[trackIndex]['id'] as String?;
+      if (trackId == null) return;
+      await _sendSessionCommand({
+        'type': 'track.set_mix_fx',
+        'track_id': trackId,
+        'mix_fx': value,
+      });
+      await _refreshSessionSnapshot(session.sessionId);
+      _audioDirty = true;
+      _scheduleReRender();
+      _scheduleAutosave();
     });
+    await _sessionQueue;
+  }
+
+  Future<void> _onVibratoChanged(
+    String noteId,
+    Map<String, dynamic> vibrato,
+  ) async {
+    _enqueueSession(() async {
+      final session = _session;
+      if (session == null) return;
+      await _sendSessionCommand({
+        'type': 'note.set_vibrato',
+        'note_id': noteId,
+        'vibrato': vibrato,
+      });
+      await _refreshSessionSnapshot(session.sessionId);
+      _audioDirty = true;
+      _scheduleReRender();
+      _scheduleAutosave();
+    });
+    await _sessionQueue;
   }
 
   static String _formatBytes(int bytes) {
@@ -716,6 +876,16 @@ class _EditorScreenState extends State<EditorScreen> {
       return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
     }
     return '${(bytes / 1024).toStringAsFixed(0)} KB';
+  }
+
+  static int _wavDurationMillis(Uint8List wav) {
+    if (wav.length < 44) return 0;
+    final header = ByteData.sublistView(wav);
+    final channels = header.getUint16(22, Endian.little);
+    final sampleRate = header.getUint32(24, Endian.little);
+    final dataBytes = header.getUint32(40, Endian.little);
+    if (channels == 0 || sampleRate == 0) return 0;
+    return (dataBytes / (channels * 2 * sampleRate) * 1000).round();
   }
 
   @override
@@ -748,18 +918,9 @@ class _EditorScreenState extends State<EditorScreen> {
                 style: const TextStyle(fontSize: 12, color: Colors.white70),
                 dropdownColor: const Color(0xFF2A2F3A),
                 items: const [
-                  DropdownMenuItem(
-                    value: 'r1',
-                    child: Text('WORLDLINE-R'),
-                  ),
-                  DropdownMenuItem(
-                    value: 'r2',
-                    child: Text('WORLDLINE-R2'),
-                  ),
-                  DropdownMenuItem(
-                    value: 'classic',
-                    child: Text('Classic'),
-                  ),
+                  DropdownMenuItem(value: 'r1', child: Text('WORLDLINE-R')),
+                  DropdownMenuItem(value: 'r2', child: Text('WORLDLINE-R2')),
+                  DropdownMenuItem(value: 'classic', child: Text('Classic')),
                   DropdownMenuItem(
                     value: 'diffsinger',
                     child: Text('DiffSinger'),
@@ -774,7 +935,6 @@ class _EditorScreenState extends State<EditorScreen> {
                     setState(() {
                       _engine = v;
                       _latestAudio = null;
-                      _rawAudio = null;
                       _audioDirty = true;
                     });
                     _showSnack('Engine: ${_engineLabel(v)} — re-rendering…');
@@ -799,12 +959,16 @@ class _EditorScreenState extends State<EditorScreen> {
           IconButton(
             icon: const Icon(Icons.undo_rounded, size: 20),
             tooltip: 'Undo',
-            onPressed: () {},
+            onPressed: _session?.canUndo == true
+                ? () => _changeHistory(undo: true)
+                : null,
           ),
           IconButton(
             icon: const Icon(Icons.redo_rounded, size: 20),
             tooltip: 'Redo',
-            onPressed: () {},
+            onPressed: _session?.canRedo == true
+                ? () => _changeHistory(undo: false)
+                : null,
           ),
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_horiz_rounded, size: 20),
@@ -849,9 +1013,9 @@ class _EditorScreenState extends State<EditorScreen> {
       body: LayoutBuilder(
         builder: (context, c) {
           final roll = PianoRoll(
-            tracks: _editableTracks,
+            tracks: _tracks,
             selectedTrackIndex: _selectedTrack,
-            curvesByTrack: _editedCurves,
+            curvesByTrack: _sessionCurves,
             // The playhead timeline MUST match the render tempo — the
             // roll's old const BPM 128 ran 6% faster than songs rendered
             // at 110 BPM (playhead finished early → tail cut off).
@@ -865,24 +1029,18 @@ class _EditorScreenState extends State<EditorScreen> {
             phonemesByNote: _phonemesByNote,
             onPlayRequested: _playDemo,
             onPlayStopped: _stopPlayback,
+            onEditGroupBegin: _beginEditGroup,
+            onEditGroupEnd: _endEditGroup,
             onInitialSync: (notes, curve) {
-              _editedNotes[_selectedTrack] = List.of(notes);
-              _editedCurves[_selectedTrack] = List.of(curve);
+              if (_selectedTrack < _tracks.length) {
+                _pendingNotes[_selectedTrack] = List.of(notes);
+              }
             },
-            onNotesChanged: (notes) {
-              _editedNotes[_selectedTrack] = List.of(notes);
-              _audioDirty = true;
-              _scheduleReRender();
-              _scheduleAutosave();
-            },
-            onCurveChanged: (points) {
-              _editedCurves[_selectedTrack] = List.of(points);
-              _audioDirty = true;
-              _scheduleReRender();
-              _scheduleAutosave();
-            },
+            onNotesChanged: (notes) => _onNotesChanged(notes),
+            onCurveChanged: (points) => _onCurveChanged(points),
+            onVibratoChanged: _onVibratoChanged,
           );
-          // SingleChildScrollView: when the mixer is open the panel can
+          // SingleChildScrollView: when the track FX editor is open it can
           // exceed the viewport (tablet system bars) — scroll instead of
           // clipping. The roll gets a bounded height so its own internal
           // scrolling still works inside the outer scroll view.
@@ -904,9 +1062,11 @@ class _EditorScreenState extends State<EditorScreen> {
                 ),
                 _buildMixerToggle(),
                 if (_mixerOpen)
-                  MixerPanel(
-                    tracks: _editableTracks,
-                    onParamsChanged: _onMixerParams,
+                  TrackFxPanel(
+                    track: _selectedTrack < _tracks.length
+                        ? _tracks[_selectedTrack]
+                        : null,
+                    onApply: _applyTrackFx,
                   ),
               ],
             ),
@@ -990,16 +1150,18 @@ class _EditorScreenState extends State<EditorScreen> {
           alignment: Alignment.center,
           decoration: const BoxDecoration(
             border: Border(
-              right: BorderSide(color: LiltColors.line),
-              top: BorderSide(color: LiltColors.line),
-              bottom: BorderSide(color: LiltColors.line),
+              right: BorderSide(color: RustedUtauColors.line),
+              top: BorderSide(color: RustedUtauColors.line),
+              bottom: BorderSide(color: RustedUtauColors.line),
             ),
             borderRadius: BorderRadius.horizontal(right: Radius.circular(6)),
           ),
           child: Icon(
-            _panelCollapsed ? Icons.chevron_right_rounded : Icons.chevron_left_rounded,
+            _panelCollapsed
+                ? Icons.chevron_right_rounded
+                : Icons.chevron_left_rounded,
             size: 14,
-            color: LiltColors.muted,
+            color: RustedUtauColors.muted,
           ),
         ),
       ),
@@ -1015,22 +1177,24 @@ class _EditorScreenState extends State<EditorScreen> {
         alignment: Alignment.center,
         decoration: const BoxDecoration(
           color: Color(0xFF17181F),
-          border: Border(top: BorderSide(color: LiltColors.line)),
+          border: Border(top: BorderSide(color: RustedUtauColors.line)),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
-              _mixerOpen ? Icons.keyboard_arrow_down_rounded : Icons.tune_rounded,
+              _mixerOpen
+                  ? Icons.keyboard_arrow_down_rounded
+                  : Icons.tune_rounded,
               size: 14,
-              color: _mixerOpen ? LiltColors.purple : LiltColors.muted,
+              color: _mixerOpen ? RustedUtauColors.purple : RustedUtauColors.muted,
             ),
             const SizedBox(width: 5),
             Text(
-              _mixerOpen ? 'Hide mixer' : 'Mixer',
+              _mixerOpen ? 'Hide track FX' : 'Track FX',
               style: TextStyle(
                 fontSize: 11,
-                color: _mixerOpen ? LiltColors.purple : LiltColors.muted,
+                color: _mixerOpen ? RustedUtauColors.purple : RustedUtauColors.muted,
                 fontWeight: _mixerOpen ? FontWeight.w700 : FontWeight.w500,
               ),
             ),
@@ -1044,13 +1208,18 @@ class _EditorScreenState extends State<EditorScreen> {
     final t = _tracks[i];
     final sel = i == _selectedTrack;
     final color =
-        LiltColors.trackColors[t.colorSeed % LiltColors.trackColors.length];
+        RustedUtauColors.trackColors[t.colorSeed % RustedUtauColors.trackColors.length];
     return InkWell(
       onTap: () {
         if (_selectedTrack != i) {
-          setState(() => _selectedTrack = i);
+          setState(() {
+            _selectedTrack = i;
+            _latestAudio = null;
+            _audioDirty = true;
+          });
           _phonemesByNote = null; // stale (old track) until re-fetched
           _refreshPhonemes();
+          _scheduleReRender();
         }
       },
       child: Container(
@@ -1095,7 +1264,7 @@ class _EditorScreenState extends State<EditorScreen> {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: 11,
-                      color: sel ? LiltColors.text : const Color(0xFFB5B9C8),
+                      color: sel ? RustedUtauColors.text : const Color(0xFFB5B9C8),
                       fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
                     ),
                   ),
@@ -1105,7 +1274,7 @@ class _EditorScreenState extends State<EditorScreen> {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: 10,
-                      color: sel ? LiltColors.muted : const Color(0xFF666666),
+                      color: sel ? RustedUtauColors.muted : const Color(0xFF666666),
                     ),
                   ),
                 ],
@@ -1115,7 +1284,7 @@ class _EditorScreenState extends State<EditorScreen> {
             Icon(
               Icons.volume_up_rounded,
               size: 14,
-              color: sel ? LiltColors.muted : const Color(0xFF555555),
+              color: sel ? RustedUtauColors.muted : const Color(0xFF555555),
             ),
             const SizedBox(width: 8),
           ],

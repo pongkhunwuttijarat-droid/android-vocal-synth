@@ -1,4 +1,4 @@
-/// Data models for the Lilt UI layer.
+/// Data models for the Rusted UTAU UI layer.
 ///
 /// These mirror the native engine data contracts (see DATA_CONTRACTS.md) but
 /// stay deliberately small: the UI talks to the engine through a future
@@ -7,13 +7,35 @@ library;
 
 /// A single singing note in the piano roll.
 class Note {
-  const Note({
+  Note({
     required this.lyric,
     required this.pitch,
     required this.position,
     required this.duration,
     this.phoneme = '',
-  });
+    this.engineId,
+    this.enginePartId,
+    this.enginePartPositionTicks = 0,
+    this.vibrato = const {},
+    String? localKey,
+  }) : localKey = localKey ?? 'note-${_nextLocalKey++}';
+
+  static int _nextLocalKey = 0;
+
+  /// Stable identity supplied by the Rust project session. Null only for a
+  /// transient note preview that has not yet been accepted by the engine.
+  final String? engineId;
+
+  /// Part containing this note; used when adding an unpersisted note.
+  final String? enginePartId;
+  final int enginePartPositionTicks;
+
+  /// Disposable view of the engine-owned OpenUtau UVibrato value.
+  final Map<String, dynamic> vibrato;
+
+  /// Ephemeral identity used to match a newly drawn note while its add
+  /// command is in flight. This never leaves the frontend.
+  final String localKey;
 
   /// Lyric text shown on the note (e.g. "the").
   final String lyric;
@@ -36,6 +58,11 @@ class Note {
     double? position,
     double? duration,
     String? phoneme,
+    String? engineId,
+    String? enginePartId,
+    int? enginePartPositionTicks,
+    String? localKey,
+    Map<String, dynamic>? vibrato,
   }) {
     return Note(
       lyric: lyric ?? this.lyric,
@@ -43,6 +70,12 @@ class Note {
       position: position ?? this.position,
       duration: duration ?? this.duration,
       phoneme: phoneme ?? this.phoneme,
+      engineId: engineId ?? this.engineId,
+      enginePartId: enginePartId ?? this.enginePartId,
+      enginePartPositionTicks:
+          enginePartPositionTicks ?? this.enginePartPositionTicks,
+      localKey: localKey,
+      vibrato: vibrato ?? this.vibrato,
     );
   }
 }
@@ -53,6 +86,10 @@ class Track {
     required this.name,
     required this.colorSeed,
     required this.notes,
+    this.engineId,
+    this.enginePartId,
+    this.enginePartPositionTicks = 0,
+    this.mixFx,
   });
 
   final String name;
@@ -61,9 +98,20 @@ class Track {
   final int colorSeed;
 
   final List<Note> notes;
+  final String? engineId;
+  final String? enginePartId;
+  final int enginePartPositionTicks;
+  final Map<String, dynamic>? mixFx;
 
-  Track copyWith({List<Note>? notes}) =>
-      Track(name: name, colorSeed: colorSeed, notes: notes ?? this.notes);
+  Track copyWith({List<Note>? notes}) => Track(
+    name: name,
+    colorSeed: colorSeed,
+    notes: notes ?? this.notes,
+    engineId: engineId,
+    enginePartId: enginePartId,
+    enginePartPositionTicks: enginePartPositionTicks,
+    mixFx: mixFx,
+  );
 }
 
 /// A voicebank installed/imported into the app.

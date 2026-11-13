@@ -56,7 +56,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         SnackBar(
           content: Text(message),
           behavior: SnackBarBehavior.floating,
-          backgroundColor: LiltColors.panel2,
+          backgroundColor: RustedUtauColors.panel2,
         ),
       );
   }
@@ -121,8 +121,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// Voicebanks and Editor pick it up without a restart.
   Widget _buildConnectionSection() {
     final statusColor = _connectionOk == null
-        ? LiltColors.muted
-        : (_connectionOk! ? LiltColors.green : _errorRed);
+        ? RustedUtauColors.muted
+        : (_connectionOk! ? RustedUtauColors.green : _errorRed);
     final statusIcon = _connectionOk == null
         ? Icons.lan_outlined
         : (_connectionOk! ? Icons.cloud_done_rounded : Icons.cloud_off_rounded);
@@ -131,7 +131,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
         child: Row(
           children: [
-            const Icon(Icons.dns_rounded, size: 20, color: LiltColors.muted),
+            const Icon(Icons.dns_rounded, size: 20, color: RustedUtauColors.muted),
             const SizedBox(width: 12),
             const Expanded(
               child: Column(
@@ -139,12 +139,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   Text(
                     'Server URL',
-                    style: TextStyle(color: LiltColors.text, fontSize: 14),
+                    style: TextStyle(color: RustedUtauColors.text, fontSize: 14),
                   ),
                   SizedBox(height: 2),
                   Text(
                     'synth-server (CONTRACT-v1) — edit and tap Test connection.',
-                    style: TextStyle(color: LiltColors.muted, fontSize: 12),
+                    style: TextStyle(color: RustedUtauColors.muted, fontSize: 12),
                   ),
                 ],
               ),
@@ -158,28 +158,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
           controller: _serverUrlController,
           onChanged: (value) => _client.baseUrl = value,
           keyboardType: TextInputType.url,
-          style: const TextStyle(color: LiltColors.text, fontSize: 13),
+          style: const TextStyle(color: RustedUtauColors.text, fontSize: 13),
           decoration: InputDecoration(
             isDense: true,
             hintText: kDefaultEngineBaseUrl,
-            hintStyle: const TextStyle(color: LiltColors.muted, fontSize: 13),
+            hintStyle: const TextStyle(color: RustedUtauColors.muted, fontSize: 13),
             filled: true,
-            fillColor: LiltColors.bg,
+            fillColor: RustedUtauColors.bg,
             contentPadding: const EdgeInsets.symmetric(
               horizontal: 12,
               vertical: 10,
             ),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: LiltColors.line),
+              borderSide: const BorderSide(color: RustedUtauColors.line),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: LiltColors.line),
+              borderSide: const BorderSide(color: RustedUtauColors.line),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: LiltColors.purple),
+              borderSide: const BorderSide(color: RustedUtauColors.purple),
             ),
           ),
         ),
@@ -209,7 +209,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: _connectionResult.isEmpty
                   ? const Text(
                       'Not tested yet',
-                      style: TextStyle(color: LiltColors.muted, fontSize: 12),
+                      style: TextStyle(color: RustedUtauColors.muted, fontSize: 12),
                     )
                   : Row(
                       children: [
@@ -243,7 +243,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
         child: Row(
           children: [
-            const Icon(Icons.memory_rounded, size: 20, color: LiltColors.muted),
+            const Icon(Icons.memory_rounded, size: 20, color: RustedUtauColors.muted),
             const SizedBox(width: 12),
             const Expanded(
               child: Column(
@@ -251,12 +251,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   Text(
                     'Renderer',
-                    style: TextStyle(color: LiltColors.text, fontSize: 14),
+                    style: TextStyle(color: RustedUtauColors.text, fontSize: 14),
                   ),
                   SizedBox(height: 2),
                   Text(
                     'WORLD is the main renderer, Classic is the legacy resampler.',
-                    style: TextStyle(color: LiltColors.muted, fontSize: 12),
+                    style: TextStyle(color: RustedUtauColors.muted, fontSize: 12),
                   ),
                 ],
               ),
@@ -354,7 +354,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           underline: const SizedBox.shrink(),
           disabledHint: const Text(
             'Dark',
-            style: TextStyle(color: LiltColors.muted, fontSize: 14),
+            style: TextStyle(color: RustedUtauColors.muted, fontSize: 14),
           ),
           items: const [DropdownMenuItem(value: 'Dark', child: Text('Dark'))],
         ),
@@ -364,7 +364,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         title: 'Show pitch curve by default',
         trailing: Switch(
           value: _showPitchCurve,
-          activeTrackColor: LiltColors.purple2,
+          activeTrackColor: RustedUtauColors.purple2,
           onChanged: (v) => setState(() => _showPitchCurve = v),
         ),
       ),
@@ -377,8 +377,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         icon: Icons.info_outline_rounded,
         title: 'Version',
         trailing: const Text(
-          'Lilt 0.1.0',
-          style: TextStyle(color: LiltColors.muted, fontSize: 14),
+          'rusted Utau 0.1.0',
+          style: TextStyle(color: RustedUtauColors.muted, fontSize: 14),
         ),
       ),
       _row(
@@ -388,7 +388,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         trailing: const Icon(
           Icons.open_in_new_rounded,
           size: 16,
-          color: LiltColors.purple,
+          color: RustedUtauColors.purple,
         ),
       ),
       _row(
@@ -396,7 +396,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         title: 'License',
         trailing: const Text(
           'MIT (based on OpenUtau)',
-          style: TextStyle(color: LiltColors.muted, fontSize: 14),
+          style: TextStyle(color: RustedUtauColors.muted, fontSize: 14),
         ),
       ),
     ]);
@@ -417,7 +417,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: Text(
               title.toUpperCase(),
               style: const TextStyle(
-                color: LiltColors.muted,
+                color: RustedUtauColors.muted,
                 fontSize: 11,
                 fontWeight: FontWeight.w700,
                 letterSpacing: 1.1,
@@ -429,7 +429,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const Divider(
                 height: 1,
                 thickness: 1,
-                color: LiltColors.line,
+                color: RustedUtauColors.line,
                 indent: 48,
               ),
             rows[i],
@@ -449,7 +449,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }) {
     final content = Row(
       children: [
-        Icon(icon, size: 20, color: LiltColors.muted),
+        Icon(icon, size: 20, color: RustedUtauColors.muted),
         const SizedBox(width: 12),
         Expanded(
           child: Column(
@@ -457,13 +457,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
             children: [
               Text(
                 title,
-                style: const TextStyle(color: LiltColors.text, fontSize: 14),
+                style: const TextStyle(color: RustedUtauColors.text, fontSize: 14),
               ),
               if (subtitle != null) ...[
                 const SizedBox(height: 2),
                 Text(
                   subtitle,
-                  style: const TextStyle(color: LiltColors.muted, fontSize: 12),
+                  style: const TextStyle(color: RustedUtauColors.muted, fontSize: 12),
                 ),
               ],
             ],
@@ -506,9 +506,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       isDense: true,
       underline: const SizedBox.shrink(),
       borderRadius: BorderRadius.circular(8),
-      dropdownColor: LiltColors.panel2,
-      icon: const Icon(Icons.arrow_drop_down_rounded, color: LiltColors.muted),
-      style: const TextStyle(color: LiltColors.text, fontSize: 14),
+      dropdownColor: RustedUtauColors.panel2,
+      icon: const Icon(Icons.arrow_drop_down_rounded, color: RustedUtauColors.muted),
+      style: const TextStyle(color: RustedUtauColors.text, fontSize: 14),
       onChanged: onChanged,
       items: [
         for (final item in items)
@@ -532,18 +532,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const Icon(
                 Icons.data_usage_rounded,
                 size: 20,
-                color: LiltColors.muted,
+                color: RustedUtauColors.muted,
               ),
               const SizedBox(width: 12),
               const Expanded(
                 child: Text(
                   'Buffer size',
-                  style: TextStyle(color: LiltColors.text, fontSize: 14),
+                  style: TextStyle(color: RustedUtauColors.text, fontSize: 14),
                 ),
               ),
               Text(
                 '${_bufferSize.round()} samples',
-                style: const TextStyle(color: LiltColors.purple, fontSize: 13),
+                style: const TextStyle(color: RustedUtauColors.purple, fontSize: 13),
               ),
             ],
           ),
@@ -553,8 +553,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             max: 2048,
             divisions: 120, // 16-sample steps
             label: '${_bufferSize.round()} samples',
-            activeColor: LiltColors.purple,
-            inactiveColor: LiltColors.line,
+            activeColor: RustedUtauColors.purple,
+            inactiveColor: RustedUtauColors.line,
             onChanged: (v) => setState(() => _bufferSize = v),
           ),
         ],

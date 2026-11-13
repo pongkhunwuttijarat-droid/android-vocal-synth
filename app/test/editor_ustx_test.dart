@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lilt/editor_ustx.dart';
-import 'package:lilt/models.dart';
+import 'package:rusted_utau/editor_ustx.dart';
+import 'package:rusted_utau/models.dart';
 
 void main() {
   test('buildUstx serializes notes with ticks/tone mapping', () {

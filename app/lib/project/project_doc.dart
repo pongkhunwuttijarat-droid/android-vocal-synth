@@ -1,6 +1,6 @@
 import '../models.dart';
 
-/// A saved Lilt project — the document model for ProjectStore.
+/// A saved Rusted UTAU project — the document model for ProjectStore.
 ///
 /// NOTE (architecture): this is a Dart view-model for the UI + storage
 /// orchestration ONLY. The authoritative serialize/parse of the .ustx

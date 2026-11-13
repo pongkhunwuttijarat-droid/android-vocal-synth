@@ -1,8 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:lilt/models.dart';
-import 'package:lilt/project/project_doc.dart';
-import 'package:lilt/project/project_store.dart';
+import 'package:rusted_utau/models.dart';
+import 'package:rusted_utau/project/project_doc.dart';
+import 'package:rusted_utau/project/project_store.dart';
 
 void main() {
   group('MemoryProjectStore', () {

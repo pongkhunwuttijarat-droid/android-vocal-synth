@@ -12,7 +12,7 @@ import 'ustx_codec.dart';
 /// ARCHITECTURE: Dart = file access only. Serialization goes through the
 /// Rust `.ustx` codec plugin (`UstxCodec` — JSON view in, bytes out);
 /// this class only walks directories and reads/writes files. Project
-/// files live in `<documents>/lilt-projects/<name>.ustx`.
+/// files live in `<documents>/rusted-utau-projects/<name>.ustx`.
 class FileProjectStore implements ProjectStore {
   FileProjectStore(this._codec, [Directory? projectsDir])
       : _overrideDir = projectsDir;
@@ -33,7 +33,7 @@ class FileProjectStore implements ProjectStore {
     final override = _overrideDir;
     if (override != null) return override;
     final docs = await getApplicationDocumentsDirectory();
-    final dir = Directory('${docs.path}/lilt-projects');
+    final dir = Directory('${docs.path}/rusted-utau-projects');
     if (!dir.existsSync()) dir.createSync(recursive: true);
     return dir;
   }

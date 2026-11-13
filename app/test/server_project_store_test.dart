@@ -4,10 +4,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-import 'package:lilt/api/engine_client.dart';
-import 'package:lilt/models.dart';
-import 'package:lilt/project/project_doc.dart';
-import 'package:lilt/project/server_project_store.dart';
+import 'package:rusted_utau/api/engine_client.dart';
+import 'package:rusted_utau/models.dart';
+import 'package:rusted_utau/project/project_doc.dart';
+import 'package:rusted_utau/project/server_project_store.dart';
 
 /// ServerProjectStore + the new EngineClient project/phonemize methods,
 /// driven by a MockClient — no network, no .so needed.

@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:lilt/models.dart';
-import 'package:lilt/widgets/piano_roll.dart';
+import 'package:rusted_utau/models.dart';
+import 'package:rusted_utau/widgets/piano_roll.dart';
 
 void main() {
   testWidgets('curve pencil snaps beats to the capture grid (no duplicate '

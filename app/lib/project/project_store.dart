@@ -1,6 +1,6 @@
 import 'project_doc.dart';
 
-/// Storage abstraction for Lilt projects.
+/// Storage abstraction for Rusted UTAU projects.
 ///
 /// ARCHITECTURE: Dart is the file-access layer ONLY. [save] serializes
 /// through the Rust .ustx codec (plan Task 2 — bytes via FFI) before

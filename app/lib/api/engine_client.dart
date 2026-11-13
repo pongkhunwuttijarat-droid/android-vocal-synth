@@ -274,6 +274,15 @@ class ApiClient implements EngineClient {
   @override
   Future<void> cancel() async {
     renderEpoch++;
+    final sessionRenderId = _activeSessionRenderId;
+    if (sessionRenderId != null) {
+      _activeSessionRenderId = null;
+      try {
+        await cancelProjectRender(sessionRenderId);
+      } on ApiException catch (e) {
+        if (e.statusCode != null && e.statusCode! < 500) rethrow;
+      }
+    }
     try {
       final resp = await _guard(
         _http.post(Uri.parse('$baseUrl/cancel'), headers: _jsonHeaders),
@@ -314,10 +323,7 @@ class ApiClient implements EngineClient {
     final resp = await _guard(
       _http.post(
         Uri.parse('$baseUrl/post-fx'),
-        headers: {
-          ..._jsonHeaders,
-          'x-mixer-params': paramsJson,
-        },
+        headers: {..._jsonHeaders, 'x-mixer-params': paramsJson},
         body: rawWav,
       ),
       renderTimeout,
@@ -403,6 +409,234 @@ class ApiClient implements EngineClient {
     return jsonDecode(resp.body) as Map<String, dynamic>;
   }
 
+  // ---- Draft v2 project session API (CONTRACT-v1 §6) --------------------
+
+  /// Open a Rust-owned session. `source` is a v2 source descriptor such as
+  /// `{type: stored_project, name: ...}` or `{type: imported_ustx, ...}`.
+  Future<Map<String, dynamic>> openProjectSession({
+    required Map<String, dynamic> source,
+  }) async {
+    final resp = await _guard(
+      _http.post(
+        Uri.parse('$baseUrl/api/v2/sessions'),
+        headers: _jsonHeaders,
+        body: jsonEncode({'source': source}),
+      ),
+      renderTimeout,
+      'open-project-session',
+    );
+    _ensureOk(resp, 'open-project-session');
+    return _decodeObject(resp);
+  }
+
+  Future<Map<String, dynamic>> readProjectSession(String sessionId) async {
+    final resp = await _guard(
+      _http.get(_sessionUri(sessionId)),
+      renderTimeout,
+      'read-project-session',
+    );
+    _ensureOk(resp, 'read-project-session');
+    return _decodeObject(resp);
+  }
+
+  Future<Map<String, dynamic>> applyProjectCommand({
+    required String sessionId,
+    required int expectedRevision,
+    required Map<String, dynamic> command,
+    String? groupId,
+  }) async {
+    final resp = await _guard(
+      _http.post(
+        _sessionUri(sessionId, '/commands'),
+        headers: _jsonHeaders,
+        body: jsonEncode({
+          'expected_revision': expectedRevision,
+          if (groupId != null) 'group_id': groupId,
+          'command': command,
+        }),
+      ),
+      renderTimeout,
+      'project-command',
+    );
+    _ensureOk(resp, 'project-command');
+    return _decodeObject(resp);
+  }
+
+  Future<Map<String, dynamic>> beginProjectGroup({
+    required String sessionId,
+    required int expectedRevision,
+    required String name,
+  }) async {
+    final resp = await _guard(
+      _http.post(
+        _sessionUri(sessionId, '/groups'),
+        headers: _jsonHeaders,
+        body: jsonEncode({'expected_revision': expectedRevision, 'name': name}),
+      ),
+      renderTimeout,
+      'begin-project-group',
+    );
+    _ensureOk(resp, 'begin-project-group');
+    return _decodeObject(resp);
+  }
+
+  Future<Map<String, dynamic>> finishProjectGroup({
+    required String sessionId,
+    required String groupId,
+    required int expectedRevision,
+    bool commit = true,
+  }) async {
+    final resp = commit
+        ? await _guard(
+            _http.post(
+              _sessionUri(sessionId, '/groups/$groupId/commit'),
+              headers: _jsonHeaders,
+              body: jsonEncode({'expected_revision': expectedRevision}),
+            ),
+            renderTimeout,
+            'commit-project-group',
+          )
+        : await _guard(
+            _http.post(
+              _sessionUri(sessionId, '/groups/$groupId/cancel'),
+              headers: _jsonHeaders,
+            ),
+            renderTimeout,
+            'cancel-project-group',
+          );
+    _ensureOk(resp, commit ? 'commit-project-group' : 'cancel-project-group');
+    return _decodeObject(resp);
+  }
+
+  Future<Map<String, dynamic>> changeProjectHistory({
+    required String sessionId,
+    required bool undo,
+  }) async {
+    final resp = await _guard(
+      _http.post(
+        _sessionUri(sessionId, undo ? '/undo' : '/redo'),
+        headers: _jsonHeaders,
+      ),
+      renderTimeout,
+      undo ? 'project-undo' : 'project-redo',
+    );
+    _ensureOk(resp, undo ? 'project-undo' : 'project-redo');
+    return _decodeObject(resp);
+  }
+
+  Future<Map<String, dynamic>> saveProjectSession({
+    required String sessionId,
+    required String name,
+    required int expectedRevision,
+  }) async {
+    final resp = await _guard(
+      _http.put(
+        _sessionUri(sessionId, '/save'),
+        headers: _jsonHeaders,
+        body: jsonEncode({'name': name, 'expected_revision': expectedRevision}),
+      ),
+      renderTimeout,
+      'save-project-session',
+    );
+    _ensureOk(resp, 'save-project-session');
+    return _decodeObject(resp);
+  }
+
+  Future<Uint8List> renderProjectSession({
+    required String sessionId,
+    required int expectedRevision,
+    required String voicebank,
+    String engine = 'r1',
+    int track = 0,
+  }) async {
+    final started = await _guard(
+      _http.post(
+        _sessionUri(sessionId, '/render'),
+        headers: _jsonHeaders,
+        body: jsonEncode({
+          'expected_revision': expectedRevision,
+          'voicebank': voicebank,
+          'engine': engine,
+          'track': track,
+        }),
+      ),
+      renderTimeout,
+      'start-session-render',
+    );
+    _ensureOk(started, 'start-session-render');
+    final renderId = _decodeObject(started)['render_id'] as String?;
+    if (renderId == null || renderId.isEmpty) {
+      throw const ApiException('session render: missing render_id');
+    }
+
+    _activeSessionRenderId = renderId;
+    final deadline = DateTime.now().add(renderTimeout);
+    try {
+      while (DateTime.now().isBefore(deadline)) {
+        if (_activeSessionRenderId != renderId) {
+          throw const ApiException('render cancelled');
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        final statusResponse = await _guard(
+          _http.get(Uri.parse('$baseUrl/api/v2/render/$renderId')),
+          renderTimeout,
+          'session-render-status',
+        );
+        _ensureOk(statusResponse, 'session-render-status');
+        final status = _decodeObject(statusResponse);
+        switch (status['status']) {
+          case 'done':
+            final audio = await _guard(
+              _http.get(Uri.parse('$baseUrl/api/v2/render/$renderId/audio')),
+              renderTimeout,
+              'session-render-audio',
+            );
+            _ensureOk(audio, 'session-render-audio');
+            return Uint8List.fromList(audio.bodyBytes);
+          case 'failed':
+            final error = status['error'] as Map<String, dynamic>? ?? const {};
+            throw ApiException(
+              error['message'] as String? ?? 'session render failed',
+            );
+          case 'cancelled':
+            throw const ApiException('render cancelled');
+        }
+      }
+      await cancelProjectRender(renderId);
+      throw ApiException(
+        'session render timed out after ${renderTimeout.inSeconds}s',
+      );
+    } finally {
+      if (_activeSessionRenderId == renderId) _activeSessionRenderId = null;
+    }
+  }
+
+  String? _activeSessionRenderId;
+
+  Future<void> cancelProjectRender(String renderId) async {
+    final resp = await _guard(
+      _http.post(
+        Uri.parse('$baseUrl/api/v2/render/$renderId/cancel'),
+        headers: _jsonHeaders,
+      ),
+      renderTimeout,
+      'cancel-session-render',
+    );
+    _ensureOk(resp, 'cancel-session-render');
+  }
+
+  Future<void> closeProjectSession(String sessionId) async {
+    final resp = await _guard(
+      _http.delete(_sessionUri(sessionId)),
+      renderTimeout,
+      'close-project-session',
+    );
+    _ensureOk(resp, 'close-project-session');
+  }
+
+  Uri _sessionUri(String id, [String suffix = '']) =>
+      Uri.parse('$baseUrl/api/v2/sessions/${Uri.encodeComponent(id)}$suffix');
+
   int renderEpoch = 0;
 
   static const _jsonHeaders = {
@@ -442,8 +676,9 @@ class ApiClient implements EngineClient {
   static String? _errorMessage(http.Response resp) {
     try {
       final json = jsonDecode(resp.body);
-      if (json is Map && json['error'] is String) {
-        return json['error'] as String;
+      if (json is Map) {
+        if (json['message'] is String) return json['message'] as String;
+        if (json['error'] is String) return json['error'] as String;
       }
     } on FormatException {
       // Body was not JSON — fall through to the generic message.

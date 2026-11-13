@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:lilt/api/engine_client.dart';
+import 'package:rusted_utau/api/engine_client.dart';
 
 http.Response _json(Object body, {int status = 200}) => http.Response(
   jsonEncode(body),

@@ -3,23 +3,24 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:lilt/api/engine_client.dart';
-import 'package:lilt/models.dart';
-import 'package:lilt/screens/editor_screen.dart';
-import 'package:lilt/widgets/mixer_panel.dart';
-import 'package:lilt/widgets/piano_roll.dart';
+import 'package:rusted_utau/api/engine_client.dart';
+import 'package:rusted_utau/models.dart';
+import 'package:rusted_utau/screens/editor_screen.dart';
+import 'package:rusted_utau/widgets/mixer_panel.dart';
+import 'package:rusted_utau/widgets/piano_roll.dart';
+import 'package:rusted_utau/widgets/track_fx_panel.dart';
 
 /// New-feature tests: SynthV phoneme labels above notes, collapsible side
 /// panel, and the mixer bottom panel — all additive to the existing roll.
 void main() {
   Future<void> pumpEditor(WidgetTester tester) async {
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-      const MethodChannel('com.lilt.lilt/engine'),
+      const MethodChannel('com.rustedutau.app/engine'),
       (call) async => null,
     );
     addTearDown(() {
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-        const MethodChannel('com.lilt.lilt/engine'),
+        const MethodChannel('com.rustedutau.app/engine'),
         null,
       );
     });
@@ -47,33 +48,28 @@ void main() {
     final roll = tester.widget<PianoRoll>(find.byType(PianoRoll));
     final track = roll.tracks.first;
     expect(track.notes, isNotEmpty);
-    expect(track.notes.first.phoneme, 'l A',
-        reason: 'phoneme extracted from lyric[l A] hint');
+    expect(
+      track.notes.first.phoneme,
+      'l A',
+      reason: 'phoneme extracted from lyric[l A] hint',
+    );
   });
 
-  testWidgets('mixer toggle opens the bottom panel with strips', (
+  testWidgets('track FX toggle opens the session-backed FX panel', (
     tester,
   ) async {
     await pumpEditor(tester);
 
-    expect(find.byType(MixerPanel), findsNothing);
-    await tester.tap(find.text('Mixer'));
+    expect(find.byType(TrackFxPanel), findsNothing);
+    await tester.tap(find.text('Track FX'));
     await tester.pumpAndSettle();
-    expect(find.byType(MixerPanel), findsOneWidget);
-
-    // 1 track + 1 master strip (find within the panel — the track name
-    // also exists in the side track panel).
-    expect(find.text('MASTER'), findsOneWidget);
-    final inMixer = find.descendant(
-      of: find.byType(MixerPanel),
-      matching: find.text('Vocal Scale'),
-    );
-    expect(inMixer, findsOneWidget);
+    expect(find.byType(TrackFxPanel), findsOneWidget);
+    expect(find.text('Apply'), findsOneWidget);
 
     // Toggle again hides it.
-    await tester.tap(find.text('Hide mixer'));
+    await tester.tap(find.text('Hide track FX'));
     await tester.pumpAndSettle();
-    expect(find.byType(MixerPanel), findsNothing);
+    expect(find.byType(TrackFxPanel), findsNothing);
   });
 
   testWidgets('side panel collapse hides track panel, expand restores', (
@@ -130,7 +126,7 @@ void main() {
     // Regression: _editLyric used copyWith(lyric:) WITHOUT clearing the
     // note's phoneme — the painter preferred the stale field over the
     // new lyric hint → labels froze after edits.
-    const before = Note(
+    final before = Note(
       lyric: 'la[l A]',
       pitch: 0,
       position: 0,
@@ -149,7 +145,7 @@ void main() {
     // Regression ("มันแค่ copy lyric ไม่ใช่ phoneme"): a hint-less lyric
     // must resolve letter-by-letter against the voicebank's single-phoneme
     // aliases ('n'→N, 'a'→A), NOT be copied verbatim as the label.
-    const note = Note(
+    final note = Note(
       lyric: 'na',
       pitch: 0,
       position: 0,
@@ -158,8 +154,27 @@ void main() {
     );
     // Mirror _phonemesOf's fallback chain: hint → phoneme field → letters.
     const aliases = {
-      '3', 'A', 'B', 'D', 'E', 'F', 'G', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
-      'P', 'S', 'T', 'U', 'V', 'W', 'Z',
+      '3',
+      'A',
+      'B',
+      'D',
+      'E',
+      'F',
+      'G',
+      'I',
+      'J',
+      'K',
+      'L',
+      'M',
+      'N',
+      'O',
+      'P',
+      'S',
+      'T',
+      'U',
+      'V',
+      'W',
+      'Z',
     };
     final hint = RegExp(r'\[([^\]]+)\]').firstMatch(note.lyric)?.group(1);
     final List<String> phonemes;
@@ -216,13 +231,7 @@ void main() {
         ),
         home: Scaffold(
           body: MixerPanel(
-            tracks: [
-              Track(
-                name: 'Vocal Scale',
-                colorSeed: 0,
-                notes: const [],
-              ),
-            ],
+            tracks: [Track(name: 'Vocal Scale', colorSeed: 0, notes: const [])],
             onParamsChanged: (p) => lastParams = p,
           ),
         ),

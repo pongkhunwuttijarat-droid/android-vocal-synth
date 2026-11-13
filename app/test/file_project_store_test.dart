@@ -3,10 +3,10 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:lilt/models.dart';
-import 'package:lilt/project/file_project_store.dart';
-import 'package:lilt/project/project_doc.dart';
-import 'package:lilt/project/ustx_codec.dart';
+import 'package:rusted_utau/models.dart';
+import 'package:rusted_utau/project/file_project_store.dart';
+import 'package:rusted_utau/project/project_doc.dart';
+import 'package:rusted_utau/project/ustx_codec.dart';
 
 /// FileProjectStore tests against the REAL Rust .ustx codec .so.
 /// Skipped automatically when the plugin is not built (CI without Rust).
@@ -24,7 +24,7 @@ void main() {
       markTestSkipped('libustx_codec.so not built');
       return;
     }
-    final tmp = await Directory.systemTemp.createTemp('lilt-store');
+    final tmp = await Directory.systemTemp.createTemp('rusted-utau-store');
     addTearDown(() => tmp.delete(recursive: true));
     final store = await openStore(tmp);
 
@@ -74,7 +74,7 @@ void main() {
       markTestSkipped('libustx_codec.so not built');
       return;
     }
-    final tmp = await Directory.systemTemp.createTemp('lilt-store');
+    final tmp = await Directory.systemTemp.createTemp('rusted-utau-store');
     addTearDown(() => tmp.delete(recursive: true));
     final store = await openStore(tmp);
 
@@ -93,7 +93,7 @@ void main() {
       markTestSkipped('libustx_codec.so not built');
       return;
     }
-    final tmp = await Directory.systemTemp.createTemp('lilt-store');
+    final tmp = await Directory.systemTemp.createTemp('rusted-utau-store');
     addTearDown(() => tmp.delete(recursive: true));
     final store = await openStore(tmp);
 

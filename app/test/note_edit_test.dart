@@ -3,10 +3,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:lilt/api/engine_client.dart';
-import 'package:lilt/models.dart';
-import 'package:lilt/screens/editor_screen.dart';
-import 'package:lilt/widgets/piano_roll.dart';
+import 'package:rusted_utau/api/engine_client.dart';
+import 'package:rusted_utau/models.dart';
+import 'package:rusted_utau/screens/editor_screen.dart';
+import 'package:rusted_utau/widgets/piano_roll.dart';
 
 /// Regression test for "_dependents.isEmpty is not true" when editing a
 /// note's lyric: tap note → dialog opens → type → Save → dialog pops.
@@ -16,12 +16,12 @@ import 'package:lilt/widgets/piano_roll.dart';
 void main() {
   Future<void> pumpEditor(WidgetTester tester) async {
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-      const MethodChannel('com.lilt.lilt/engine'),
+      const MethodChannel('com.rustedutau.app/engine'),
       (call) async => null,
     );
     addTearDown(() {
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-        const MethodChannel('com.lilt.lilt/engine'),
+        const MethodChannel('com.rustedutau.app/engine'),
         null,
       );
     });

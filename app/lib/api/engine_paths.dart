@@ -22,7 +22,20 @@ class EnginePaths {
   final String demoProject;
   final String voicebanksDir;
 
-  static const MethodChannel _channel = MethodChannel('com.lilt.lilt/engine');
+  static const MethodChannel _channel = MethodChannel('com.rustedutau.app/engine');
+
+  /// Read the launch-scoped local WebSocket credential from Android's native
+  /// bridge. The caller must pass it only to the trusted WebView's `hello`
+  /// message; it is intentionally not available from the HTTP API.
+  static Future<String?> streamCredential() async {
+    try {
+      return await _channel.invokeMethod<String>('streamCredential');
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
 
   /// Query the platform channel; null when not running on Android
   /// (desktop dev) or the channel isn't available yet.
@@ -42,7 +55,7 @@ class EnginePaths {
     }
   }
 
-  /// Save rendered wav bytes to public `Downloads/Lilt/<fileName>` via
+  /// Save rendered wav bytes to public `Downloads/rusted Utau/<fileName>` via
   /// MediaStore (Android 10+: no runtime permission needed for writing your
   /// own file to Downloads — that's why no permission dialog appears).
   ///

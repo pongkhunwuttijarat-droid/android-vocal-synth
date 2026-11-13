@@ -33,11 +33,11 @@ class _MixerPanelState extends State<MixerPanel> {
 
   late final List<_StripState> _strips = [
     for (final t in widget.tracks) _StripState(color: _trackColor(t.colorSeed)),
-    _StripState(color: LiltColors.purple, isMaster: true),
+    _StripState(color: RustedUtauColors.purple, isMaster: true),
   ];
 
   static Color _trackColor(int seed) =>
-      LiltColors.trackColors[seed % LiltColors.trackColors.length];
+      RustedUtauColors.trackColors[seed % RustedUtauColors.trackColors.length];
 
   /// dB → linear gain (the C++ mixer's `gain` param is LINEAR, not dB:
   /// 0 dB → 1.0, +12 dB → ~4.0, -12 dB → ~0.25). The old `dB/20` mapping
@@ -68,7 +68,7 @@ class _MixerPanelState extends State<MixerPanel> {
     return Container(
       decoration: const BoxDecoration(
         color: Color(0xFF15151A),
-        border: Border(top: BorderSide(color: LiltColors.line)),
+        border: Border(top: BorderSide(color: RustedUtauColors.line)),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -95,7 +95,7 @@ class _MixerPanelState extends State<MixerPanel> {
       padding: const EdgeInsets.symmetric(horizontal: 14),
       decoration: const BoxDecoration(
         color: Color(0xFF17181F),
-        border: Border(bottom: BorderSide(color: LiltColors.line)),
+        border: Border(bottom: BorderSide(color: RustedUtauColors.line)),
       ),
       child: Row(
         children: [
@@ -111,7 +111,7 @@ class _MixerPanelState extends State<MixerPanel> {
           const SizedBox(width: 12),
           const Text(
             'Preset',
-            style: TextStyle(fontSize: 10, color: LiltColors.muted),
+            style: TextStyle(fontSize: 10, color: RustedUtauColors.muted),
           ),
           const SizedBox(width: 6),
           Container(
@@ -123,7 +123,7 @@ class _MixerPanelState extends State<MixerPanel> {
             ),
             child: const Text(
               'Default',
-              style: TextStyle(fontSize: 11, color: LiltColors.text),
+              style: TextStyle(fontSize: 11, color: RustedUtauColors.text),
             ),
           ),
           const Spacer(),
@@ -148,7 +148,7 @@ class _MixerPanelState extends State<MixerPanel> {
                   label,
                   style: TextStyle(
                     fontSize: 10,
-                    color: on ? const Color(0xFFCFC4FF) : LiltColors.muted,
+                    color: on ? const Color(0xFFCFC4FF) : RustedUtauColors.muted,
                   ),
                 ),
               ),
@@ -168,10 +168,10 @@ class _MixerPanelState extends State<MixerPanel> {
       width: 132,
       padding: const EdgeInsets.fromLTRB(8, 6, 8, 4),
       decoration: BoxDecoration(
-        color: isMaster ? const Color(0xFF1D1D22) : LiltColors.panel,
+        color: isMaster ? const Color(0xFF1D1D22) : RustedUtauColors.panel,
         border: Border(
-          left: isMaster ? const BorderSide(color: LiltColors.purple, width: 2) : BorderSide.none,
-          right: const BorderSide(color: LiltColors.line),
+          left: isMaster ? const BorderSide(color: RustedUtauColors.purple, width: 2) : BorderSide.none,
+          right: const BorderSide(color: RustedUtauColors.line),
         ),
       ),
       child: Column(
@@ -197,7 +197,7 @@ class _MixerPanelState extends State<MixerPanel> {
                   style: TextStyle(
                     fontSize: 10,
                     fontWeight: isMaster ? FontWeight.w700 : FontWeight.w600,
-                    color: isMaster ? LiltColors.purple : LiltColors.text,
+                    color: isMaster ? RustedUtauColors.purple : RustedUtauColors.text,
                   ),
                 ),
               ),
@@ -276,7 +276,7 @@ class _MixerPanelState extends State<MixerPanel> {
                             endAngle: 3 * 3.14159 / 4,
                             colors: const [
                               Color(0xFF252730),
-                              LiltColors.cyan,
+                              RustedUtauColors.cyan,
                               Color(0xFF252730),
                             ],
                             stops: [0.0, (s.pan + 1) / 2, 1.0],
@@ -288,7 +288,7 @@ class _MixerPanelState extends State<MixerPanel> {
                           child: const Icon(
                             Icons.remove,
                             size: 16,
-                            color: LiltColors.text,
+                            color: RustedUtauColors.text,
                           ),
                         ),
                       ),
@@ -299,7 +299,7 @@ class _MixerPanelState extends State<MixerPanel> {
                             : '${s.pan > 0 ? 'R' : 'L'} ${(s.pan.abs() * 100).round()}%',
                         style: const TextStyle(
                           fontSize: 9,
-                          color: LiltColors.muted,
+                          color: RustedUtauColors.muted,
                         ),
                       ),
                     ],
@@ -339,12 +339,12 @@ class _MixerPanelState extends State<MixerPanel> {
                     'Thresh',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 8, color: LiltColors.muted),
+                    style: TextStyle(fontSize: 8, color: RustedUtauColors.muted),
                   ),
                 ),
                 Text(
                   '-12dB',
-                  style: TextStyle(fontSize: 8, color: LiltColors.muted),
+                  style: TextStyle(fontSize: 8, color: RustedUtauColors.muted),
                 ),
               ],
             ),
@@ -362,8 +362,8 @@ class _MixerPanelState extends State<MixerPanel> {
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(2),
                     gradient: const LinearGradient(colors: [
-                      LiltColors.green,
-                      LiltColors.orange,
+                      RustedUtauColors.green,
+                      RustedUtauColors.orange,
                       Color(0xFFFF6B6B),
                     ]),
                   ),
@@ -375,7 +375,7 @@ class _MixerPanelState extends State<MixerPanel> {
               padding: EdgeInsets.only(top: 3),
               child: Text(
                 'MASTER EQ',
-                style: TextStyle(fontSize: 8, color: LiltColors.muted),
+                style: TextStyle(fontSize: 8, color: RustedUtauColors.muted),
               ),
             ),
         ],
@@ -452,7 +452,7 @@ class _EqKnob extends StatelessWidget {
                 endAngle: 3 * 3.14159 / 4,
                 colors: const [
                   Color(0xFF252730),
-                  LiltColors.green,
+                  RustedUtauColors.green,
                   Color(0xFF252730),
                 ],
                 stops: [0.0, pct, 1.0],
@@ -461,12 +461,12 @@ class _EqKnob extends StatelessWidget {
             ),
             child: Transform.rotate(
               angle: (db / 12) * 135 * 3.14159 / 180,
-              child: const Icon(Icons.remove, size: 12, color: LiltColors.text),
+              child: const Icon(Icons.remove, size: 12, color: RustedUtauColors.text),
             ),
           ),
           Text(
             label,
-            style: const TextStyle(fontSize: 8, color: LiltColors.muted),
+            style: const TextStyle(fontSize: 8, color: RustedUtauColors.muted),
           ),
         ],
       ),

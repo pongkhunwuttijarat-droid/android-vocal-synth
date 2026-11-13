@@ -4,7 +4,7 @@ import '../api/engine_client.dart';
 import '../models.dart';
 import '../theme.dart';
 
-/// Error red — not in the Lilt palette; local to the voicebank screen.
+/// Error red — not in the Rusted UTAU palette; local to the voicebank screen.
 const _errorRed = Color(0xFFFF6B6B);
 
 /// Mock banks shown when the engine server is unreachable (CONTRACT-v1 §4:
@@ -138,10 +138,10 @@ class _VoicebanksScreenState extends State<VoicebanksScreen> {
     return showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: LiltColors.panel,
+      backgroundColor: RustedUtauColors.panel,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-        side: BorderSide(color: LiltColors.line),
+        side: BorderSide(color: RustedUtauColors.line),
       ),
       builder: (sheetContext) => _BankDetailSheet(
         bank: bank,
@@ -176,7 +176,7 @@ class _VoicebanksScreenState extends State<VoicebanksScreen> {
               icon: const Icon(Icons.file_open, size: 18),
               label: const Text('Import'),
               style: FilledButton.styleFrom(
-                backgroundColor: LiltColors.purple2,
+                backgroundColor: RustedUtauColors.purple2,
                 foregroundColor: Colors.white,
                 visualDensity: VisualDensity.compact,
               ),
@@ -234,7 +234,7 @@ class _VoicebanksScreenState extends State<VoicebanksScreen> {
                                 bank.name,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
-                                  color: LiltColors.text,
+                                  color: RustedUtauColors.text,
                                   fontSize: 15,
                                   fontWeight: FontWeight.w700,
                                 ),
@@ -251,7 +251,7 @@ class _VoicebanksScreenState extends State<VoicebanksScreen> {
                           '${bank.format} · ${bank.singer}',
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                            color: LiltColors.muted,
+                            color: RustedUtauColors.muted,
                             fontSize: 12,
                           ),
                         ),
@@ -276,13 +276,13 @@ class _VoicebanksScreenState extends State<VoicebanksScreen> {
                   const Icon(
                     Icons.sd_storage_outlined,
                     size: 14,
-                    color: LiltColors.muted,
+                    color: RustedUtauColors.muted,
                   ),
                   const SizedBox(width: 5),
                   Text(
                     _formatMb(bank.sizeMb),
                     style: const TextStyle(
-                      color: LiltColors.muted,
+                      color: RustedUtauColors.muted,
                       fontSize: 12,
                     ),
                   ),
@@ -290,7 +290,7 @@ class _VoicebanksScreenState extends State<VoicebanksScreen> {
                   if (bank.status == 'importing')
                     const Text(
                       'Importing…',
-                      style: TextStyle(color: LiltColors.orange, fontSize: 11),
+                      style: TextStyle(color: RustedUtauColors.orange, fontSize: 11),
                     ),
                 ],
               ),
@@ -300,8 +300,8 @@ class _VoicebanksScreenState extends State<VoicebanksScreen> {
                   borderRadius: BorderRadius.circular(3),
                   child: const LinearProgressIndicator(
                     minHeight: 4,
-                    backgroundColor: LiltColors.line,
-                    color: LiltColors.orange,
+                    backgroundColor: RustedUtauColors.line,
+                    color: RustedUtauColors.orange,
                   ),
                 ),
               ],
@@ -314,10 +314,10 @@ class _VoicebanksScreenState extends State<VoicebanksScreen> {
 }
 
 Color _statusColor(String status) => switch (status) {
-  'ready' => LiltColors.green,
-  'importing' => LiltColors.orange,
+  'ready' => RustedUtauColors.green,
+  'importing' => RustedUtauColors.orange,
   'error' => _errorRed,
-  _ => LiltColors.muted,
+  _ => RustedUtauColors.muted,
 };
 
 String _formatMb(int mb) {
@@ -343,17 +343,17 @@ class _SummaryHeader extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
-          color: LiltColors.panel,
+          color: RustedUtauColors.panel,
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: LiltColors.line),
+          border: Border.all(color: RustedUtauColors.line),
         ),
         child: Row(
           children: [
-            _CountDot(color: LiltColors.green, label: '$ready ready'),
+            _CountDot(color: RustedUtauColors.green, label: '$ready ready'),
             if (importing > 0) ...[
               const SizedBox(width: 14),
               _CountDot(
-                color: LiltColors.orange,
+                color: RustedUtauColors.orange,
                 label: '$importing importing',
               ),
             ],
@@ -365,12 +365,12 @@ class _SummaryHeader extends StatelessWidget {
             const Icon(
               Icons.storage_rounded,
               size: 14,
-              color: LiltColors.muted,
+              color: RustedUtauColors.muted,
             ),
             const SizedBox(width: 4),
             Text(
               '${_formatMb(totalMb)} total',
-              style: const TextStyle(color: LiltColors.muted, fontSize: 12),
+              style: const TextStyle(color: RustedUtauColors.muted, fontSize: 12),
             ),
           ],
         ),
@@ -398,7 +398,7 @@ class _CountDot extends StatelessWidget {
         const SizedBox(width: 6),
         Text(
           label,
-          style: const TextStyle(color: LiltColors.muted, fontSize: 12),
+          style: const TextStyle(color: RustedUtauColors.muted, fontSize: 12),
         ),
       ],
     );
@@ -414,9 +414,9 @@ class _BankAvatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (begin, end) = switch (bank.status) {
-      'importing' => (LiltColors.orange, LiltColors.pink),
-      'error' => (_errorRed, LiltColors.orange),
-      _ => (LiltColors.purple2, LiltColors.purple),
+      'importing' => (RustedUtauColors.orange, RustedUtauColors.pink),
+      'error' => (_errorRed, RustedUtauColors.orange),
+      _ => (RustedUtauColors.purple2, RustedUtauColors.purple),
     };
     return Container(
       width: 40,
@@ -489,19 +489,19 @@ class _DefaultTag extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        color: LiltColors.purple.withValues(alpha: 0.15),
+        color: RustedUtauColors.purple.withValues(alpha: 0.15),
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: LiltColors.purple.withValues(alpha: 0.5)),
+        border: Border.all(color: RustedUtauColors.purple.withValues(alpha: 0.5)),
       ),
       child: const Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.star_rounded, size: 11, color: LiltColors.purple),
+          Icon(Icons.star_rounded, size: 11, color: RustedUtauColors.purple),
           SizedBox(width: 3),
           Text(
             'DEFAULT',
             style: TextStyle(
-              color: LiltColors.purple,
+              color: RustedUtauColors.purple,
               fontSize: 9,
               fontWeight: FontWeight.w700,
               letterSpacing: 0.6,
@@ -542,7 +542,7 @@ class _BankDetailSheet extends StatelessWidget {
                   width: 36,
                   height: 4,
                   decoration: BoxDecoration(
-                    color: LiltColors.line,
+                    color: RustedUtauColors.line,
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -563,7 +563,7 @@ class _BankDetailSheet extends StatelessWidget {
                                 bank.name,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
-                                  color: LiltColors.text,
+                                  color: RustedUtauColors.text,
                                   fontSize: 16,
                                   fontWeight: FontWeight.w700,
                                 ),
@@ -579,7 +579,7 @@ class _BankDetailSheet extends StatelessWidget {
                         Text(
                           '${bank.format} · ${bank.singer}',
                           style: const TextStyle(
-                            color: LiltColors.muted,
+                            color: RustedUtauColors.muted,
                             fontSize: 12,
                           ),
                         ),
@@ -646,7 +646,7 @@ class _InfoRow extends StatelessWidget {
             width: 64,
             child: Text(
               label,
-              style: const TextStyle(color: LiltColors.muted, fontSize: 12),
+              style: const TextStyle(color: RustedUtauColors.muted, fontSize: 12),
             ),
           ),
           Expanded(
@@ -654,7 +654,7 @@ class _InfoRow extends StatelessWidget {
               value,
               textAlign: TextAlign.right,
               style: TextStyle(
-                color: valueColor ?? LiltColors.text,
+                color: valueColor ?? RustedUtauColors.text,
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
               ),
@@ -675,19 +675,19 @@ class _EmptyState extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.library_music_outlined, size: 42, color: LiltColors.muted),
+          Icon(Icons.library_music_outlined, size: 42, color: RustedUtauColors.muted),
           SizedBox(height: 10),
           Text(
             'No voicebanks installed',
             style: TextStyle(
-              color: LiltColors.text,
+              color: RustedUtauColors.text,
               fontWeight: FontWeight.w600,
             ),
           ),
           SizedBox(height: 4),
           Text(
             'Tap Import to add one',
-            style: TextStyle(color: LiltColors.muted, fontSize: 12),
+            style: TextStyle(color: RustedUtauColors.muted, fontSize: 12),
           ),
         ],
       ),
@@ -709,16 +709,16 @@ class _OfflineBanner extends StatelessWidget {
       margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
       padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
       decoration: BoxDecoration(
-        color: LiltColors.orange.withValues(alpha: 0.10),
+        color: RustedUtauColors.orange.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: LiltColors.orange.withValues(alpha: 0.4)),
+        border: Border.all(color: RustedUtauColors.orange.withValues(alpha: 0.4)),
       ),
       child: Row(
         children: [
           const Icon(
             Icons.cloud_off_rounded,
             size: 18,
-            color: LiltColors.orange,
+            color: RustedUtauColors.orange,
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -728,7 +728,7 @@ class _OfflineBanner extends StatelessWidget {
                 const Text(
                   'Offline — showing mock data',
                   style: TextStyle(
-                    color: LiltColors.text,
+                    color: RustedUtauColors.text,
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
                   ),
@@ -740,7 +740,7 @@ class _OfflineBanner extends StatelessWidget {
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      color: LiltColors.muted,
+                      color: RustedUtauColors.muted,
                       fontSize: 11,
                     ),
                   ),
@@ -752,7 +752,7 @@ class _OfflineBanner extends StatelessWidget {
           TextButton(
             onPressed: onRetry,
             style: TextButton.styleFrom(
-              foregroundColor: LiltColors.orange,
+              foregroundColor: RustedUtauColors.orange,
               visualDensity: VisualDensity.compact,
             ),
             child: const Text('Retry'),

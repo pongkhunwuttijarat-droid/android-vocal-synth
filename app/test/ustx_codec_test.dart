@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:lilt/project/ustx_codec.dart';
+import 'package:rusted_utau/project/ustx_codec.dart';
 
 /// Integration test for the Rust `.ustx` codec plugin — loads the real
 /// `libustx_codec.so` (cdylib output from `cargo build -p ustx-codec`).

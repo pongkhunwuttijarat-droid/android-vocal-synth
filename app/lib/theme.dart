@@ -1,10 +1,10 @@
-/// Lilt dark theme — colors lifted from the ui-mock HTML mock.
+/// Rusted UTAU dark theme — colors lifted from the ui-mock HTML mock.
 library;
 
 import 'package:flutter/material.dart';
 
 /// Palette (kept in sync with ui-mock/index.html).
-abstract final class LiltColors {
+abstract final class RustedUtauColors {
   static const bg = Color(0xFF111217);
   static const panel = Color(0xFF181A22);
   static const panel2 = Color(0xFF20232D);
@@ -22,24 +22,24 @@ abstract final class LiltColors {
   static const trackColors = [purple, cyan, pink];
 }
 
-ThemeData buildLiltTheme() {
+ThemeData buildRustedUtauTheme() {
   final base = ThemeData.dark(useMaterial3: true);
   return base.copyWith(
-    scaffoldBackgroundColor: LiltColors.bg,
+    scaffoldBackgroundColor: RustedUtauColors.bg,
     colorScheme: base.colorScheme.copyWith(
-      primary: LiltColors.purple,
-      secondary: LiltColors.cyan,
-      surface: LiltColors.panel,
-      onSurface: LiltColors.text,
-      outline: LiltColors.line,
+      primary: RustedUtauColors.purple,
+      secondary: RustedUtauColors.cyan,
+      surface: RustedUtauColors.panel,
+      onSurface: RustedUtauColors.text,
+      outline: RustedUtauColors.line,
     ),
-    dividerColor: LiltColors.line,
+    dividerColor: RustedUtauColors.line,
     navigationRailTheme: NavigationRailThemeData(
       backgroundColor: const Color(0xFF15161D),
       indicatorColor: const Color(0xFF292536),
-      selectedIconTheme: const IconThemeData(color: LiltColors.purple),
+      selectedIconTheme: const IconThemeData(color: RustedUtauColors.purple),
       selectedLabelTextStyle: const TextStyle(
-        color: LiltColors.text,
+        color: RustedUtauColors.text,
         fontSize: 11,
       ),
       unselectedIconTheme: const IconThemeData(color: Color(0xFF777D91)),
@@ -50,19 +50,19 @@ ThemeData buildLiltTheme() {
     ),
     appBarTheme: const AppBarTheme(
       backgroundColor: Color(0xFF17181F),
-      foregroundColor: LiltColors.text,
+      foregroundColor: RustedUtauColors.text,
       elevation: 0,
       scrolledUnderElevation: 0,
     ),
     cardTheme: CardThemeData(
-      color: LiltColors.panel2,
+      color: RustedUtauColors.panel2,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
-        side: const BorderSide(color: LiltColors.line),
+        side: const BorderSide(color: RustedUtauColors.line),
       ),
     ),
     chipTheme: base.chipTheme.copyWith(
-      backgroundColor: LiltColors.panel2,
+      backgroundColor: RustedUtauColors.panel2,
       side: const BorderSide(color: Color(0xFF393D4D)),
       labelStyle: const TextStyle(color: Color(0xFFAEB3C2), fontSize: 11),
     ),

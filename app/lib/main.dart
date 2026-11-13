@@ -7,11 +7,11 @@ import 'screens/voicebanks_screen.dart';
 import 'theme.dart';
 
 void main() {
-  runApp(const LiltApp());
+  runApp(const RustedUtauApp());
 }
 
-class LiltApp extends StatelessWidget {
-  const LiltApp({super.key, this.client});
+class RustedUtauApp extends StatelessWidget {
+  const RustedUtauApp({super.key, this.client});
 
   /// Engine client override — tests inject a mocked client; the app uses
   /// a real one (default) that Settings can re-point at another server.
@@ -20,9 +20,9 @@ class LiltApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Lilt',
+      title: 'Rusted UTAU',
       debugShowCheckedModeBanner: false,
-      theme: buildLiltTheme(),
+      theme: buildRustedUtauTheme(),
       home: AppShell(client: client),
     );
   }
