@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 
 use encoding_rs::Encoding;
 
-use crate::config::{parse_character_txt, parse_character_yaml, CharacterTxt, Subbank, VoicebankConfigYaml};
+use crate::config::{
+    parse_character_txt, parse_character_yaml, CharacterTxt, Subbank, VoicebankConfigYaml,
+};
 use crate::frq::{read_frq_for_wav, FrqData, FrqError};
 use crate::oto::{parse_oto_ini, Oto, OtoSet};
 use crate::prefix_map::parse_prefix_map;
@@ -96,7 +98,6 @@ pub struct VoicebankSample {
     pub wav: WavData,
     pub frq: Option<FrqData>,
 }
-
 
 impl Voicebank {
     /// Build a voicebank in memory from oto.ini bytes — no filesystem.
@@ -262,7 +263,11 @@ impl Voicebank {
     pub fn read_sample(&self, oto: &Oto) -> Result<VoicebankSample, WavError> {
         let wav = self.read_wav(oto)?;
         let frq = self.read_frq(oto).ok();
-        Ok(VoicebankSample { oto: oto.clone(), wav, frq })
+        Ok(VoicebankSample {
+            oto: oto.clone(),
+            wav,
+            frq,
+        })
     }
 }
 
@@ -326,22 +331,24 @@ pub fn load_voicebank_with_options(
         match parse_character_yaml(text.as_bytes()) {
             Ok(cfg) => Some(cfg),
             Err(e) => {
-                vb.warnings.push(format!("character.yaml parse failed: {e}"));
+                vb.warnings
+                    .push(format!("character.yaml parse failed: {e}"));
                 None
             }
         }
     } else {
         None
     };
-    let declared = yaml_cfg
-        .as_ref()
-        .and_then(|c| c.text_file_encoding.clone());
+    let declared = yaml_cfg.as_ref().and_then(|c| c.text_file_encoding.clone());
 
     // 2. character.txt (legacy, often Shift-JIS).
     let bytes = std::fs::read(&char_txt_path)?;
     let txt = parse_character_txt(&bytes, declared.as_deref());
     apply_character_txt(&mut vb, &txt);
-    if let Some(enc) = declared.as_deref().and_then(|l| Encoding::for_label(l.as_bytes())) {
+    if let Some(enc) = declared
+        .as_deref()
+        .and_then(|l| Encoding::for_label(l.as_bytes()))
+    {
         vb.text_file_encoding = enc;
     }
 
@@ -567,10 +574,7 @@ fn add_alias_for_missing_files(dir: &Path, otos: &mut Vec<Oto>, warnings: &mut V
     };
     let mut files: Vec<PathBuf> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("wav"))
-        })
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("wav")))
         .collect();
     files.sort();
     for p in files {
@@ -739,7 +743,10 @@ mod tests {
     fn filename_alias_option() {
         let dir = temp_voicebank(&[
             ("character.txt", b"name=T\r\n"),
-            ("voice/oto.ini", b"a.wav=a,10,2,3,4,5\r\nb.wav=b,1,2,3,4,5\r\n"),
+            (
+                "voice/oto.ini",
+                b"a.wav=a,10,2,3,4,5\r\nb.wav=b,1,2,3,4,5\r\n",
+            ),
             ("voice/a.wav", &[0u8; 44]),
             ("voice/b.wav", &[0u8; 44]),
         ]);
@@ -759,7 +766,10 @@ mod tests {
         let dir = temp_voicebank(&[
             ("character.txt", b"name=T\r\n"),
             ("prefix.map", b"C3\tP_\t_S\nC#3\tP_\t_S\n"),
-            ("voice/oto.ini", b"P_a_S.wav=P_a_S,1,2,3,4,5\r\na.wav=a,1,2,3,4,5\r\n"),
+            (
+                "voice/oto.ini",
+                b"P_a_S.wav=P_a_S,1,2,3,4,5\r\na.wav=a,1,2,3,4,5\r\n",
+            ),
             ("voice/P_a_S.wav", &[0u8; 44]),
             ("voice/a.wav", &[0u8; 44]),
         ]);

@@ -59,7 +59,10 @@ pub fn compute_f0(
         .zip(tone_shifts.iter().copied())
         .map(|(&f, shift)| shift_freq(f, shift))
         .collect();
-    F0Result { f0_hz, shifted_f0_hz }
+    F0Result {
+        f0_hz,
+        shifted_f0_hz,
+    }
 }
 
 /// Default DiffSinger frame size: `1000 × hop_size / sample_rate` with

@@ -1,0 +1,39 @@
+{
+  "name": "curve stroke simplifies canonically and undo restores exact controls",
+  "steps": [
+    {
+      "op": "oversized_stroke",
+      "revision": 0,
+      "point_count": 20001,
+      "expected": {"revision": 0, "code": "payload_too_large"}
+    },
+    {
+      "op": "curve_apply",
+      "revision": 0,
+      "points": [
+        {"tick": 240, "value": 5},
+        {"tick": 480, "value": 10},
+        {"tick": 720, "value": 5}
+      ],
+      "expected": {
+        "revision": 1,
+        "points": [
+          {"tick": 0, "value": 0},
+          {"tick": 480, "value": 10},
+          {"tick": 960, "value": 0}
+        ]
+      }
+    },
+    {
+      "op": "undo",
+      "revision": 1,
+      "expected": {
+        "revision": 2,
+        "points": [
+          {"tick": 0, "value": 0},
+          {"tick": 480, "value": 10}
+        ]
+      }
+    }
+  ]
+}

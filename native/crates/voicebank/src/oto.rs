@@ -240,7 +240,9 @@ pub struct OtoSet {
 impl OtoSet {
     /// Directory containing this oto.ini.
     pub fn dir(&self) -> &std::path::Path {
-        self.file.parent().unwrap_or_else(|| std::path::Path::new(""))
+        self.file
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(""))
     }
 
     /// Absolute path of a wav file referenced by this set.
@@ -345,7 +347,10 @@ mod tests {
 
     #[test]
     fn crlf_and_comments() {
-        let ini = parse_oto_ini(b"f.wav=a,1,2,3,4,5\r\n; comment\r\n# another\r\n\r\ng.wav=b,6,7,8,9,10\r\n", None);
+        let ini = parse_oto_ini(
+            b"f.wav=a,1,2,3,4,5\r\n; comment\r\n# another\r\n\r\ng.wav=b,6,7,8,9,10\r\n",
+            None,
+        );
         assert_eq!(ini.otos.len(), 2);
         assert!(ini.errors.is_empty());
         assert_eq!(ini.otos[0].alias, "a");

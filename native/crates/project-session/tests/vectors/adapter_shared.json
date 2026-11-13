@@ -1,0 +1,47 @@
+{
+  "name": "note edit, stale rejection, undo and redo",
+  "project": "demo",
+  "capabilities": {
+    "contract_version": "2-draft3",
+    "command_schema_version": 3,
+    "snapshot_schema_version": 4,
+    "id_schema_version": 1,
+    "max_stroke_points": 20000
+  },
+  "steps": [
+    {
+      "op": "set_lyric",
+      "lyric": "ka",
+      "expected": {
+        "revision": 1,
+        "changed": true,
+        "change_kinds": ["history.changed", "note.changed", "render.invalidated"]
+      }
+    },
+    {
+      "op": "stale_set_lyric",
+      "lyric": "rejected",
+      "expected": {"revision": 1, "code": "revision_conflict"}
+    },
+    {"op": "undo", "expected": {"revision": 2, "changed": true}},
+    {"op": "redo", "expected": {"revision": 3, "changed": true}},
+    {"op": "snapshot", "expected": {"revision": 3, "lyric": "ka"}},
+    {"op": "read_notes", "expected": {"revision": 3, "note_count": 4}},
+    {"op": "read_tracks", "expected": {"revision": 3, "track_count": 1}},
+    {"op": "group_begin", "name": "shared vector group", "expected": {"revision": 3}},
+    {"op": "group_tone", "tone": 70, "expected": {"revision": 3, "changed": true}},
+    {"op": "group_commit", "expected": {"revision": 4, "changed": true}},
+    {"op": "undo", "expected": {"revision": 5, "changed": true}},
+    {
+      "op": "track_mute",
+      "mute": true,
+      "expected": {
+        "revision": 6,
+        "changed": true,
+        "change_kinds": ["history.changed", "render.invalidated", "track.changed"]
+      }
+    },
+    {"op": "undo", "expected": {"revision": 7, "changed": true}},
+    {"op": "snapshot", "expected": {"revision": 7, "lyric": "ka", "tone": 60, "mute": false}}
+  ]
+}

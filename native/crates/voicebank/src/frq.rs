@@ -72,8 +72,13 @@ pub fn parse_frq(bytes: &[u8]) -> Result<FrqData, FrqError> {
         return Err(FrqError::InvalidLength(len));
     }
     let len = len as usize;
-    let need = 40usize.checked_add(len.checked_mul(16).ok_or(FrqError::InvalidLength(len as i32))?);
-    let Some(need) = need else { return Err(FrqError::InvalidLength(len as i32)) };
+    let need = 40usize.checked_add(
+        len.checked_mul(16)
+            .ok_or(FrqError::InvalidLength(len as i32))?,
+    );
+    let Some(need) = need else {
+        return Err(FrqError::InvalidLength(len as i32));
+    };
     if bytes.len() < need {
         return Err(FrqError::TooShort);
     }
@@ -81,8 +86,12 @@ pub fn parse_frq(bytes: &[u8]) -> Result<FrqData, FrqError> {
     let mut amp = Vec::with_capacity(len);
     for i in 0..len {
         let base = 40 + i * 16;
-        f0.push(f64::from_le_bytes(bytes[base..base + 8].try_into().unwrap()));
-        amp.push(f64::from_le_bytes(bytes[base + 8..base + 16].try_into().unwrap()));
+        f0.push(f64::from_le_bytes(
+            bytes[base..base + 8].try_into().unwrap(),
+        ));
+        amp.push(f64::from_le_bytes(
+            bytes[base + 8..base + 16].try_into().unwrap(),
+        ));
     }
     Ok(FrqData {
         hop_size,
@@ -147,7 +156,10 @@ mod tests {
         assert!(matches!(parse_frq(&b), Err(FrqError::InvalidLength(_))));
         // Truncated frame data.
         let full = frq_bytes(256, 0.0, &[(1.0, 1.0), (2.0, 2.0)]);
-        assert!(matches!(parse_frq(&full[..40 + 8]), Err(FrqError::TooShort)));
+        assert!(matches!(
+            parse_frq(&full[..40 + 8]),
+            Err(FrqError::TooShort)
+        ));
         // Trailing garbage is ignored.
         let mut b = frq_bytes(256, 0.0, &[(1.0, 1.0)]);
         b.extend_from_slice(b"junk");

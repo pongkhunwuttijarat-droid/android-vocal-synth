@@ -47,8 +47,8 @@ mod locate;
 
 pub use command::Command;
 pub use curve_commands::{
-    apply_stroke_to_curves, canonicalize, ApplyCurveStrokeCommand, CanonicalStroke, StrokeMode,
-    StrokeTarget, STROKE_INTERVAL,
+    apply_stroke_to_curves, canonicalize, simplify_curve, ApplyCurveStrokeCommand, CanonicalStroke,
+    StrokeMode, StrokeTarget, STROKE_INTERVAL,
 };
 pub use document_commands::RestoreDocumentCommand;
 pub use exp_commands::{
@@ -56,14 +56,16 @@ pub use exp_commands::{
 };
 pub use note_commands::{
     AddNoteCommand, ChangeNoteLyricCommand, ChangeNoteToneCommand, ChangeNoteTuningCommand,
-    MoveNoteCommand, RemoveNoteCommand, ResizeNoteCommand,
+    MoveNoteCommand, RemoveNoteCommand, ResizeNoteCommand, SetNotePitchCommand,
+    SetNoteVibratoCommand,
 };
 pub use part_commands::{
     AddPartCommand, MovePartCommand, RemovePartCommand, RenamePartCommand, ResizeVoicePartCommand,
     ResizeWavePartCommand,
 };
 pub use track_commands::{
-    AddTrackCommand, RemoveTrackCommand, RenameTrackCommand, SetTrackMuteCommand,
-    SetTrackPanCommand, SetTrackSoloCommand, SetTrackVolumeCommand,
+    AddTrackCommand, RemoveTrackCommand, RenameTrackCommand, SetTrackMixFxCommand,
+    SetTrackMuteCommand, SetTrackPanCommand, SetTrackSingerCommand, SetTrackSoloCommand,
+    SetTrackVolumeCommand,
 };
 pub use undo_stack::{Group, UndoStack};

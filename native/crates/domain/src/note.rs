@@ -63,7 +63,11 @@ impl PitchPoint {
 
 impl Default for PitchPoint {
     fn default() -> Self {
-        PitchPoint { x: 0.0, y: 0.0, shape: PitchPointShape::Io }
+        PitchPoint {
+            x: 0.0,
+            y: 0.0,
+            shape: PitchPointShape::Io,
+        }
     }
 }
 
@@ -78,7 +82,10 @@ pub struct UPitch {
 
 impl Default for UPitch {
     fn default() -> Self {
-        UPitch { data: Vec::new(), snap_first: true }
+        UPitch {
+            data: Vec::new(),
+            snap_first: true,
+        }
     }
 }
 
@@ -86,7 +93,8 @@ impl UPitch {
     /// Add a point, keeping `data` sorted by `x` (C# `UPitch.AddPoint`).
     pub fn add_point(&mut self, point: PitchPoint) {
         self.data.push(point);
-        self.data.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+        self.data
+            .sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
     }
 
     /// Remove a point (C# `UPitch.RemovePoint`).
@@ -206,7 +214,11 @@ pub struct UNote {
     pub tuning: i32,
     /// Per-note phonemizer override. Serialized under the key `phonemizer`
     /// (C# `[YamlMember(Alias = "phonemizer")]`), omitted when unset.
-    #[serde(default, rename = "phonemizer", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "phonemizer",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub phonemizer_override: Option<String>,
     #[serde(default)]
     pub phoneme_expressions: Vec<crate::expression::UExpression>,
@@ -340,8 +352,10 @@ mod tests {
     #[test]
     fn default_vibrato_matches_note_presets() {
         let v = UVibrato::default();
-        assert_eq!((v.length, v.period, v.depth, v.r#in, v.out, v.shift, v.drift, v.vol_link),
-                   (0.0, 175.0, 25.0, 10.0, 10.0, 0.0, 0.0, 0.0));
+        assert_eq!(
+            (v.length, v.period, v.depth, v.r#in, v.out, v.shift, v.drift, v.vol_link),
+            (0.0, 175.0, 25.0, 10.0, 10.0, 0.0, 0.0, 0.0)
+        );
         let mut v2 = v.clone();
         v2.set_in(80.0);
         assert_eq!(v2.r#in, 80.0);
@@ -364,16 +378,32 @@ mod tests {
     #[test]
     fn phonetic_hint_splitting() {
         assert_eq!(split_phonetic_hint("a"), ("a".to_string(), None));
-        assert_eq!(split_phonetic_hint("a [e]"), ("a".to_string(), Some("e".to_string())));
-        assert_eq!(split_phonetic_hint(" あ [a] "), ("あ".to_string(), Some("a".to_string())));
-        assert_eq!(split_phonetic_hint("[do]"), ("".to_string(), Some("do".to_string())));
-        assert_eq!(split_phonetic_hint("a [unclosed"), ("a [unclosed".to_string(), None));
+        assert_eq!(
+            split_phonetic_hint("a [e]"),
+            ("a".to_string(), Some("e".to_string()))
+        );
+        assert_eq!(
+            split_phonetic_hint(" あ [a] "),
+            ("あ".to_string(), Some("a".to_string()))
+        );
+        assert_eq!(
+            split_phonetic_hint("[do]"),
+            ("".to_string(), Some("do".to_string()))
+        );
+        assert_eq!(
+            split_phonetic_hint("a [unclosed"),
+            ("a [unclosed".to_string(), None)
+        );
     }
 
     #[test]
     fn phoneme_override_empty() {
         assert!(UPhonemeOverride::default().is_empty());
-        let o = UPhonemeOverride { index: 0, phoneme: Some("a".into()), ..Default::default() };
+        let o = UPhonemeOverride {
+            index: 0,
+            phoneme: Some("a".into()),
+            ..Default::default()
+        };
         assert!(!o.is_empty());
     }
 }

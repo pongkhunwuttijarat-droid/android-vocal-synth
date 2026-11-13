@@ -7,6 +7,8 @@ description = "Platform-neutral Rust-owned project document, command session, an
 
 [dependencies]
 domain = { path = "../domain" }
+phonemizer = { path = "../phonemizer" }
+voicebank = { path = "../voicebank" }
 commands = { path = "../commands" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

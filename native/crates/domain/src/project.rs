@@ -25,7 +25,7 @@
 //! wave_parts: [...]
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 /// Serialize the expression table in a canonical (abbr-sorted) order.
@@ -269,6 +269,11 @@ pub struct UProject {
     /// In-memory part list (`[YamlIgnore]` in OpenUtau).
     #[serde(skip)]
     pub parts: Vec<UPart>,
+    /// Rusted UTAU-owned, stable-note-ID pronunciation choices. Kept inside the
+    /// document clone so undo/redo treats them as authoritative project state;
+    /// persisted separately from interoperable USTX YAML.
+    #[serde(skip)]
+    pub rusted_utau_pronunciations: BTreeMap<String, crate::UPronunciation>,
     /// Tick/time conversion engine (`[YamlIgnore]` in OpenUtau); rebuilt by
     /// [`validate`](Self::validate)/[`after_load`](Self::after_load).
     #[serde(skip)]
@@ -400,6 +405,7 @@ impl Default for UProject {
             voice_parts: None,
             wave_parts: None,
             parts: Vec::new(),
+            rusted_utau_pronunciations: BTreeMap::new(),
             time_axis: TimeAxis::default(),
         }
     }
@@ -507,6 +513,50 @@ impl UProject {
         });
         self.voice_parts = Some(voices);
         self.wave_parts = Some(waves);
+    }
+
+    /// Parse `.ustx` YAML text into a project, tolerating a UTF-8 BOM.
+    ///
+    /// This is the canonical entry point for loading project text. Prefer it
+    /// over calling `serde_yaml::from_str` directly, because of the BOM.
+    ///
+    /// Every project OpenUtau writes starts with a UTF-8 BOM (`EF BB BF`) —
+    /// see `ref-openutau-clean/core/OpenUtau.Core/Format/USTx.cs`, which saves
+    /// with `File.WriteAllText(..., Encoding.UTF8)`; .NET's `Encoding.UTF8`
+    /// emits a BOM preamble. `serde_yaml` does NOT skip it: the BOM makes the
+    /// first key unreadable, so the document parses as TWO documents and the
+    /// load fails with
+    ///
+    /// ```text
+    /// deserializing from YAML containing more than one document is not supported
+    /// ```
+    ///
+    /// which reads like a multi-document problem but is not one. The real
+    /// fixtures in `test-ustx-example/` contain **zero** `---` separators and
+    /// still failed exactly this way.
+    ///
+    /// `ustx_loader_discipline.rs` enforces that callers come here rather than
+    /// to `serde_yaml` directly.
+    ///
+    /// Stripping the BOM is what OpenUtau's own reader effectively does, and
+    /// without it **no real OpenUtau `.ustx` can be opened at all** — which
+    /// includes every multi-track project, because the 5-track `king.ustx`
+    /// fixture is one of them.
+    pub fn parse_yaml(yaml: &str) -> Result<UProject, String> {
+        let mut project = UProject::from_yaml_text(yaml)?;
+        project.after_load()?;
+        Ok(project)
+    }
+
+    /// Deserialize `.ustx` YAML text WITHOUT running [`after_load`](Self::after_load).
+    ///
+    /// Split out so a caller that needs the [`LoadRepair`] warnings from
+    /// `after_load_with_warnings` can parse BOM-tolerantly and still run the
+    /// repair step exactly once.
+    pub fn from_yaml_text(yaml: &str) -> Result<UProject, String> {
+        let text = yaml.trim_start();
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+        serde_yaml::from_str(text).map_err(|e| format!("parse project: {e}"))
     }
 
     /// Mirror of `Ustx.Load` + `UProject.AfterLoad` + `ValidateFull`:

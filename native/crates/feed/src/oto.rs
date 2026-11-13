@@ -43,9 +43,12 @@ mod tests {
     use std::path::Path;
 
     fn mock_voicebank() -> Voicebank {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../test-data/mock-voicebank");
-        assert!(dir.is_dir(), "mock voicebank not found at {}", dir.display());
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-data/mock-voicebank");
+        assert!(
+            dir.is_dir(),
+            "mock voicebank not found at {}",
+            dir.display()
+        );
         voicebank::load_voicebank(&dir).expect("load mock voicebank")
     }
 

@@ -3,9 +3,9 @@
 //! which OpenUtau itself can load).
 
 use domain::{
-    UCurve, UExpression, UExpressionDescriptor, UPart, UPhonemeOverride, UProject, UTempo,
-    UTimeSignature, UMixFx, UNote, URenderSettings, UTrack, UstxVersion, UVoicePart, UWavePart,
-    ATK, DYN, GEN, K_USTX_VERSION, VEL,
+    UCurve, UExpression, UExpressionDescriptor, UMixFx, UNote, UPart, UPhonemeOverride, UProject,
+    URenderSettings, UTempo, UTimeSignature, UTrack, UVoicePart, UWavePart, UstxVersion, ATK, DYN,
+    GEN, K_USTX_VERSION, VEL,
 };
 
 fn assert_projects_equal(a: &UProject, b: &UProject) {
@@ -80,7 +80,11 @@ fn full_project_round_trip() {
         UTimeSignature::new(4, 3, 4),
         UTimeSignature::new(8, 6, 8),
     ];
-    p.tempos = vec![UTempo::new(0, 138.0), UTempo::new(1920, 90.5), UTempo::new(5760, 200.0)];
+    p.tempos = vec![
+        UTempo::new(0, 138.0),
+        UTempo::new(1920, 90.5),
+        UTempo::new(5760, 200.0),
+    ];
     p.exp_selectors = vec![DYN.into(), "pitd".into(), VEL.into()];
 
     // Track 0: full configuration.
@@ -97,19 +101,24 @@ fn full_project_round_trip() {
     p.tracks[0].volume = -6.5;
     p.tracks[0].pan = 0.25;
     p.tracks[0].voice_color_names = vec!["".into(), "power".into(), "soft".into()];
-    p.tracks[0].track_expressions.push(UExpressionDescriptor::numerical(
-        "gender",
-        GEN,
-        -100.0,
-        100.0,
-        0.0,
-        Some("g"),
-    ));
+    p.tracks[0]
+        .track_expressions
+        .push(UExpressionDescriptor::numerical(
+            "gender",
+            GEN,
+            -100.0,
+            100.0,
+            0.0,
+            Some("g"),
+        ));
 
     // Track 1: solo + FX.
     let mut t2 = UTrack::new("Harmony");
     t2.solo = true;
-    t2.mix_fx = Some(UMixFx { enabled: true, ..Default::default() });
+    t2.mix_fx = Some(UMixFx {
+        enabled: true,
+        ..Default::default()
+    });
     p.tracks.push(t2);
 
     // Voice part with notes and curves.
@@ -123,8 +132,16 @@ fn full_project_round_trip() {
     n1.lyric = "あ".into();
     n1.tuning = -10;
     n1.phonemizer_override = Some("custom.Phonemizer".into());
-    n1.phoneme_expressions.push(UExpression { index: Some(0), abbr: VEL.into(), value: 80.0 });
-    n1.phoneme_expressions.push(UExpression { index: Some(0), abbr: GEN.into(), value: 12.0 });
+    n1.phoneme_expressions.push(UExpression {
+        index: Some(0),
+        abbr: VEL.into(),
+        value: 80.0,
+    });
+    n1.phoneme_expressions.push(UExpression {
+        index: Some(0),
+        abbr: GEN.into(),
+        value: 12.0,
+    });
     n1.phoneme_overrides.push(UPhonemeOverride {
         index: 0,
         phoneme: Some("a".into()),
@@ -146,7 +163,11 @@ fn full_project_round_trip() {
         domain::PitchPoint::new(40.0, -5.0, domain::PitchPointShape::Sp),
     ];
     n2.pitch.snap_first = false;
-    n2.phoneme_expressions.push(UExpression { index: Some(1), abbr: VEL.into(), value: 200.0 });
+    n2.phoneme_expressions.push(UExpression {
+        index: Some(1),
+        abbr: VEL.into(),
+        value: 200.0,
+    });
 
     let mut n3 = p.create_note_at(64, 1440, 480);
     n3.lyric = "R".into();
@@ -157,7 +178,11 @@ fn full_project_round_trip() {
         xs: vec![0, 480, 960, 1440],
         ys: vec![-240, -120, 0, 120],
     });
-    part.curves.push(UCurve { abbr: "pitd".into(), xs: vec![0, 1920], ys: vec![0, 0] });
+    part.curves.push(UCurve {
+        abbr: "pitd".into(),
+        xs: vec![0, 1920],
+        ys: vec![0, 0],
+    });
     p.parts.push(UPart::Voice(part));
 
     // Wave part on track 1.
@@ -207,7 +232,15 @@ fn full_project_round_trip() {
     assert_eq!(saved.tracks, loaded.tracks);
     assert_eq!(loaded.tracks[0].mix_fx, None);
     assert!(loaded.tracks[1].mix_fx.is_some());
-    assert_eq!(loaded.tracks[0].renderer_settings.as_ref().unwrap().resampler.as_deref(), Some("worldline"));
+    assert_eq!(
+        loaded.tracks[0]
+            .renderer_settings
+            .as_ref()
+            .unwrap()
+            .resampler
+            .as_deref(),
+        Some("worldline")
+    );
     // Time axis is rebuilt after load.
     assert_eq!(loaded.time_axis.bpm_at_tick(0), 138.0);
     assert_eq!(loaded.time_axis.bpm_at_tick(2000), 90.5);
@@ -217,8 +250,13 @@ fn full_project_round_trip() {
 #[test]
 fn special_lyrics_round_trip() {
     // Mirrors OpenUtau's UstxYamlTest.SpecialLyric.
-    for lyric in ["-@", "-&", "null", "true", "-,", "\t- asdf", "あ", "a [e]", "+", "...あ"] {
-        let note = UNote { lyric: lyric.into(), ..Default::default() };
+    for lyric in [
+        "-@", "-&", "null", "true", "-,", "\t- asdf", "あ", "a [e]", "+", "...あ",
+    ] {
+        let note = UNote {
+            lyric: lyric.into(),
+            ..Default::default()
+        };
         let yaml = serde_yaml::to_string(&note).unwrap();
         let back: UNote = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(back.lyric, lyric, "lyric {lyric:?} failed round trip");
@@ -336,7 +374,9 @@ wave_parts: []
     assert!(p.expressions.contains_key("atk"));
     let atk = &p.expressions[ATK];
     assert_eq!(atk.name, "attack");
-    let UPart::Voice(vp) = &p.parts[0] else { panic!("expected voice part") };
+    let UPart::Voice(vp) = &p.parts[0] else {
+        panic!("expected voice part")
+    };
     assert_eq!(vp.notes[0].phoneme_expressions[0].abbr, ATK);
     assert_eq!(vp.notes[0].phoneme_expressions[0].value, 123.0);
 }
@@ -378,7 +418,9 @@ wave_parts: []
 "#;
     let mut p: UProject = serde_yaml::from_str(yaml).unwrap();
     p.after_load().unwrap();
-    let UPart::Voice(vp) = &p.parts[0] else { panic!("expected voice part") };
+    let UPart::Voice(vp) = &p.parts[0] else {
+        panic!("expected voice part")
+    };
     assert_eq!(vp.notes[0].lyric, "+あ");
 }
 
@@ -662,7 +704,10 @@ fn openutau_compatible_sample_loads_and_round_trips() {
     assert_eq!(p.name, "New Project");
     assert_eq!(p.bpm, 120.0);
     assert_eq!(p.tempos, vec![UTempo::new(0, 120.0)]);
-    assert_eq!(p.tracks[0].phonemizer.as_deref(), Some("OpenUtau.Core.DefaultPhonemizer"));
+    assert_eq!(
+        p.tracks[0].phonemizer.as_deref(),
+        Some("OpenUtau.Core.DefaultPhonemizer")
+    );
     assert_eq!(p.tracks[0].singer, None);
     assert_eq!(p.tracks[0].track_name, "New Track"); // defaulted
 
@@ -671,7 +716,10 @@ fn openutau_compatible_sample_loads_and_round_trips() {
     // Version bumped, defaults merged (norm/mod+/dir were missing from this file).
     assert_eq!(p.ustx_version, Some(K_USTX_VERSION));
     assert_eq!(p.expressions.len(), 22);
-    assert_eq!(p.expressions["eng"].options.as_deref(), Some(&["".to_string(), "worldline".to_string()][..]));
+    assert_eq!(
+        p.expressions["eng"].options.as_deref(),
+        Some(&["".to_string(), "worldline".to_string()][..])
+    );
     assert_eq!(p.expressions["clr"].max, -1.0);
     // exp_selectors padded to the default 10 (file had none).
     assert_eq!(p.exp_selectors.len(), 10);
@@ -681,7 +729,9 @@ fn openutau_compatible_sample_loads_and_round_trips() {
     // minimum (last note ends at 1680 within the part, i.e. tick 3600;
     // next bar beat is 3840, so min duration = 3840 - 1920 = 1920).
     assert_eq!(p.parts.len(), 1);
-    let UPart::Voice(vp) = &p.parts[0] else { panic!("expected voice part") };
+    let UPart::Voice(vp) = &p.parts[0] else {
+        panic!("expected voice part")
+    };
     assert_eq!(vp.name, "New Part");
     assert_eq!(vp.position, 1920);
     assert_eq!(vp.track_no, 0);
@@ -742,7 +792,10 @@ fn project_yaml_is_byte_stable_across_reload() {
             seen.push(line.trim().trim_end_matches(':'));
         }
     }
-    assert!(seen.len() > 5, "expected the default expression table, got {seen:?}");
+    assert!(
+        seen.len() > 5,
+        "expected the default expression table, got {seen:?}"
+    );
     let mut sorted = seen.clone();
     sorted.sort_unstable();
     assert_eq!(seen, sorted, "expressions must be written sorted by abbr");

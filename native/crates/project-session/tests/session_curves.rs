@@ -175,6 +175,42 @@ fn a_stroke_can_create_a_curve_and_the_new_id_is_addressable() {
 }
 
 #[test]
+fn descriptor_and_first_stroke_context_are_revision_tagged_reads() {
+    let mut session = Session::open(CURVE_PROJECT, None, 1).expect("open");
+    let part = part_id(&session);
+    let descriptor: Value =
+        serde_json::from_str(&session.expression_descriptor_json("dyn").unwrap()).unwrap();
+    assert_eq!(descriptor["revision"], 0);
+    assert_eq!(descriptor["descriptor"]["abbr"], "dyn");
+    assert_eq!(descriptor["descriptor"]["min"], -240.0);
+
+    let curve = curve_id(&session, 0);
+    session
+        .apply_v2(&request(
+            0,
+            json!({"type":"curve.apply_stroke","part_id":part,"curve_id":curve,
+                   "mode":"clear","start_tick":0,"end_tick":480,"points":[]}),
+        ))
+        .unwrap();
+    let context: Value = serde_json::from_str(
+        &session
+            .curve_stroke_context_for_abbr_json(&part, "dyn", None)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(context["revision"], 1);
+    assert_eq!(
+        context["track_id"],
+        session.identity().tracks[0].id.as_str()
+    );
+    assert_eq!(context["part_id"], part);
+    assert!(context["curve_id"].is_null());
+    assert_eq!(context["points"], json!([]));
+    assert_eq!(context["descriptor"]["min_value"], -240);
+    assert_eq!(context["descriptor"]["max_value"], 120);
+}
+
+#[test]
 fn clear_removes_the_interval_and_deletes_an_emptied_curve() {
     let mut session = Session::open(CURVE_PROJECT, None, 1).expect("open");
     let id = curve_id(&session, 0);
@@ -245,6 +281,55 @@ fn one_stroke_is_one_revision_and_one_undo_step() {
         before,
         "undo restores the points"
     );
+}
+
+#[test]
+fn committed_stroke_simplifies_the_whole_curve_and_undo_restores_exact_points() {
+    let mut session = Session::open(CURVE_PROJECT, None, 1).expect("open");
+    let id = curve_id(&session, 0);
+    let before = curve_points(&session, 0);
+    session
+        .apply_v2(&request(
+            0,
+            json!({"type":"curve.apply_stroke","part_id":part_id(&session),"curve_id":id,
+                   "mode":"replace","start_tick":0,"end_tick":960,
+                   "points":[{"tick":240,"value":5},{"tick":480,"value":10},
+                             {"tick":720,"value":5}]}),
+        ))
+        .expect("commit stroke");
+    assert_eq!(session.revision(), 1);
+    assert_eq!(
+        curve_points(&session, 0),
+        (vec![0, 480, 960], vec![0, 10, 0])
+    );
+    session.undo().expect("undo").expect("one stroke step");
+    assert_eq!(
+        curve_points(&session, 0),
+        before,
+        "undo is byte/structure exact"
+    );
+}
+
+#[test]
+fn dense_stroke_is_one_revision_and_one_undo_entry() {
+    let mut session = Session::open(CURVE_PROJECT, None, 1).expect("open");
+    let id = curve_id(&session, 0);
+    let before = curve_points(&session, 0);
+    let points: Vec<_> = (0..500)
+        .map(|i| json!({"tick": i * 960 / 499, "value": (i % 3) as i32}))
+        .collect();
+    let result = session
+        .apply_v2(&request(
+            0,
+            json!({"type":"curve.apply_stroke","part_id":part_id(&session),"curve_id":id,
+                   "mode":"replace","start_tick":0,"end_tick":960,"points":points}),
+        ))
+        .expect("dense gesture commits once");
+    assert_eq!(result.revision, 1);
+    assert_eq!(session.revision(), 1);
+    session.undo().expect("undo").expect("one undo entry");
+    assert_eq!(session.revision(), 2);
+    assert_eq!(curve_points(&session, 0), before);
 }
 
 #[test]
@@ -447,13 +532,14 @@ fn capabilities_describe_what_this_build_supports() {
     let session = Session::open(DEMO, None, 1).expect("open");
     let value: Value = serde_json::from_str(&session.capabilities_json().unwrap()).unwrap();
 
-    assert_eq!(value["contract_version"], "2-draft1");
+    assert_eq!(value["contract_version"], "2-draft3");
     assert_eq!(value["id_schema_version"], 1);
     for feature in [
         "stable_ids",
         "partial_reads",
         "group_transactions",
         "curve_apply_stroke",
+        "project.controls.v1",
     ] {
         assert!(
             value["features"]

@@ -1,0 +1,22 @@
+[package]
+name = "media"
+version.workspace = true
+edition.workspace = true
+description = "Engine-owned media access for wave (audio) parts: container decode + host-independent resolution"
+
+[dependencies]
+domain = { path = "../domain" }
+# Pure-Rust audio decoding (MP3 / WAV / FLAC / OGG-Vorbis / Opus). Chosen over a
+# C++ decoder because the same code has to run in the browser: a native-only
+# decoder would make wave parts a native-only feature and split host behavior,
+# which the engine-owned-state policy forbids.
+symphonia = { version = "0.5", default-features = false, features = [
+    "mp3",
+    "wav",
+    "flac",
+    "ogg",
+    "pcm",
+] }
+
+[dev-dependencies]
+wavwriter = { path = "../wavwriter" }

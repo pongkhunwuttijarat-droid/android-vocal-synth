@@ -1,7 +1,7 @@
 //! TimeAxis tests. Acceptance: at 120 BPM 4/4, one quarter note
 //! (480 ticks) equals 500 ms.
 
-use domain::{UTempo, UTimeSignature, UProject};
+use domain::{UProject, UTempo, UTimeSignature};
 
 fn axis_120() -> UProject {
     UProject::new()
@@ -49,11 +49,20 @@ fn bar_beat_conversion_44() {
     assert_eq!((ts.bar_position, ts.beat_per_bar, ts.beat_unit), (0, 4, 4));
     assert_eq!(axis.time_signature_at_bar(10), ts);
 
-    assert_eq!(axis.tempos_between_ticks(0, 100), vec![UTempo::new(0, 120.0)]);
-    assert_eq!(axis.tempos_between_ticks(100, 5000), vec![UTempo::new(0, 120.0)]);
+    assert_eq!(
+        axis.tempos_between_ticks(0, 100),
+        vec![UTempo::new(0, 120.0)]
+    );
+    assert_eq!(
+        axis.tempos_between_ticks(100, 5000),
+        vec![UTempo::new(0, 120.0)]
+    );
     // OpenUtau filter: start < tickEnd && tickPos < end → zero-length range
     // at 480 still matches the single tempo (0 < 480, 480 < maxValue).
-    assert_eq!(axis.tempos_between_ticks(480, 480), vec![UTempo::new(0, 120.0)]);
+    assert_eq!(
+        axis.tempos_between_ticks(480, 480),
+        vec![UTempo::new(0, 120.0)]
+    );
 }
 
 #[test]

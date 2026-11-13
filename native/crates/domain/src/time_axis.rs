@@ -91,17 +91,18 @@ impl TimeAxis {
         }
 
         self.tempo_segments.clear();
-        self.tempo_segments.extend(self.time_sig_segments.iter().map(|sigseg| TempoSegment {
-            tick_pos: sigseg.tick_pos,
-            tick_end: i32::MAX,
-            bpm: 0.0,
-            beat_per_bar: sigseg.beat_per_bar,
-            beat_unit: sigseg.beat_unit,
-            ms_pos: 0.0,
-            ms_end: f64::MAX,
-            ms_per_tick: 0.0,
-            ticks_per_ms: 0.0,
-        }));
+        self.tempo_segments
+            .extend(self.time_sig_segments.iter().map(|sigseg| TempoSegment {
+                tick_pos: sigseg.tick_pos,
+                tick_end: i32::MAX,
+                bpm: 0.0,
+                beat_per_bar: sigseg.beat_per_bar,
+                beat_unit: sigseg.beat_unit,
+                ms_pos: 0.0,
+                ms_end: f64::MAX,
+                ms_per_tick: 0.0,
+                ticks_per_ms: 0.0,
+            }));
         for (i, tempo) in tempos.iter().enumerate() {
             if i == 0 && tempo.position != 0 {
                 return Err("First tempo must be at tick 0.".to_string());
@@ -174,18 +175,14 @@ impl TimeAxis {
         self.tempo_segments
             .iter()
             .find(|seg| seg.tick_pos == tick || seg.tick_end > tick)
-            .unwrap_or_else(|| {
-                panic!("time axis has no tempo segments; call build_segments first")
-            })
+            .unwrap_or_else(|| panic!("time axis has no tempo segments; call build_segments first"))
     }
 
     fn tempo_segment_at_ms(&self, ms: f64) -> &TempoSegment {
         self.tempo_segments
             .iter()
             .find(|seg| seg.ms_pos == ms || seg.ms_end > ms)
-            .unwrap_or_else(|| {
-                panic!("time axis has no tempo segments; call build_segments first")
-            })
+            .unwrap_or_else(|| panic!("time axis has no tempo segments; call build_segments first"))
     }
 
     fn time_sig_segment_at_tick(&self, tick: i32) -> &TimeSigSegment {
@@ -316,7 +313,10 @@ mod tests {
         assert_eq!(err, "First time signature must be at bar 0.");
         let mut p = default_project();
         p.tempos = vec![UTempo::new(480, 120.0)];
-        let err = p.time_axis.build_segments(&p.time_signatures, &p.tempos).unwrap_err();
+        let err = p
+            .time_axis
+            .build_segments(&p.time_signatures, &p.tempos)
+            .unwrap_err();
         assert_eq!(err, "First tempo must be at tick 0.");
     }
 
@@ -325,7 +325,9 @@ mod tests {
         // A tempo with bpm 0 inherits the previous segment's bpm.
         let mut p = default_project();
         p.tempos = vec![UTempo::new(0, 120.0), UTempo::new(480, 0.0)];
-        p.time_axis.build_segments(&p.time_signatures, &p.tempos).unwrap();
+        p.time_axis
+            .build_segments(&p.time_signatures, &p.tempos)
+            .unwrap();
         assert_eq!(p.time_axis.bpm_at_tick(1000), 120.0);
     }
 }

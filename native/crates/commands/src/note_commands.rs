@@ -8,7 +8,7 @@
 //! the part duration when the edit would push the note past the part end,
 //! mirroring the `NewPartDuration` logic of the OpenUtau constructors.
 
-use domain::{UNote, UPart, UProject};
+use domain::{UNote, UPart, UPitch, UProject, UVibrato};
 
 use crate::command::Command;
 use crate::locate::{
@@ -431,5 +431,136 @@ impl Command for ChangeNoteTuningCommand {
 
     fn name(&self) -> &str {
         self.name
+    }
+}
+
+/// Replace a note's pitch curve (`SetNotePitchCommand`).
+///
+/// The whole `UPitch` is replaced rather than patched point by point: a
+/// freeform drag produces the entire curve, and one gesture is one undo step
+/// (§6.8), so the command carries the finished curve. `SetPitchPointsCommand`
+/// in the reference does the same.
+///
+/// Points are validated and sorted by `x` here rather than trusted, because they
+/// arrive from a host over the wire. `x` is milliseconds from the note start and
+/// `y` is tenths of a semitone relative to the note's tone — both are the units
+/// `domain::PitchPoint` and the USTX codec already use, so nothing is converted
+/// on the way in or out.
+pub struct SetNotePitchCommand {
+    name: &'static str,
+    edit: NoteEdit,
+}
+
+impl SetNotePitchCommand {
+    /// `SetNotePitchCommand(part, note, pitch)`.
+    pub fn new(
+        project: &UProject,
+        part_index: usize,
+        note_index: usize,
+        mut pitch: UPitch,
+    ) -> Result<Self, String> {
+        // Strictly increasing x is what `UPitch::Sample` and the feed's
+        // interpolation assume; a duplicate or out-of-order pair would make the
+        // rendered pitch depend on which span the scan happens to reach first.
+        pitch
+            .data
+            .sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+        for pair in pitch.data.windows(2) {
+            if pair[1].x <= pair[0].x {
+                return Err("pitch point x values must strictly increase".to_string());
+            }
+            if !pair[0].x.is_finite() || !pair[0].y.is_finite() {
+                return Err("pitch point coordinates must be finite".to_string());
+            }
+        }
+        if let Some(first) = pitch.data.first() {
+            if !first.x.is_finite() || !first.y.is_finite() {
+                return Err("pitch point coordinates must be finite".to_string());
+            }
+            // `x` is milliseconds from the note start, so it cannot be negative.
+            // Files do contain such points — the demo song stores a curve at
+            // x -40…40 as a placeholder, and the import codec has to keep reading
+            // those — but an editor command is a finished curve, and the roll
+            // always anchors its first point at 0. Accepting a negative x here is
+            // what let a stroke be stored on an unnormalized curve.
+            if first.x < 0.0 {
+                return Err("pitch points cannot start before the note".to_string());
+            }
+        }
+        let mut edit = NoteEdit::from_project(project, part_index, note_index)?;
+        edit.new_note.pitch = pitch;
+        Ok(SetNotePitchCommand {
+            name: "Draw pitch",
+            edit,
+        })
+    }
+}
+
+impl Command for SetNotePitchCommand {
+    fn execute(&mut self, project: &mut UProject) -> Result<(), String> {
+        execute_note_edit(project, &self.edit, None)
+    }
+
+    fn unexecute(&mut self, project: &mut UProject) -> Result<(), String> {
+        unexecute_note_edit(project, &self.edit, None)
+    }
+
+    fn name(&self) -> &str {
+        self.name
+    }
+}
+
+/// Replace a note's OpenUtau vibrato settings as one reversible edit.
+pub struct SetNoteVibratoCommand {
+    edit: NoteEdit,
+}
+
+impl SetNoteVibratoCommand {
+    pub fn new(
+        project: &UProject,
+        part_index: usize,
+        note_index: usize,
+        vibrato: UVibrato,
+    ) -> Result<Self, String> {
+        let values = [
+            vibrato.length,
+            vibrato.period,
+            vibrato.depth,
+            vibrato.r#in,
+            vibrato.out,
+            vibrato.shift,
+            vibrato.drift,
+            vibrato.vol_link,
+        ];
+        if values.iter().any(|value| !value.is_finite())
+            || !(0.0..=100.0).contains(&vibrato.length)
+            || !(5.0..=500.0).contains(&vibrato.period)
+            || !(5.0..=200.0).contains(&vibrato.depth)
+            || !(0.0..=100.0).contains(&vibrato.r#in)
+            || !(0.0..=100.0).contains(&vibrato.out)
+            || vibrato.r#in + vibrato.out > 100.0
+            || !(0.0..=100.0).contains(&vibrato.shift)
+            || !(-100.0..=100.0).contains(&vibrato.drift)
+            || !(-100.0..=100.0).contains(&vibrato.vol_link)
+        {
+            return Err("invalid vibrato parameters".to_string());
+        }
+        let mut edit = NoteEdit::from_project(project, part_index, note_index)?;
+        edit.new_note.vibrato = vibrato;
+        Ok(Self { edit })
+    }
+}
+
+impl Command for SetNoteVibratoCommand {
+    fn execute(&mut self, project: &mut UProject) -> Result<(), String> {
+        execute_note_edit(project, &self.edit, None)
+    }
+
+    fn unexecute(&mut self, project: &mut UProject) -> Result<(), String> {
+        unexecute_note_edit(project, &self.edit, None)
+    }
+
+    fn name(&self) -> &str {
+        "Set vibrato"
     }
 }

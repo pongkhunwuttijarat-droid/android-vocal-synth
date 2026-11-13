@@ -15,6 +15,11 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 const DEMO: &str = include_str!("../../../tools/synth-cli/tests/data/demo-song.ustx");
+const SHARED_ADAPTER_VECTOR: &str = include_str!("vectors/adapter_shared.json");
+const DOCUMENT_ADAPTER_VECTOR: &str = include_str!("vectors/document_adapter_shared.json");
+const PART_ADAPTER_VECTOR: &str = include_str!("vectors/part_adapter_shared.json");
+const SHARED_CURVE_FIXTURE: &str = include_str!("vectors/curve_adapter_shared.ustx");
+const SHARED_CURVE_VECTOR: &str = include_str!("vectors/curve_adapter_shared.json");
 
 const CURVE_PROJECT: &str = r#"ustx_version: 0.9
 name: Curve Session
@@ -104,6 +109,8 @@ struct Expect {
     track_count: Option<usize>,
     point_count: Option<usize>,
     abbr: Option<String>,
+    project_id_changed: Option<bool>,
+    entity_ids_stable: Option<bool>,
 }
 
 fn fixture(name: &str) -> &'static str {
@@ -136,6 +143,8 @@ struct Outcome {
     track_count: Option<usize>,
     point_count: Option<usize>,
     abbr: Option<String>,
+    project_id_changed: Option<bool>,
+    entity_ids_stable: Option<bool>,
 }
 
 struct Runner {
@@ -450,6 +459,28 @@ impl Runner {
                 }
                 Err(err) => error_outcome(&err),
             },
+            "save_as" => {
+                let before = self.session.identity().clone();
+                let payload = match self.session.prepare_save_as() {
+                    Ok(payload) => payload,
+                    Err(err) => {
+                        return Outcome {
+                            reason: Some(err),
+                            ..Default::default()
+                        }
+                    }
+                };
+                let project_id_changed = payload.project_id != before.project_id.as_str();
+                let committed_id = self.session.commit_save_as_identity();
+                Outcome {
+                    revision: self.session.revision(),
+                    project_id_changed: Some(
+                        project_id_changed && committed_id == payload.project_id,
+                    ),
+                    entity_ids_stable: Some(self.session.identity().tracks == before.tracks),
+                    ..Default::default()
+                }
+            }
             other => panic!("unknown vector op '{other}'"),
         }
     }
@@ -532,6 +563,20 @@ fn check(vector: &str, index: usize, step: &Step, outcome: &Outcome) {
             "{where_}: abbr"
         );
     }
+    if let Some(changed) = expect.project_id_changed {
+        assert_eq!(
+            outcome.project_id_changed,
+            Some(changed),
+            "{where_}: project ID fork"
+        );
+    }
+    if let Some(stable) = expect.entity_ids_stable {
+        assert_eq!(
+            outcome.entity_ids_stable,
+            Some(stable),
+            "{where_}: entity IDs"
+        );
+    }
 }
 
 #[test]
@@ -550,7 +595,11 @@ fn session_conformance_vectors() {
                 "a skipped vector must not carry steps: {}",
                 vector.name
             );
-            assert!(!reason.trim().is_empty(), "a skip needs a reason: {}", vector.name);
+            assert!(
+                !reason.trim().is_empty(),
+                "a skip needs a reason: {}",
+                vector.name
+            );
             skipped.push((vector.name.as_str(), reason.as_str()));
             continue;
         }
@@ -585,6 +634,7 @@ fn every_vector_names_a_known_fixture_and_op() {
         "read_notes",
         "read_curve",
         "read_tracks",
+        "save_as",
     ];
     for vector in &suite.vectors {
         assert!(!vector.name.is_empty());
@@ -594,6 +644,310 @@ fn every_vector_names_a_known_fixture_and_op() {
         }
         if vector.skip.is_some() {
             assert!(vector.steps.is_empty(), "skipped vectors carry no steps");
+        }
+    }
+}
+
+#[test]
+fn shared_adapter_vector_matches_reference_session() {
+    let vector: Value = serde_json::from_str(SHARED_ADAPTER_VECTOR).expect("shared vector JSON");
+    let mut session = Session::open(DEMO, None, 17).expect("reference session");
+    let capabilities = serde_json::to_value(session.capabilities()).unwrap();
+    assert_eq!(
+        capabilities["contract_version"],
+        vector["capabilities"]["contract_version"]
+    );
+    assert_eq!(
+        capabilities["command_schema_version"],
+        vector["capabilities"]["command_schema_version"]
+    );
+    assert_eq!(
+        capabilities["snapshot_schema_version"],
+        vector["capabilities"]["snapshot_schema_version"]
+    );
+    assert_eq!(
+        capabilities["id_schema_version"],
+        vector["capabilities"]["id_schema_version"]
+    );
+    assert_eq!(
+        capabilities["limits"]["max_stroke_points"],
+        vector["capabilities"]["max_stroke_points"]
+    );
+    let note_id = session.identity().tracks[0].parts[0].notes[0]
+        .id
+        .to_string();
+    let track_id = session.identity().tracks[0].id.to_string();
+    let mut group_id: Option<String> = None;
+    for step in vector["steps"].as_array().unwrap() {
+        let expected = &step["expected"];
+        match step["op"].as_str().unwrap() {
+            "set_lyric" | "stale_set_lyric" => {
+                let revision = if step["op"] == "set_lyric" { 0 } else { 0 };
+                let result = session.apply_v2(
+                    &json!({
+                        "expected_revision": revision,
+                        "command":{"type":"note.set_lyric","note_id":note_id,"lyric":step["lyric"]}
+                    })
+                    .to_string(),
+                );
+                if let Some(code) = expected.get("code").and_then(Value::as_str) {
+                    let error = result.expect_err("shared vector expects rejection");
+                    assert_eq!(error.code(), code);
+                    assert_eq!(session.revision(), expected["revision"].as_u64().unwrap());
+                } else {
+                    let result = result.expect("shared vector command");
+                    let mut kinds: Vec<_> = result
+                        .changes
+                        .iter()
+                        .map(|change| change.kind.as_str())
+                        .collect();
+                    kinds.sort_unstable();
+                    let expected_kinds: Vec<_> = expected["change_kinds"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.as_str().unwrap())
+                        .collect();
+                    assert_eq!(result.revision, expected["revision"].as_u64().unwrap());
+                    assert_eq!(result.changed, expected["changed"].as_bool().unwrap());
+                    assert_eq!(kinds, expected_kinds);
+                }
+            }
+            "undo" | "redo" => {
+                let result = if step["op"] == "undo" {
+                    session.undo()
+                } else {
+                    session.redo()
+                };
+                let result = result.expect("history operation").expect("history changed");
+                assert_eq!(result.revision, expected["revision"].as_u64().unwrap());
+            }
+            "snapshot" => {
+                let snapshot: Value =
+                    serde_json::from_str(&session.snapshot_json().unwrap()).unwrap();
+                assert_eq!(snapshot["revision"], expected["revision"]);
+                assert_eq!(
+                    snapshot["project"]["tracks"][0]["parts"][0]["notes"][0]["lyric"],
+                    expected["lyric"]
+                );
+                if let Some(tone) = expected.get("tone") {
+                    assert_eq!(
+                        snapshot["project"]["tracks"][0]["parts"][0]["notes"][0]["tone"],
+                        *tone
+                    );
+                }
+                if let Some(mute) = expected.get("mute") {
+                    assert_eq!(snapshot["project"]["tracks"][0]["mute"], *mute);
+                }
+            }
+            "read_notes" => {
+                let part_id = session.identity().tracks[0].parts[0].id.to_string();
+                let notes: Value =
+                    serde_json::from_str(&session.part_notes_json(&part_id).unwrap()).unwrap();
+                assert_eq!(notes["revision"], expected["revision"]);
+                assert_eq!(
+                    notes["notes"].as_array().unwrap().len(),
+                    expected["note_count"]
+                );
+            }
+            "read_tracks" => {
+                let tracks: Value = serde_json::from_str(&session.tracks_json().unwrap()).unwrap();
+                assert_eq!(tracks["revision"], expected["revision"]);
+                assert_eq!(
+                    tracks["tracks"].as_array().unwrap().len(),
+                    expected["track_count"]
+                );
+            }
+            "group_begin" => {
+                let begin = session
+                    .group_begin(
+                        expected["revision"].as_u64().unwrap(),
+                        step["name"].as_str().unwrap(),
+                    )
+                    .unwrap();
+                group_id = Some(begin.group_id);
+                assert_eq!(begin.base_revision, expected["revision"]);
+            }
+            "group_tone" => {
+                let result = session
+                    .apply_v2(
+                        &json!({
+                            "expected_revision": expected["revision"],
+                            "group_id": group_id.as_deref().unwrap(),
+                            "command":{"type":"note.set_tone","note_id":note_id,"tone":step["tone"]}
+                        })
+                        .to_string(),
+                    )
+                    .unwrap();
+                assert_eq!(result.revision, expected["revision"]);
+                assert_eq!(result.changed, expected["changed"]);
+            }
+            "group_commit" => {
+                let result = session
+                    .group_commit(
+                        group_id.as_deref().unwrap(),
+                        expected["revision"].as_u64().unwrap() - 1,
+                    )
+                    .unwrap();
+                group_id = None;
+                assert_eq!(result.revision, expected["revision"]);
+                assert_eq!(result.changed, expected["changed"]);
+            }
+            "track_mute" => {
+                let result = session.apply_v2(&json!({
+                    "expected_revision": expected["revision"].as_u64().unwrap() - 1,
+                    "command":{"type":"track.set_mute","track_id":track_id,"mute":step["mute"]}
+                }).to_string()).unwrap();
+                let mut kinds: Vec<_> = result
+                    .changes
+                    .iter()
+                    .map(|change| change.kind.as_str())
+                    .collect();
+                kinds.sort_unstable();
+                let expected_kinds: Vec<_> = expected["change_kinds"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_str().unwrap())
+                    .collect();
+                assert_eq!(result.revision, expected["revision"]);
+                assert_eq!(result.changed, expected["changed"]);
+                assert_eq!(kinds, expected_kinds);
+            }
+            operation => panic!("unknown shared operation {operation}"),
+        }
+    }
+}
+
+#[test]
+fn shared_document_vector_matches_reference_session() {
+    let vector: Value = serde_json::from_str(DOCUMENT_ADAPTER_VECTOR).unwrap();
+    let mut session = Session::new(71);
+    let request = json!({"expected_revision":0,"command":vector["command"]});
+    let outcome = session.apply_v2(&request.to_string()).unwrap();
+    let expected = &vector["expected"];
+    assert_eq!(outcome.revision, expected["revision"]);
+    assert_eq!(outcome.changed, expected["changed"]);
+    let mut kinds: Vec<_> = outcome
+        .changes
+        .iter()
+        .map(|change| change.kind.as_str())
+        .collect();
+    kinds.sort_unstable();
+    let mut expected_kinds: Vec<_> = expected["change_kinds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|kind| kind.as_str().unwrap())
+        .collect();
+    expected_kinds.sort_unstable();
+    assert_eq!(kinds, expected_kinds);
+    let snapshot: Value = serde_json::from_str(&session.snapshot_json().unwrap()).unwrap();
+    assert_eq!(snapshot["project"]["name"], expected["name"]);
+    assert_eq!(snapshot["project"]["comment"], expected["comment"]);
+    assert_eq!(snapshot["project"]["key"], expected["key"]);
+}
+
+#[test]
+fn shared_part_vector_matches_reference_session() {
+    let vector: Value = serde_json::from_str(PART_ADAPTER_VECTOR).unwrap();
+    let mut session = Session::open(DEMO, None, 73).unwrap();
+    let part_id = session.identity().tracks[0].parts[0].id.to_string();
+    let mut command = vector["command"].clone();
+    command["part_id"] = Value::String(part_id);
+    let group = session.group_begin(0, "shared part vector").unwrap();
+    let child = session
+        .apply_v2(
+            &json!({"expected_revision":0,"group_id":group.group_id,"command":command}).to_string(),
+        )
+        .unwrap();
+    assert!(child.changes.is_empty());
+    let result = session.group_commit(&group.group_id, 0).unwrap();
+    let expected = &vector["expected"];
+    assert_eq!(result.revision, expected["revision"]);
+    assert_eq!(result.changed, expected["changed"]);
+    let mut kinds: Vec<_> = result
+        .changes
+        .iter()
+        .map(|change| change.kind.as_str())
+        .collect();
+    kinds.sort_unstable();
+    let mut expected_kinds: Vec<_> = expected["change_kinds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|kind| kind.as_str().unwrap())
+        .collect();
+    expected_kinds.sort_unstable();
+    assert_eq!(kinds, expected_kinds);
+    let snapshot: Value = serde_json::from_str(&session.snapshot_json().unwrap()).unwrap();
+    assert_eq!(
+        snapshot["project"]["tracks"][0]["parts"][0]["name"],
+        expected["name"]
+    );
+    assert_eq!(
+        snapshot["project"]["tracks"][0]["parts"][0]["comment"],
+        expected["comment"]
+    );
+}
+
+#[test]
+fn shared_curve_adapter_vector_matches_reference_session() {
+    let vector: Value = serde_json::from_str(SHARED_CURVE_VECTOR).unwrap();
+    let mut session = Session::open(SHARED_CURVE_FIXTURE, None, 29).unwrap();
+    let identities = session.identity();
+    let part_id = identities.tracks[0].parts[0].id.to_string();
+    let curve_id = identities.tracks[0].parts[0].curves[0].id.to_string();
+    for step in vector["steps"].as_array().unwrap() {
+        let expected = &step["expected"];
+        match step["op"].as_str().unwrap() {
+            "oversized_stroke" => {
+                let points: Vec<_> = (0..step["point_count"].as_u64().unwrap())
+                    .map(|i| json!({"tick": (i % 961), "value": 1}))
+                    .collect();
+                let error = session
+                    .apply_v2(
+                        &json!({
+                            "expected_revision": step["revision"],
+                            "command": {
+                                "type":"curve.apply_stroke", "part_id":part_id, "curve_id":curve_id,
+                                "mode":"replace", "start_tick":0, "end_tick":960, "points":points
+                            }
+                        })
+                        .to_string(),
+                    )
+                    .expect_err("oversized vector rejected");
+                assert_eq!(error.code(), expected["code"].as_str().unwrap());
+                assert_eq!(session.revision(), expected["revision"].as_u64().unwrap());
+            }
+            "curve_apply" => {
+                let command = json!({
+                    "expected_revision": step["revision"],
+                    "command": {
+                        "type":"curve.apply_stroke", "part_id":part_id, "curve_id":curve_id,
+                        "mode":"replace", "start_tick":0, "end_tick":960,
+                        "points":step["points"]
+                    }
+                });
+                let outcome = session.apply_v2(&command.to_string()).unwrap();
+                assert_eq!(outcome.revision, expected["revision"]);
+                let curve: Value =
+                    serde_json::from_str(&session.curve_json(&part_id, &curve_id).unwrap())
+                        .unwrap();
+                assert_eq!(curve["points"], expected["points"]);
+            }
+            "undo" => {
+                let outcome = session
+                    .undo_v2(step["revision"].as_u64().unwrap())
+                    .unwrap()
+                    .expect("undo changed the curve");
+                assert_eq!(outcome.revision, expected["revision"]);
+                let curve: Value =
+                    serde_json::from_str(&session.curve_json(&part_id, &curve_id).unwrap())
+                        .unwrap();
+                assert_eq!(curve["points"], expected["points"]);
+            }
+            operation => panic!("unknown shared curve operation {operation}"),
         }
     }
 }

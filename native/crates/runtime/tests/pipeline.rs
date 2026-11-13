@@ -131,7 +131,10 @@ fn pipeline_chunk_schedule_cache_mix() {
     let final_audio = runtime::mixer::mix(&inputs);
     assert_eq!(final_audio.sample_rate, SAMPLE_RATE);
     // Longest chunk ends at 900 ms + 100 samples.
-    assert_eq!(final_audio.samples.len(), runtime::mixer::ms_to_samples(900.0, SAMPLE_RATE) + 100);
+    assert_eq!(
+        final_audio.samples.len(),
+        runtime::mixer::ms_to_samples(900.0, SAMPLE_RATE) + 100
+    );
     // First chunk's first sample is nonzero.
     assert!(final_audio.samples[0] > 0.0);
     // The 900 ms region contains the last chunk's audio.

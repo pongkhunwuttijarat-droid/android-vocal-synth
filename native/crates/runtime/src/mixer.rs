@@ -50,11 +50,32 @@ pub struct TrackSpec {
     /// right). Applied to the mono output as an equal-power fold-down
     /// gain: `cos(pan * pi/4)` — unity at center, `-3 dB` hard-panned.
     pub pan: f32,
+    /// Extra linear multiplier applied after `volume_db` and `pan`.
+    ///
+    /// `1.0` for the plain dB path ([`TrackSpec::new`]). A project mixdown uses
+    /// it for a fader curve that is *not* a dB value: OpenUtau's
+    /// [`openutau_fader_scale`] has a knee below -16 dB and reaches exactly 0
+    /// when a track is muted, neither of which survives a round trip through
+    /// `volume_db`.
+    pub gain: f32,
 }
 
 impl TrackSpec {
     pub fn new(volume_db: f32, pan: f32) -> Self {
-        Self { volume_db, pan }
+        Self {
+            volume_db,
+            pan,
+            gain: 1.0,
+        }
+    }
+
+    /// `new` plus a linear multiplier (see [`TrackSpec::gain`]).
+    pub fn with_gain(volume_db: f32, pan: f32, gain: f32) -> Self {
+        Self {
+            volume_db,
+            pan,
+            gain,
+        }
     }
 }
 
@@ -63,6 +84,7 @@ impl Default for TrackSpec {
         Self {
             volume_db: 0.0,
             pan: 0.0,
+            gain: 1.0,
         }
     }
 }
@@ -98,6 +120,28 @@ pub fn db_to_linear(db: f32) -> f32 {
 /// center, `-3 dB` at hard left/right.
 pub fn pan_gain(pan: f32) -> f32 {
     (pan.clamp(-1.0, 1.0) * std::f32::consts::FRAC_PI_4).cos()
+}
+
+/// OpenUtau's track-fader curve, a port of `PlaybackManager.DecibelToVolume`:
+///
+/// ```text
+/// db <= -24        → 0                       (the mute / "off" point)
+/// -24 < db < -16   → 10^((db·2 + 16)/20)     (a steeper knee, more travel)
+/// db >= -16        → 10^(db/20)
+/// ```
+///
+/// This is *not* a plain dB→linear conversion, which is what
+/// [`db_to_linear`] does. Track volume/pan only reaches the mix through a
+/// fader in the reference, so a mixdown that used `db_to_linear` would place
+/// every non-zero track volume slightly wrong.
+pub fn openutau_fader_scale(db: f64) -> f32 {
+    if db <= -24.0 {
+        0.0
+    } else if db < -16.0 {
+        10f64.powf((db * 2.0 + 16.0) / 20.0) as f32
+    } else {
+        10f64.powf(db / 20.0) as f32
+    }
 }
 
 /// Multiply `samples` by a dynamics envelope, ported from
@@ -214,6 +258,15 @@ pub fn apply_fades(samples: &mut [f32], fade_in_ms: f64, fade_out_ms: f64, sampl
     fade_out(samples, fade_out_samples);
 }
 
+/// Sample index at which a chunk's audio lands: `position_ms - leading_ms`,
+/// which can be negative (see [`mix`]).
+fn chunk_start(input: &MixInput) -> i64 {
+    ms_to_samples_signed(
+        input.chunk.position_ms - input.chunk.leading_ms,
+        SAMPLE_RATE,
+    )
+}
+
 /// Align every chunk at `position_ms - leading_ms` and sum them with
 /// per-track gain (`volume_db` + pan fold-down).
 ///
@@ -224,9 +277,6 @@ pub fn mix(inputs: &[MixInput]) -> FinalAudio {
     // those samples are dropped. The alternative (clamping the placement to
     // sample 0) prepends the whole pre-roll and makes the note sound late.
     // OpenUtau trims the leading in its mixdown the same way.
-    let chunk_start = |input: &MixInput| -> i64 {
-        ms_to_samples_signed(input.chunk.position_ms - input.chunk.leading_ms, SAMPLE_RATE)
-    };
     let length = inputs
         .iter()
         .map(|input| (chunk_start(input) + input.chunk.samples.len() as i64).max(0) as usize)
@@ -245,7 +295,8 @@ pub fn mix(inputs: &[MixInput]) -> FinalAudio {
         // track overlaps (leading == 0) still sum.
         let overlap = ms_to_samples(input.chunk.leading_ms, SAMPLE_RATE).max(1);
         let crossfade = input.chunk.leading_ms > 0.0;
-        let gain = db_to_linear(input.track.volume_db) * pan_gain(input.track.pan);
+        let gain =
+            db_to_linear(input.track.volume_db) * pan_gain(input.track.pan) * input.track.gain;
         for (i, sample) in input.chunk.samples.iter().enumerate() {
             let target = start + i as i64;
             if target < 0 {
@@ -282,6 +333,65 @@ pub fn mix(inputs: &[MixInput]) -> FinalAudio {
     }
 }
 
+/// Like [`mix`] but starting at chunk `start_index`, for streaming playback.
+///
+/// Chunk `start_index` does not crossfade against nothing: it blends into the
+/// **tail of chunk `start_index - 1`** over its leading zone, so that chunk is
+/// mixed too and only then trimmed off the front. Starting at `start_index`
+/// itself would produce a hard cut where the crossfade should be.
+///
+/// The returned audio is what [`mix`] over the whole plan would have produced
+/// from that sample onward, so a player can concatenate consecutive ranges and
+/// get bit-identical output to one full mix — that is what
+/// `mix_from_is_the_tail_of_a_full_mix` asserts. The same limit the mixer
+/// already has applies: chunks can only be played from an already-mixed
+/// boundary FORWARD. Jumping into the middle of a song is not possible without
+/// rendering the chunks before it.
+///
+/// `start_index` past the end yields empty audio; `0` is [`mix`].
+pub fn mix_from(inputs: &[MixInput], start_index: usize) -> FinalAudio {
+    if start_index == 0 {
+        return mix(inputs);
+    }
+    if start_index >= inputs.len() {
+        return FinalAudio {
+            samples: Vec::new(),
+            sample_rate: SAMPLE_RATE,
+            duration_ms: 0.0,
+        };
+    }
+    // Walk back until no earlier chunk can still contribute to the crossfade
+    // zone at the requested chunk's origin. One step is not always enough: a
+    // chunk is long relative to its leading, so chunk `start_index - 2` can
+    // still overlap the first milliseconds of chunk `start_index`. Those
+    // samples are part of the `prev` the crossfade blends against, so leaving
+    // them out shifts the fade. `mix_from(2)` on a 45 ms / 20 ms-leading plan
+    // failed bit-comparison without this.
+    let origin = chunk_start(&inputs[start_index]);
+    let mut from = start_index - 1;
+    while from > 0 {
+        let earlier_end =
+            chunk_start(&inputs[from - 1]) + inputs[from - 1].chunk.samples.len() as i64;
+        if earlier_end <= origin {
+            break;
+        }
+        from -= 1;
+    }
+    let audio = mix(&inputs[from..]);
+    // Where the requested chunk actually lands inside that sub-mix. Negative
+    // means the whole chunk is pre-roll left of t=0, which `mix` already
+    // dropped, so there is nothing left to skip.
+    let skip = origin.max(0) as usize;
+    let skip = skip.min(audio.samples.len());
+    let samples = audio.samples[skip..].to_vec();
+    let duration_ms = samples.len() as f64 / f64::from(SAMPLE_RATE) * 1000.0;
+    FinalAudio {
+        samples,
+        sample_rate: SAMPLE_RATE,
+        duration_ms,
+    }
+}
+
 /// Like [`mix`] but the output is at least `min_duration_ms` long
 /// (silence-padded), matching the architecture doc's `combine(chunks,
 /// range)` contract.
@@ -298,6 +408,23 @@ pub fn mix_min_duration(inputs: &[MixInput], min_duration_ms: f64) -> FinalAudio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fader_curve_matches_openutau_decibel_to_volume() {
+        // Values taken from the C# table: db<=24 -> 0, a steeper knee below -16,
+        // plain dB above it.
+        assert_eq!(openutau_fader_scale(-30.0), 0.0);
+        assert_eq!(openutau_fader_scale(-24.0), 0.0);
+        let knee = openutau_fader_scale(-20.0);
+        assert!((knee - 10f64.powf((-20.0f64 * 2.0 + 16.0) / 20.0) as f32).abs() < 1e-6);
+        // 10^((-20*2 + 16)/20) = 10^-1.2 = 0.0631
+        assert!((knee - 0.0631).abs() < 1e-3, "knee was {knee}");
+        assert!((openutau_fader_scale(0.0) - 1.0).abs() < 1e-6);
+        assert!((openutau_fader_scale(-6.0) - 0.5012).abs() < 1e-3);
+        // The knee is steeper than a plain dB conversion: at -20 dB the reference
+        // fader is quieter than 10^(-20/20).
+        assert!(openutau_fader_scale(-20.0) < db_to_linear(-20.0));
+    }
 
     fn chunk(samples: Vec<f32>, position_ms: f64, leading_ms: f64) -> AudioChunk {
         AudioChunk {
@@ -320,6 +447,64 @@ mod tests {
     }
 
     /// Regression (T9): a chunk whose leading reaches LEFT of t=0 (the
+    /// `mix_from(i)` must be exactly the tail of the full mix that starts where
+    /// chunk `i` lands. Streaming playback concatenates these ranges to
+    /// replace one full mix, so any divergence here is audible as a seam or a
+    /// phase jump exactly where the player switched chunks.
+    ///
+    /// The chunks overlap by `leading_ms` (441 samples per 10 ms) so the
+    /// crossfade path is actually exercised — with disjoint chunks this test
+    /// would pass trivially.
+    #[test]
+    fn mix_from_is_the_tail_of_a_full_mix() {
+        let ms = |v: f64| (v * f64::from(SAMPLE_RATE) / 1000.0) as usize;
+        let ramp = |n: usize, phase: f32| {
+            (0..n)
+                .map(|i| ((i as f32) * 0.01 + phase).sin())
+                .collect::<Vec<f32>>()
+        };
+        let inputs = vec![
+            input(chunk(ramp(2000, 0.0), 0.0, 0.0), 0.0, 0.0),
+            // 30 ms in, 20 ms of leading -> overlaps chunk 0 by 20 ms.
+            input(chunk(ramp(2000, 1.0), 30.0, 20.0), -3.0, 0.0),
+            // 60 ms in, 20 ms leading -> overlaps chunk 1.
+            input(chunk(ramp(2000, 2.0), 60.0, 20.0), 2.0, 0.2),
+            input(chunk(ramp(1500, 3.0), 90.0, 0.0), 0.0, -0.5),
+        ];
+        let full = mix(&inputs);
+        for index in 1..inputs.len() {
+            let tail = mix_from(&inputs, index);
+            let origin = ms(inputs[index].chunk.position_ms - inputs[index].chunk.leading_ms);
+            let expected = &full.samples[origin..];
+            assert_eq!(
+                tail.samples.len(),
+                expected.len(),
+                "mix_from({index}) length differs from the full-mix tail"
+            );
+            assert!(
+                tail.samples
+                    .iter()
+                    .zip(expected)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "mix_from({index}) must be BIT-identical to the full-mix tail, not merely close"
+            );
+        }
+    }
+
+    /// `mix_from(0)` is the whole mix, and an index past the end is empty
+    /// rather than a panic — a streaming player walks the index forward and
+    /// will ask for one past the last chunk.
+    #[test]
+    fn mix_from_edges() {
+        let inputs = vec![
+            input(chunk(vec![0.25; 500], 0.0, 0.0), 0.0, 0.0),
+            input(chunk(vec![0.5; 500], 20.0, 0.0), 0.0, 0.0),
+        ];
+        assert_eq!(mix_from(&inputs, 0).samples, mix(&inputs).samples);
+        assert!(mix_from(&inputs, inputs.len()).samples.is_empty());
+        assert_eq!(mix_from(&inputs, 99).samples.len(), 0);
+    }
+
     /// preutter of a note at position 0) must be TRIMMED at t=0 — the
     /// pre-roll samples are dropped, the rest stays at 0. Clamping the
     /// placement instead (the old behaviour) wrote the whole pre-roll

@@ -191,7 +191,10 @@ mod tests {
             .encode_shift_jis()
             .expect("fixture must be Shift-JIS encodable");
         let cfg = parse_character_txt(&bytes, None);
-        assert_eq!(cfg.name.as_deref(), Some("重音テト（かさねてと）音声ライブラリー"));
+        assert_eq!(
+            cfg.name.as_deref(),
+            Some("重音テト（かさねてと）音声ライブラリー")
+        );
         assert_eq!(cfg.image.as_deref(), Some("teto.bmp"));
         assert_eq!(cfg.web.as_deref(), Some("http://kasaneteto.jp/"));
         assert_eq!(cfg.sample.as_deref(), Some("重音テト単独音\\_にゃ.wav"));
@@ -248,7 +251,7 @@ subbanks:
         assert!(sb.contains_tone(61)); // C#4
         assert!(!sb.contains_tone(62)); // D4
         assert!(!sb.contains_tone(23)); // B0
-        // C1-C4 = 37 tones + C#4 = 38.
+                                        // C1-C4 = 37 tones + C#4 = 38.
         assert_eq!(sb.tones.len(), 38);
     }
 

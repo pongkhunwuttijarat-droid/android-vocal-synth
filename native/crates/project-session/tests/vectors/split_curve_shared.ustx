@@ -1,0 +1,33 @@
+ustx_version: 0.9
+name: Split curve
+bpm: 120
+beat_per_bar: 4
+beat_unit: 4
+tempos:
+- position: 0
+  bpm: 120
+expressions:
+  dyn:
+    name: dynamics
+    abbr: dyn
+    type: Curve
+    min: -240
+    max: 120
+    default_value: 0
+tracks:
+- track_name: Lead
+  singer: teto
+voice_parts:
+- name: Part1
+  track_no: 0
+  position: 0
+  duration: 1920
+  notes:
+  - position: 0
+    duration: 480
+    tone: 60
+    lyric: la
+  curves:
+  - abbr: dyn
+    xs: [0, 960, 1920]
+    ys: [0, 10, 20]

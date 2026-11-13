@@ -58,7 +58,9 @@ impl PhonemeManifest {
                 1 => {
                     let tok = tokens[0];
                     set.insert(tok.to_string());
-                    types.entry(tok.to_string()).or_insert_with(|| classify(tok));
+                    types
+                        .entry(tok.to_string())
+                        .or_insert_with(|| classify(tok));
                 }
                 2 => {
                     pairs.insert((tokens[0].to_string(), tokens[1].to_string()));
@@ -83,7 +85,11 @@ impl PhonemeManifest {
             }
         }
 
-        PhonemeManifest { phoneme_set: set, types, pairs }
+        PhonemeManifest {
+            phoneme_set: set,
+            types,
+            pairs,
+        }
     }
 
     /// Can the bank render [phoneme] (single-token alias exists)?
@@ -112,8 +118,8 @@ fn is_glide(tok: &str) -> bool {
 /// Vowel set is the mapping target's known-good subset (YAGNI: extend
 /// per bank when needed; Japanese VCV uses its own classifier later).
 const VOWELS: &[&str] = &[
-    "A", "E", "I", "O", "U", "3", "i", "u", "e", "o", "a", "Q", "aI",
-    "aU", "eI", "oU", "e3", "I3", "u3", "o3", "A3", "i3",
+    "A", "E", "I", "O", "U", "3", "i", "u", "e", "o", "a", "Q", "aI", "aU", "eI", "oU", "e3", "I3",
+    "u3", "o3", "A3", "i3",
 ];
 
 fn classify(tok: &str) -> PhonemeType {

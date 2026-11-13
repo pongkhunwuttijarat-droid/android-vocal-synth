@@ -36,6 +36,7 @@ pub mod note;
 pub mod part;
 pub mod phoneme;
 pub mod project;
+pub mod pronunciation;
 pub mod time_axis;
 pub mod track;
 
@@ -49,6 +50,7 @@ pub use note::{PitchPoint, PitchPointShape, UNote, UPhonemeOverride, UPitch, UVi
 pub use part::{UPart, UVoicePart, UWavePart};
 pub use phoneme::{UEnvelope, UPhoneme};
 pub use project::{CurveRepair, LoadRepair, UProject, UTempo, UTimeSignature, UstxVersion};
+pub use pronunciation::UPronunciation;
 pub use time_axis::TimeAxis;
 pub use track::{UMixFx, URenderSettings, UTrack};
 

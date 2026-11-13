@@ -101,7 +101,10 @@ mod tests {
         let map = b"C3\tP_\t_S\nC4\tP_\t_S\nC#3\tP_\t_S\nD4\tQ_\t_S\nC5\tP_\t_T\n";
         let subs = parse_prefix_map(map, "", None);
         assert_eq!(subs.len(), 3);
-        let p_s = subs.iter().find(|s| s.prefix == "P_" && s.suffix == "_S").unwrap();
+        let p_s = subs
+            .iter()
+            .find(|s| s.prefix == "P_" && s.suffix == "_S")
+            .unwrap();
         assert_eq!(p_s.color, "");
         assert_eq!(p_s.tone_ranges, vec!["C3-C#3", "C4"]);
         assert!(p_s.contains_tone(48) && p_s.contains_tone(49) && !p_s.contains_tone(50));

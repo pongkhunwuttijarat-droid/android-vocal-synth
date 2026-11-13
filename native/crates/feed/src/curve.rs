@@ -116,7 +116,11 @@ mod tests {
 
     #[test]
     fn outside_range_uses_default() {
-        let curve = UCurve { abbr: "x".into(), xs: vec![100, 200], ys: vec![10, 20] };
+        let curve = UCurve {
+            abbr: "x".into(),
+            xs: vec![100, 200],
+            ys: vec![10, 20],
+        };
         let sampled = sample_curve_identity(&curve, 0, 41, 7.0);
         assert_eq!(sampled[0], 7.0); // x=0 before the first point
         assert_eq!(sampled[19], 7.0); // x=95 still before the first point
@@ -127,7 +131,11 @@ mod tests {
 
     #[test]
     fn dynamics_convert_db_to_linear() {
-        let curve = UCurve { abbr: "dyn".into(), xs: vec![0, 480], ys: vec![0, 100] };
+        let curve = UCurve {
+            abbr: "dyn".into(),
+            xs: vec![0, 480],
+            ys: vec![0, 100],
+        };
         let min = -240.0f32;
         // 97 samples at ticks 0..480 (every 5 ticks).
         let sampled = sample_curve(&curve, 0, 97, 0.0, |v| {
@@ -138,7 +146,7 @@ mod tests {
             }
         });
         assert_eq!(sampled[0], 1.0); // tick 0, y=0 → 0 dB → linear 1.0
-        // tick 480, y=100 → 100×0.1 dB = +10 dB → 10^(10/20) ≈ 3.1623.
+                                     // tick 480, y=100 → 100×0.1 dB = +10 dB → 10^(10/20) ≈ 3.1623.
         assert!((sampled[96] - 10f32.powf(10.0 / 20.0)).abs() < 1e-5);
     }
 

@@ -20,8 +20,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::identity::IdentityTable;
+use crate::session::valid_pronunciation;
 use crate::views::{self, TrackMetaView};
-use domain::{UExpressionType, UPart, UProject, UVoicePart};
+use domain::{UExpressionType, UPart, UProject, UTempo, UTimeSignature, UVoicePart, UWavePart};
 
 // ---------------------------------------------------------------------------
 // Error codes (§6.14)
@@ -41,10 +42,10 @@ pub const ERR_RENDER_CANCELLED: &str = "render_cancelled";
 pub const ERR_INTERNAL: &str = "internal_error";
 
 /// Contract version advertised by [`capabilities`].
-pub const CONTRACT_VERSION: &str = "2-draft1";
+pub const CONTRACT_VERSION: &str = "2-draft3";
 /// Wire-schema versions, bumped only with an explicit migration.
-pub const COMMAND_SCHEMA_VERSION: u32 = 1;
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const COMMAND_SCHEMA_VERSION: u32 = 3;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 4;
 pub const ID_SCHEMA_VERSION: u32 = 1;
 
 /// Shared minimum guarantee: 1 MiB is what every adapter must accept.
@@ -98,6 +99,9 @@ pub fn capabilities() -> Capabilities {
             "group_transactions",
             "curve_apply_stroke",
             "curve_clear",
+            "track_mix_fx",
+            "note_vibrato",
+            "project.controls.v1",
         ],
         limits: Limits {
             max_command_bytes: MAX_COMMAND_BYTES,
@@ -481,18 +485,13 @@ fn flat_index_of_voice_part(
     track: usize,
     part_in_track: usize,
 ) -> Option<usize> {
-    let mut seen = 0usize;
-    for (flat, part) in project.parts.iter().enumerate() {
-        if let UPart::Voice(vp) = part {
-            if vp.track_no == track as i32 {
-                if seen == part_in_track {
-                    return Some(flat);
-                }
-                seen += 1;
-            }
-        }
-    }
-    None
+    let target = crate::identity::parts_of_track(project, track)
+        .get(part_in_track)
+        .copied()?;
+    project
+        .parts
+        .iter()
+        .position(|part| std::ptr::eq(part, target))
 }
 
 fn track_id_string(ids: &IdentityTable, track: usize) -> Result<String, SessionError> {
@@ -668,6 +667,1137 @@ fn require_bool(command: &Value, key: &str) -> Result<bool, SessionError> {
     })
 }
 
+fn scale_tick(value: i32, factor: f64, field_name: &str) -> Result<i32, SessionError> {
+    let scaled = (value as f64 * factor).round();
+    if !scaled.is_finite() || scaled < i32::MIN as f64 || scaled > i32::MAX as f64 {
+        return Err(SessionError::validation_field(
+            field_name,
+            "preserved-timing remap exceeds the supported tick range",
+        ));
+    }
+    Ok(scaled as i32)
+}
+
+/// A validated project/part mutation prepared against a cloned project. The
+/// live document is replaced only after every invariant has passed.
+#[derive(Debug, Clone)]
+pub struct DocumentPlan {
+    pub kind: String,
+    pub command_name: String,
+    pub after: UProject,
+    pub track_id: Option<String>,
+    pub part_id: Option<String>,
+    pub note_id: Option<String>,
+    pub part_index: Option<usize>,
+    pub right_part_index: Option<usize>,
+    pub render_invalidated: bool,
+}
+
+/// Build the change vocabulary for an already committed structural command.
+/// Structural views use invalidation until the bounded project/part read
+/// models are consumed by every host adapter.
+pub fn document_changes(
+    plan: &DocumentPlan,
+    ids: &IdentityTable,
+    project: &UProject,
+) -> Vec<Change> {
+    let mut changes = Vec::new();
+    let note_range = plan.note_id.as_deref().and_then(|note_id| {
+        let located = locate_note(ids, project, note_id).ok()?;
+        let part = voice_part_at(project, located.part.track, located.part.part_in_track)?;
+        let note = part.notes.get(located.note_index)?;
+        Some((
+            part.position + note.position,
+            part.position + note.position + note.duration,
+        ))
+    });
+    if let Some(note_id) = &plan.note_id {
+        if let Ok(located) = locate_note(ids, project, note_id) {
+            if let Some(part) =
+                voice_part_at(project, located.part.track, located.part.part_in_track)
+            {
+                if let Some(note) = part.notes.get(located.note_index) {
+                    let change =
+                        Change::patch("note.changed", note_payload(note_id, note, project))
+                            .with_track(located.part.track_id)
+                            .with_part(located.part.part_id)
+                            .with_note(note_id.clone());
+                    changes.push(if let Some((start, end)) = note_range {
+                        change.with_tick_range(start, end)
+                    } else {
+                        change
+                    });
+                }
+            }
+        }
+    } else if plan.kind.starts_with("project.") {
+        changes.push(Change::patch(
+            "project.changed",
+            views::project_meta_view(ids.project_id.as_str(), project),
+        ));
+    } else if plan.kind == "track.set_singer" {
+        if let Some(track_id) = &plan.track_id {
+            changes.push(Change::invalidate("track.changed").with_track(track_id.clone()));
+        }
+    } else if plan.kind.starts_with("track.") {
+        changes.push(Change::invalidate("tracks.changed"));
+    } else if plan.kind == "part.create" || plan.kind == "part.import_audio" {
+        let part_id = plan
+            .part_index
+            .and_then(|index| {
+                plan.track_id.as_deref().and_then(|track| {
+                    ids.find_track(track)
+                        .and_then(|track_index| ids.part_id(track_index, index))
+                })
+            })
+            .map(|id| id.as_str().to_string());
+        let mut change = Change::invalidate("part.added");
+        if let Some(track_id) = &plan.track_id {
+            change = change.with_track(track_id.clone());
+        }
+        if let Some(part_id) = &part_id {
+            change = change.with_part(part_id.clone());
+        }
+        if let (Some(track_id), Some(part_id), Some(index)) =
+            (&plan.track_id, part_id, plan.part_index)
+        {
+            if let Some(data) = part_payload(ids, project, track_id, index) {
+                changes.push(
+                    Change::patch("part.added", data)
+                        .with_track(track_id.clone())
+                        .with_part(part_id),
+                );
+            } else {
+                changes.push(change);
+            }
+        } else {
+            changes.push(change);
+        }
+    } else if plan.kind == "part.remove" {
+        let mut change = Change::invalidate("part.removed");
+        if let Some(track_id) = &plan.track_id {
+            change = change.with_track(track_id.clone());
+        }
+        if let Some(part_id) = &plan.part_id {
+            change = change.with_part(part_id.clone());
+        }
+        changes.push(change);
+    } else if plan.kind == "part.split" {
+        let mut left = Change::invalidate("part.changed");
+        if let Some(track_id) = &plan.track_id {
+            left = left.with_track(track_id.clone());
+        }
+        if let Some(part_id) = &plan.part_id {
+            left = left.with_part(part_id.clone());
+        }
+        if let (Some(track_id), Some(part_id), Some(index)) =
+            (&plan.track_id, &plan.part_id, plan.part_index)
+        {
+            if let Some(data) = part_payload(ids, project, track_id, index) {
+                changes.push(
+                    Change::patch("part.changed", data)
+                        .with_track(track_id.clone())
+                        .with_part(part_id.clone()),
+                );
+            } else {
+                changes.push(left);
+            }
+        } else {
+            changes.push(left);
+        }
+        let right_id = plan
+            .right_part_index
+            .and_then(|index| {
+                plan.track_id.as_deref().and_then(|track| {
+                    ids.find_track(track)
+                        .and_then(|track_index| ids.part_id(track_index, index))
+                })
+            })
+            .map(|id| id.as_str().to_string());
+        let mut right = Change::invalidate("part.added");
+        if let Some(track_id) = &plan.track_id {
+            right = right.with_track(track_id.clone());
+        }
+        if let Some(part_id) = &right_id {
+            right = right.with_part(part_id.clone());
+        }
+        if let (Some(track_id), Some(part_id), Some(index)) =
+            (&plan.track_id, right_id, plan.right_part_index)
+        {
+            if let Some(data) = part_payload(ids, project, track_id, index) {
+                changes.push(
+                    Change::patch("part.added", data)
+                        .with_track(track_id.clone())
+                        .with_part(part_id),
+                );
+            } else {
+                changes.push(right);
+            }
+        } else {
+            changes.push(right);
+        }
+    } else {
+        let mut change = Change::invalidate("part.changed");
+        if let Some(track_id) = &plan.track_id {
+            change = change.with_track(track_id.clone());
+        }
+        if let Some(part_id) = &plan.part_id {
+            change = change.with_part(part_id.clone());
+        }
+        if let (Some(track_id), Some(part_id), Some(index)) =
+            (&plan.track_id, &plan.part_id, plan.part_index)
+        {
+            if let Some(data) = part_payload(ids, project, track_id, index) {
+                changes.push(
+                    Change::patch("part.changed", data)
+                        .with_track(track_id.clone())
+                        .with_part(part_id.clone()),
+                );
+            } else {
+                changes.push(change);
+            }
+        } else {
+            changes.push(change);
+        }
+    }
+    if plan.render_invalidated {
+        let change =
+            Change::invalidate("render.invalidated").with_reason("project or part changed");
+        changes.push(if let Some((start, end)) = note_range {
+            change.with_tick_range(start, end)
+        } else {
+            change
+        });
+    }
+    changes
+}
+
+pub(crate) fn part_payload(
+    ids: &IdentityTable,
+    project: &UProject,
+    track_id: &str,
+    part_index: usize,
+) -> Option<Value> {
+    let track = ids.find_track(track_id)?;
+    let project_part = crate::identity::parts_of_track(project, track)
+        .get(part_index)
+        .copied()?;
+    let id = ids.part_id(track, part_index)?.as_str();
+    let UPart::Voice(part) = project_part else {
+        if let UPart::Wave(wave) = project_part {
+            return serde_json::to_value(views::wave_part_view(id, wave, project)).ok();
+        }
+        unreachable!()
+    };
+    let notes = part
+        .notes
+        .iter()
+        .enumerate()
+        .map(|(i, note)| {
+            let id = ids.note_id(track, part_index, i)?.as_str().to_string();
+            Some(views::note_view(
+                &id,
+                note,
+                project.rusted_utau_pronunciations.get(&id),
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let curves = part
+        .curves
+        .iter()
+        .enumerate()
+        .map(|(i, curve)| {
+            let id = ids.curve_id(track, part_index, i)?.as_str().to_string();
+            Some(views::curve_view(&id, curve))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    serde_json::to_value(views::part_view(id, part, notes, curves)).ok()
+}
+
+/// Plan frozen §6.4.4 document commands without mutating the live project.
+/// Existing index-based editor commands remain a separate compatibility API.
+pub fn plan_document(
+    ids: &IdentityTable,
+    project: &UProject,
+    command: &Value,
+) -> Result<Option<DocumentPlan>, SessionError> {
+    let Some(kind) = command.get("type").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    // Route only the document commands implemented by this planner. The
+    // stable-ID command planner still owns the existing track mixer/name
+    // operations and part/note edits; intercepting their whole namespaces
+    // here would turn supported commands into `unsupported_operation`.
+    if !matches!(
+        kind,
+        "track.create"
+            | "track.set_singer"
+            | "track.remove"
+            | "track.reorder"
+            | "part.create"
+            | "part.import_audio"
+            | "part.remove"
+            | "part.move"
+            | "part.resize"
+            | "part.set_metadata"
+            | "part.set_media_ref"
+            | "part.split"
+            | "note.set_lyric"
+            | "note.set_pronunciation"
+            | "note.clear_phoneme_data"
+            | "project.set_metadata"
+            | "project.import_tracks"
+            | "project.set_tempo"
+            | "project.remove_tempo"
+            | "project.preserve_timing"
+            | "project.set_time_signature"
+            | "project.remove_time_signature"
+    ) {
+        return Ok(None);
+    }
+    let mut after = project.clone();
+    let mut plan = DocumentPlan {
+        kind: kind.to_string(),
+        command_name: kind.replace('.', " "),
+        after: project.clone(),
+        track_id: None,
+        part_id: None,
+        note_id: None,
+        part_index: None,
+        right_part_index: None,
+        render_invalidated: true,
+    };
+    match kind {
+        "track.create" => {
+            let name = require_str(command, "name")?;
+            if name.trim().is_empty() {
+                return Err(SessionError::validation_field(
+                    "name",
+                    "name must not be empty",
+                ));
+            }
+            let index = optional_i32(command, "to_index", after.tracks.len() as i32)?;
+            if index < 0 || index as usize > after.tracks.len() {
+                return Err(SessionError::validation_field(
+                    "to_index",
+                    "track insertion index is out of range",
+                ));
+            }
+            let index = index as usize;
+            after.tracks.insert(index, domain::UTrack::new(name));
+            for part in &mut after.parts {
+                if part.track_no() >= index as i32 {
+                    match part {
+                        UPart::Voice(value) => value.track_no += 1,
+                        UPart::Wave(value) => value.track_no += 1,
+                    }
+                }
+            }
+            plan.command_name = "Add track".to_string();
+            plan.render_invalidated = false;
+        }
+        "track.set_singer" => {
+            let track_id = require_str(command, "track_id")?;
+            let located = locate_track(ids, &track_id)?;
+            let singer = match command.get("singer_id") {
+                None | Some(Value::Null) => None,
+                Some(value) => {
+                    let name = value.as_str().ok_or_else(|| {
+                        SessionError::validation_field(
+                            "singer_id",
+                            "singer_id must be a string or null",
+                        )
+                    })?;
+                    if name.trim().is_empty() {
+                        None
+                    } else {
+                        Some(name.to_string())
+                    }
+                }
+            };
+            after.tracks[located.track].singer = singer;
+            plan.track_id = Some(track_id);
+            plan.command_name = "Track singer".to_string();
+        }
+        "track.remove" => {
+            let track_id = require_str(command, "track_id")?;
+            let located = locate_track(ids, &track_id)?;
+            if after.tracks.len() <= 1 {
+                return Err(SessionError::validation_field(
+                    "track_id",
+                    "the last project track cannot be removed",
+                ));
+            }
+            let removed = located.track as i32;
+            after.tracks.remove(located.track);
+            after.parts.retain(|part| part.track_no() != removed);
+            for part in &mut after.parts {
+                if part.track_no() > removed {
+                    match part {
+                        UPart::Voice(value) => value.track_no -= 1,
+                        UPart::Wave(value) => value.track_no -= 1,
+                    }
+                }
+            }
+            plan.track_id = Some(track_id);
+            plan.command_name = "Remove track".to_string();
+        }
+        "track.reorder" => {
+            let track_id = require_str(command, "track_id")?;
+            let located = locate_track(ids, &track_id)?;
+            let to_index = require_i32(command, "to_index")?;
+            if to_index < 0 || to_index as usize >= after.tracks.len() {
+                return Err(SessionError::validation_field(
+                    "to_index",
+                    "track destination index is out of range",
+                ));
+            }
+            let from = located.track;
+            let to = to_index as usize;
+            plan.track_id = Some(track_id);
+            if from != to {
+                let track = after.tracks.remove(from);
+                after.tracks.insert(to, track);
+                for part in &mut after.parts {
+                    let current = part.track_no();
+                    let next = if current == from as i32 {
+                        to as i32
+                    } else if from < to && (from as i32) < current && current <= to as i32 {
+                        current - 1
+                    } else if to < from && to as i32 <= current && current < from as i32 {
+                        current + 1
+                    } else {
+                        current
+                    };
+                    match part {
+                        UPart::Voice(value) => value.track_no = next,
+                        UPart::Wave(value) => value.track_no = next,
+                    }
+                }
+            }
+            plan.command_name = "Reorder track".to_string();
+        }
+        "note.set_lyric" | "note.set_pronunciation" | "note.clear_phoneme_data" => {
+            let note_id = require_str(command, "note_id")?;
+            let located = locate_note(ids, project, &note_id)?;
+            let Some(UPart::Voice(part)) = after.parts.get_mut(located.part.flat_index) else {
+                return Err(SessionError::not_found("note", &note_id));
+            };
+            let Some(note) = part.notes.get_mut(located.note_index) else {
+                return Err(SessionError::not_found("note", &note_id));
+            };
+            plan.track_id = Some(located.part.track_id);
+            plan.part_id = Some(located.part.part_id);
+            plan.note_id = Some(note_id.clone());
+            let has_phoneme_data =
+                !note.phoneme_expressions.is_empty() || !note.phoneme_overrides.is_empty();
+            if kind == "note.clear_phoneme_data" {
+                note.phoneme_expressions.clear();
+                note.phoneme_overrides.clear();
+                plan.command_name = "Clear per-phoneme data".to_string();
+            } else if kind == "note.set_lyric" {
+                let lyric = require_str(command, "lyric")?;
+                let resets_pronunciation = after.rusted_utau_pronunciations.contains_key(&note_id);
+                if has_phoneme_data && (note.lyric != lyric || resets_pronunciation) {
+                    return Err(SessionError::validation_reason(
+                        "lyric",
+                        "phoneme_data_requires_clear",
+                        "clear per-phoneme expressions and overrides before changing lyric or pronunciation",
+                    ));
+                }
+                note.lyric = lyric;
+                after.rusted_utau_pronunciations.remove(&note_id);
+                plan.command_name = "Set lyric and reset pronunciation".to_string();
+            } else {
+                let value = command.get("pronunciation").ok_or_else(|| {
+                    SessionError::validation_field(
+                        "pronunciation",
+                        "pronunciation is required; use null to clear",
+                    )
+                })?;
+                if value.is_null() {
+                    if has_phoneme_data && after.rusted_utau_pronunciations.contains_key(&note_id) {
+                        return Err(SessionError::validation_reason(
+                            "pronunciation",
+                            "phoneme_data_requires_clear",
+                            "clear per-phoneme expressions and overrides before changing lyric or pronunciation",
+                        ));
+                    }
+                    after.rusted_utau_pronunciations.remove(&note_id);
+                    plan.command_name = "Clear note pronunciation".to_string();
+                } else {
+                    let pronunciation: domain::UPronunciation =
+                        serde_json::from_value(value.clone()).map_err(|error| {
+                            SessionError::validation_field(
+                                "pronunciation",
+                                format!("invalid pronunciation object: {error}"),
+                            )
+                        })?;
+                    if !valid_pronunciation(&pronunciation) {
+                        return Err(SessionError::validation_field(
+                            "pronunciation",
+                            "language/mode/style/phones do not meet the pronunciation limits",
+                        ));
+                    }
+                    if has_phoneme_data
+                        && after.rusted_utau_pronunciations.get(&note_id) != Some(&pronunciation)
+                    {
+                        return Err(SessionError::validation_reason(
+                            "pronunciation",
+                            "phoneme_data_requires_clear",
+                            "clear per-phoneme expressions and overrides before changing lyric or pronunciation",
+                        ));
+                    }
+                    after.rusted_utau_pronunciations.insert(note_id, pronunciation);
+                    plan.command_name = "Set note pronunciation".to_string();
+                }
+            }
+            plan.render_invalidated = true;
+        }
+        "project.set_metadata" => {
+            let fields = command
+                .get("fields")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    SessionError::validation_field("fields", "fields must be an object")
+                })?;
+            if fields.is_empty() {
+                return Err(SessionError::validation_field(
+                    "fields",
+                    "at least one field is required",
+                ));
+            }
+            for (key, value) in fields {
+                match key.as_str() {
+                    "name" => {
+                        let value = value.as_str().ok_or_else(|| {
+                            SessionError::validation_field("name", "name must be a string")
+                        })?;
+                        if value.trim().is_empty() {
+                            return Err(SessionError::validation_field(
+                                "name",
+                                "name must not be empty",
+                            ));
+                        }
+                        after.name = value.to_string();
+                    }
+                    "comment" => {
+                        after.comment = value
+                            .as_str()
+                            .ok_or_else(|| {
+                                SessionError::validation_field(
+                                    "comment",
+                                    "comment must be a string",
+                                )
+                            })?
+                            .to_string()
+                    }
+                    "key" => {
+                        let key = value
+                            .as_i64()
+                            .and_then(|v| i32::try_from(v).ok())
+                            .ok_or_else(|| {
+                                SessionError::validation_field(
+                                    "key",
+                                    "key must be an integer from 0 to 11",
+                                )
+                            })?;
+                        if !(0..=11).contains(&key) {
+                            return Err(SessionError::validation_field(
+                                "key",
+                                "key must be an integer from 0 to 11",
+                            ));
+                        }
+                        after.key = key;
+                    }
+                    _ => {
+                        return Err(SessionError::validation_field(
+                            "fields",
+                            format!("unknown project metadata field '{key}'"),
+                        ))
+                    }
+                }
+            }
+            plan.render_invalidated = false;
+        }
+        "project.import_tracks" => {
+            let yaml = require_str(command, "ustx_yaml")?;
+            let incoming = domain::UProject::parse_yaml(&yaml).map_err(|error| {
+                SessionError::validation_field("ustx_yaml", format!("invalid USTX: {error}"))
+            })?;
+            let offset = after.tracks.len();
+            if offset.saturating_add(incoming.tracks.len()) > i32::MAX as usize {
+                return Err(SessionError::validation_field(
+                    "ustx_yaml",
+                    "too many tracks",
+                ));
+            }
+            for (abbr, descriptor) in incoming.expressions {
+                if let Some(existing) = after.expressions.get(&abbr) {
+                    if existing != &descriptor {
+                        return Err(SessionError::validation_field(
+                            "ustx_yaml",
+                            format!("expression '{}' conflicts with the open project", abbr),
+                        ));
+                    }
+                } else {
+                    after.expressions.insert(abbr, descriptor);
+                }
+            }
+            after.tracks.extend(incoming.tracks);
+            for mut part in incoming.parts {
+                let shifted = part.track_no().saturating_add(offset as i32);
+                match &mut part {
+                    UPart::Voice(value) => value.track_no = shifted,
+                    UPart::Wave(value) => value.track_no = shifted,
+                }
+                let insertion = after
+                    .parts
+                    .iter()
+                    .position(|existing| {
+                        (existing.track_no(), existing.position()) > (shifted, part.position())
+                    })
+                    .unwrap_or(after.parts.len());
+                after.parts.insert(insertion, part);
+            }
+            plan.command_name = "Import tracks".to_string();
+        }
+        "project.set_tempo" => {
+            let position = require_i32(command, "position_tick")?;
+            let bpm = require_f64(command, "bpm")?;
+            if position < 0 {
+                return Err(SessionError::validation_reason(
+                    "position_tick",
+                    "tick_out_of_range",
+                    "tempo position must be non-negative",
+                ));
+            }
+            if !bpm.is_finite() || bpm <= 0.0 {
+                return Err(SessionError::validation_field(
+                    "bpm",
+                    "bpm must be finite and positive",
+                ));
+            }
+            if let Some(existing) = after
+                .tempos
+                .iter_mut()
+                .find(|tempo| tempo.position == position)
+            {
+                existing.bpm = bpm;
+            } else {
+                after.tempos.push(UTempo::new(position, bpm));
+            }
+        }
+        "project.preserve_timing" => {
+            let new_bpm = require_f64(command, "bpm")?;
+            if !new_bpm.is_finite() || new_bpm <= 0.0 {
+                return Err(SessionError::validation_field(
+                    "bpm",
+                    "bpm must be finite and positive",
+                ));
+            }
+            let old_bpm = after
+                .tempos
+                .iter()
+                .find(|tempo| tempo.position == 0)
+                .map(|tempo| tempo.bpm)
+                .unwrap_or(after.bpm);
+            if !old_bpm.is_finite() || old_bpm <= 0.0 {
+                return Err(SessionError::validation_field(
+                    "bpm",
+                    "the project must have a finite positive origin tempo",
+                ));
+            }
+            let bpm_factor = new_bpm / old_bpm;
+            // Keep elapsed time fixed: tick positions scale with tempo, so a
+            // slower tempo moves musical events earlier in tick space.
+            let tick_factor = bpm_factor;
+            for tempo in &mut after.tempos {
+                tempo.position = scale_tick(tempo.position, tick_factor, "tempos")?;
+                tempo.bpm *= bpm_factor;
+                if !tempo.bpm.is_finite() || tempo.bpm <= 0.0 {
+                    return Err(SessionError::validation_field(
+                        "bpm",
+                        "tempo remap produced a non-finite tempo",
+                    ));
+                }
+            }
+            after.tempos.sort_by_key(|tempo| tempo.position);
+            if after
+                .tempos
+                .windows(2)
+                .any(|pair| pair[0].position == pair[1].position)
+            {
+                return Err(SessionError::validation_field(
+                    "tempos",
+                    "tempo markers collide after tick rounding",
+                ));
+            }
+            if let Some(origin) = after.tempos.iter_mut().find(|tempo| tempo.position == 0) {
+                origin.bpm = new_bpm;
+            } else {
+                after.tempos.push(UTempo::new(0, new_bpm));
+                after.tempos.sort_by_key(|tempo| tempo.position);
+            }
+            after.bpm = new_bpm;
+            for part in &mut after.parts {
+                match part {
+                    UPart::Voice(voice) => {
+                        voice.position = scale_tick(voice.position, tick_factor, "part.position")?;
+                        voice.duration =
+                            scale_tick(voice.duration, tick_factor, "part.duration")?.max(1);
+                        for note in &mut voice.notes {
+                            note.position =
+                                scale_tick(note.position, tick_factor, "note.position")?;
+                            note.duration =
+                                scale_tick(note.duration, tick_factor, "note.duration")?.max(1);
+                        }
+                        for curve in &mut voice.curves {
+                            let mut previous = None;
+                            for tick in &mut curve.xs {
+                                *tick = scale_tick(*tick, tick_factor, "curve.points")?;
+                                if previous.is_some_and(|prior| *tick <= prior) {
+                                    return Err(SessionError::validation_field(
+                                        "curve.points",
+                                        "curve points collide after tick rounding",
+                                    ));
+                                }
+                                previous = Some(*tick);
+                            }
+                        }
+                    }
+                    UPart::Wave(wave) => {
+                        wave.position = scale_tick(wave.position, tick_factor, "part.position")?;
+                    }
+                }
+            }
+            plan.command_name = "Adjust tempo (preserve timing)".to_string();
+        }
+        "project.remove_tempo" => {
+            let position = require_i32(command, "position_tick")?;
+            if position <= 0 {
+                return Err(SessionError::validation_field(
+                    "position_tick",
+                    "the tempo at tick zero cannot be removed",
+                ));
+            }
+            let index = after
+                .tempos
+                .iter()
+                .position(|tempo| tempo.position == position)
+                .ok_or_else(|| SessionError::not_found("tempo", &position.to_string()))?;
+            after.tempos.remove(index);
+        }
+        "project.set_time_signature" => {
+            let bar = require_i32(command, "bar_position")?;
+            let numerator = require_i32(command, "numerator")?;
+            let denominator = require_i32(command, "denominator")?;
+            if bar < 0 {
+                return Err(SessionError::validation_field(
+                    "bar_position",
+                    "bar_position must be non-negative",
+                ));
+            }
+            if numerator <= 0 || denominator <= 0 {
+                return Err(SessionError::validation_field(
+                    "numerator",
+                    "numerator and denominator must be positive",
+                ));
+            }
+            let ticks = 1920_i64.checked_mul(numerator as i64).ok_or_else(|| {
+                SessionError::validation_field("numerator", "ticks per bar overflows")
+            })?;
+            if ticks % denominator as i64 != 0
+                || ticks / denominator as i64 <= 0
+                || ticks / denominator as i64 > i32::MAX as i64
+            {
+                return Err(SessionError::validation_field(
+                    "denominator",
+                    "ticks per bar must be a positive integer within tick range",
+                ));
+            }
+            if let Some(existing) = after
+                .time_signatures
+                .iter_mut()
+                .find(|sig| sig.bar_position == bar)
+            {
+                *existing = UTimeSignature::new(bar, numerator, denominator);
+            } else {
+                after
+                    .time_signatures
+                    .push(UTimeSignature::new(bar, numerator, denominator));
+            }
+        }
+        "project.remove_time_signature" => {
+            let bar = require_i32(command, "bar_position")?;
+            if bar <= 0 {
+                return Err(SessionError::validation_field(
+                    "bar_position",
+                    "the time signature at bar zero cannot be removed",
+                ));
+            }
+            let index = after
+                .time_signatures
+                .iter()
+                .position(|sig| sig.bar_position == bar)
+                .ok_or_else(|| SessionError::not_found("time_signature", &bar.to_string()))?;
+            after.time_signatures.remove(index);
+        }
+        "part.create" | "part.import_audio" => {
+            let track_id = require_str(command, "track_id")?;
+            let track_index = ids
+                .find_track(&track_id)
+                .ok_or_else(|| SessionError::not_found("track", &track_id))?;
+            let is_audio_import = kind == "part.import_audio";
+            let kind_value = if is_audio_import {
+                "wave".to_string()
+            } else {
+                require_str(command, "kind")?
+            };
+            let name = require_str(command, "name")?;
+            if name.trim().is_empty() {
+                return Err(SessionError::validation_field(
+                    "name",
+                    "name must not be empty",
+                ));
+            }
+            let position = require_i32(command, "position_ticks")?;
+            let duration_ms = if is_audio_import {
+                let value = require_f64(command, "duration_ms")?;
+                if value <= 0.0 {
+                    return Err(SessionError::validation_field(
+                        "duration_ms",
+                        "duration_ms must be positive",
+                    ));
+                }
+                Some(value)
+            } else {
+                None
+            };
+            let duration = match duration_ms {
+                Some(ms) => after.time_axis.ms_to_tick_at(ms, position),
+                None => require_i32(command, "duration_ticks")?,
+            };
+            if position < 0 || duration <= 0 {
+                return Err(SessionError::validation_field(
+                    "position_ticks",
+                    "part position must be non-negative and duration positive",
+                ));
+            }
+            let part = match kind_value.as_str() {
+                "voice" => UPart::Voice(UVoicePart {
+                    name,
+                    comment: optional_str(command, "comment").unwrap_or_default(),
+                    track_no: track_index as i32,
+                    position,
+                    duration,
+                    ..UVoicePart::default()
+                }),
+                "wave" => {
+                    let media_ref = require_str(command, "media_ref")?;
+                    if media_ref.trim().is_empty()
+                        || media_ref.starts_with('/')
+                        || media_ref.starts_with('\\')
+                        || media_ref.as_bytes().get(1) == Some(&b':')
+                        || media_ref.split('/').any(|segment| segment == "..")
+                    {
+                        return Err(SessionError::validation_field("media_ref", "media_ref must be a non-empty project-relative reference, not an absolute path"));
+                    }
+                    let start_ms = after.time_axis.tick_to_ms(position as f64);
+                    let end_ms = after
+                        .time_axis
+                        .tick_to_ms(position.saturating_add(duration) as f64);
+                    UPart::Wave(UWavePart {
+                        name,
+                        comment: optional_str(command, "comment").unwrap_or_default(),
+                        track_no: track_index as i32,
+                        position,
+                        relative_path: Some(media_ref),
+                        file_duration_ms: duration_ms.unwrap_or(end_ms - start_ms),
+                        ..UWavePart::default()
+                    })
+                }
+                _ => {
+                    return Err(SessionError::validation_field(
+                        "kind",
+                        "kind must be 'voice' or 'wave'",
+                    ))
+                }
+            };
+            let insertion = after
+                .parts
+                .iter()
+                .position(|part| {
+                    part.track_no() > track_index as i32
+                        || (part.track_no() == track_index as i32 && part.position() > position)
+                })
+                .unwrap_or(after.parts.len());
+            after.parts.insert(insertion, part);
+            plan.track_id = Some(track_id);
+            plan.part_index = Some(
+                after.parts[..insertion]
+                    .iter()
+                    .filter(|part| part.track_no() == track_index as i32)
+                    .count(),
+            );
+        }
+        "part.remove" | "part.move" | "part.resize" | "part.set_metadata"
+        | "part.set_media_ref" | "part.split" => {
+            let part_id = require_str(command, "part_id")?;
+            let located = locate_part(ids, project, &part_id)?;
+            plan.track_id = Some(located.track_id.clone());
+            plan.part_id = Some(part_id.clone());
+            plan.part_index = Some(located.part_in_track);
+            match kind {
+                "part.remove" => {
+                    after.parts.remove(located.flat_index);
+                }
+                "part.move" => {
+                    let position = require_i32(command, "position_ticks")?;
+                    if position < 0 {
+                        return Err(SessionError::validation_field(
+                            "position_ticks",
+                            "position_ticks must be non-negative",
+                        ));
+                    }
+                    match after.parts.get_mut(located.flat_index) {
+                        Some(UPart::Voice(part)) => part.position = position,
+                        Some(UPart::Wave(part)) => part.position = position,
+                        None => {
+                            return Err(SessionError::internal(
+                                "part index disappeared during move",
+                            ))
+                        }
+                    }
+                    let item = after.parts.remove(located.flat_index);
+                    let index = after
+                        .parts
+                        .iter()
+                        .position(|p| {
+                            (p.track_no(), p.position()) > (item.track_no(), item.position())
+                        })
+                        .unwrap_or(after.parts.len());
+                    after.parts.insert(index, item);
+                    plan.part_index = Some(
+                        after.parts[..index]
+                            .iter()
+                            .filter(|p| p.track_no() == located.track as i32)
+                            .count(),
+                    );
+                }
+                "part.resize" => {
+                    let duration = require_i32(command, "duration_ticks")?;
+                    if duration <= 0 {
+                        return Err(SessionError::validation_field(
+                            "duration_ticks",
+                            "duration_ticks must be positive",
+                        ));
+                    }
+                    match after.parts.get_mut(located.flat_index) {
+                        Some(UPart::Voice(part)) => {
+                            if part
+                                .notes
+                                .iter()
+                                .any(|note| note.position.saturating_add(note.duration) > duration)
+                                || part
+                                    .curves
+                                    .iter()
+                                    .any(|curve| curve.xs.iter().any(|tick| *tick > duration))
+                            {
+                                return Err(SessionError::validation_reason(
+                                    "duration_ticks",
+                                    "content_out_of_bounds",
+                                    "new duration would exclude note or curve content",
+                                ));
+                            }
+                            part.duration = duration;
+                        }
+                        Some(UPart::Wave(part)) => {
+                            let total_ticks =
+                                duration.saturating_add(part.skip).saturating_add(part.trim);
+                            if total_ticks <= 0 {
+                                return Err(SessionError::validation_field(
+                                    "duration_ticks",
+                                    "duration_ticks must be positive",
+                                ));
+                            }
+                            let start_ms = after.time_axis.tick_to_ms(part.position as f64);
+                            let end_ms = after
+                                .time_axis
+                                .tick_to_ms(part.position.saturating_add(total_ticks) as f64);
+                            part.file_duration_ms = end_ms - start_ms;
+                        }
+                        None => {
+                            return Err(SessionError::internal(
+                                "part index disappeared during resize",
+                            ))
+                        }
+                    }
+                }
+                "part.set_metadata" => {
+                    let fields = command
+                        .get("fields")
+                        .and_then(Value::as_object)
+                        .ok_or_else(|| {
+                            SessionError::validation_field("fields", "fields must be an object")
+                        })?;
+                    if fields.is_empty() {
+                        return Err(SessionError::validation_field(
+                            "fields",
+                            "at least one field is required",
+                        ));
+                    }
+                    let Some(part) = after.parts.get_mut(located.flat_index) else {
+                        return Err(SessionError::internal(
+                            "part index disappeared during metadata update",
+                        ));
+                    };
+                    for (key, value) in fields {
+                        match key.as_str() {
+                            "name" => {
+                                let name = value.as_str().ok_or_else(|| {
+                                    SessionError::validation_field("name", "name must be a string")
+                                })?;
+                                if name.trim().is_empty() {
+                                    return Err(SessionError::validation_field(
+                                        "name",
+                                        "name must not be empty",
+                                    ));
+                                }
+                                match part {
+                                    UPart::Voice(p) => p.name = name.to_string(),
+                                    UPart::Wave(p) => p.name = name.to_string(),
+                                }
+                            }
+                            "comment" => {
+                                let comment = value
+                                    .as_str()
+                                    .ok_or_else(|| {
+                                        SessionError::validation_field(
+                                            "comment",
+                                            "comment must be a string",
+                                        )
+                                    })?
+                                    .to_string();
+                                match part {
+                                    UPart::Voice(p) => p.comment = comment,
+                                    UPart::Wave(p) => p.comment = comment,
+                                }
+                            }
+                            _ => {
+                                return Err(SessionError::validation_field(
+                                    "fields",
+                                    format!("unknown part metadata field '{key}'"),
+                                ))
+                            }
+                        }
+                    }
+                    plan.render_invalidated = false;
+                }
+                "part.set_media_ref" => {
+                    let media_ref = require_str(command, "media_ref")?;
+                    if media_ref.trim().is_empty()
+                        || media_ref.starts_with('/')
+                        || media_ref.starts_with('\\')
+                        || media_ref.as_bytes().get(1) == Some(&b':')
+                        || media_ref.split('/').any(|segment| segment == "..")
+                    {
+                        return Err(SessionError::validation_field(
+                            "media_ref",
+                            "media_ref must be a non-empty project-relative reference, not an absolute path",
+                        ));
+                    }
+                    match after.parts.get_mut(located.flat_index) {
+                        Some(UPart::Wave(part)) => part.relative_path = Some(media_ref),
+                        Some(UPart::Voice(_)) => {
+                            return Err(SessionError::unsupported("part.set_media_ref.voice"));
+                        }
+                        None => {
+                            return Err(SessionError::internal(
+                                "part index disappeared during media relink",
+                            ))
+                        }
+                    }
+                }
+                "part.split" => {
+                    let at = require_i32(command, "at_tick")?;
+                    let Some(UPart::Voice(original)) = project.parts.get(located.flat_index) else {
+                        return Err(SessionError::unsupported("part.split.wave"));
+                    };
+                    if at <= 0 || at >= original.duration {
+                        return Err(SessionError::validation_field(
+                            "at_tick",
+                            "split tick must be within the part",
+                        ));
+                    }
+                    if original.notes.iter().any(|note| {
+                        note.position < at && note.position.saturating_add(note.duration) > at
+                    }) {
+                        return Err(SessionError::validation_reason(
+                            "at_tick",
+                            "note_crosses_split",
+                            "a note crosses the split boundary",
+                        ));
+                    }
+                    let mut left = original.clone();
+                    let mut right = original.clone();
+                    left.duration = at;
+                    right.position = original.position.saturating_add(at);
+                    right.duration = original.duration - at;
+                    left.notes.retain(|note| note.position < at);
+                    right.notes = original
+                        .notes
+                        .iter()
+                        .filter(|note| note.position >= at)
+                        .cloned()
+                        .map(|mut note| {
+                            note.position -= at;
+                            note
+                        })
+                        .collect();
+                    left.curves.clear();
+                    right.curves.clear();
+                    for original_curve in &original.curves {
+                        let mut left_curve = original_curve.clone();
+                        let mut right_curve = original_curve.clone();
+                        left_curve.xs.clear();
+                        left_curve.ys.clear();
+                        right_curve.xs.clear();
+                        right_curve.ys.clear();
+                        for (&tick, &value) in original_curve.xs.iter().zip(&original_curve.ys) {
+                            if tick < at {
+                                left_curve.xs.push(tick);
+                                left_curve.ys.push(value);
+                            }
+                            if tick > at {
+                                right_curve.xs.push(tick - at);
+                                right_curve.ys.push(value);
+                            }
+                        }
+                        if let Some(value) = original_curve.sample(at) {
+                            left_curve.xs.push(at);
+                            left_curve.ys.push(value);
+                            right_curve.xs.insert(0, 0);
+                            right_curve.ys.insert(0, value);
+                        }
+                        left.curves.push(left_curve);
+                        right.curves.push(right_curve);
+                    }
+                    after.parts[located.flat_index] = UPart::Voice(left);
+                    let insertion = located.flat_index + 1;
+                    after.parts.insert(insertion, UPart::Voice(right));
+                    plan.right_part_index = Some(located.part_in_track + 1);
+                }
+                _ => unreachable!(),
+            }
+        }
+        _ => return Err(SessionError::unsupported(kind)),
+    }
+    after.validate().map_err(SessionError::validation)?;
+    plan.after = after;
+    Ok(Some(plan))
+}
+
 /// The voice part a resolved location points at.
 pub fn part_at<'a>(
     project: &'a UProject,
@@ -760,6 +1890,65 @@ pub fn plan(
                     "part": located.part.flat_index,
                     "note": located.note_index,
                     "lyric": lyric,
+                })
+                .to_string(),
+                target: note_target(&located),
+                creates_note: false,
+                removes_note: false,
+            })
+        }
+        "note.set_pitch" => {
+            let located = locate_note(ids, project, &require_str(command, "note_id")?)?;
+            Ok(Plan {
+                kind,
+                legacy_command: json!({
+                    "cmd": "set_pitch",
+                    "part": located.part.flat_index,
+                    "note": located.note_index,
+                    "pitch": command.get("pitch").cloned().unwrap_or(serde_json::Value::Null),
+                })
+                .to_string(),
+                target: note_target(&located),
+                creates_note: false,
+                removes_note: false,
+            })
+        }
+        "note.set_vibrato" => {
+            let located = locate_note(ids, project, &require_str(command, "note_id")?)?;
+            let vibrato = command
+                .get("vibrato")
+                .cloned()
+                .ok_or_else(|| SessionError::validation("note.set_vibrato requires `vibrato`"))?;
+            Ok(Plan {
+                kind,
+                legacy_command: json!({
+                    "cmd": "set_vibrato",
+                    "part": located.part.flat_index,
+                    "note": located.note_index,
+                    "vibrato": vibrato,
+                })
+                .to_string(),
+                target: note_target(&located),
+                creates_note: false,
+                removes_note: false,
+            })
+        }
+        "note.set_tuning" => {
+            let located = locate_note(ids, project, &require_str(command, "note_id")?)?;
+            let cents = require_i32(command, "cents")?;
+            if !(-1200..=1200).contains(&cents) {
+                return Err(SessionError::validation_field(
+                    "cents",
+                    "cents must be within -1200..=1200",
+                ));
+            }
+            Ok(Plan {
+                kind,
+                legacy_command: json!({
+                    "cmd": "set_tuning",
+                    "part": located.part.flat_index,
+                    "note": located.note_index,
+                    "cents": cents,
                 })
                 .to_string(),
                 target: note_target(&located),
@@ -872,6 +2061,39 @@ pub fn plan(
                 removes_note: false,
             })
         }
+        "track.set_mix_fx" => {
+            let located = locate_track(ids, &require_str(command, "track_id")?)?;
+            let value = command.get("mix_fx").ok_or_else(|| {
+                SessionError::validation_field("mix_fx", "mix_fx is required (use null to clear)")
+            })?;
+            if !value.is_null() {
+                let fx: domain::UMixFx =
+                    serde_json::from_value(value.clone()).map_err(|error| {
+                        SessionError::validation_field(
+                            "mix_fx",
+                            format!("invalid Mix FX object: {error}"),
+                        )
+                    })?;
+                if let Some((field, message)) = fx.validation_error() {
+                    return Err(SessionError::validation_field(field, message));
+                }
+            }
+            Ok(Plan {
+                kind,
+                legacy_command: json!({
+                    "cmd": "set_track_mix_fx",
+                    "track": located.track,
+                    "mix_fx": value,
+                })
+                .to_string(),
+                target: Target::Track {
+                    track_id: located.track_id,
+                    track: located.track,
+                },
+                creates_note: false,
+                removes_note: false,
+            })
+        }
         "track.rename" => {
             let located = locate_track(ids, &require_str(command, "track_id")?)?;
             let name = require_str(command, "name")?;
@@ -930,8 +2152,13 @@ fn voice_part_at(project: &UProject, track: usize, part_in_track: usize) -> Opti
     }
 }
 
-fn note_payload(id: &str, note: &domain::UNote) -> Value {
-    serde_json::to_value(views::note_view(id, note)).unwrap_or(Value::Null)
+fn note_payload(id: &str, note: &domain::UNote, project: &UProject) -> Value {
+    serde_json::to_value(views::note_view(
+        id,
+        note,
+        project.rusted_utau_pronunciations.get(id),
+    ))
+    .unwrap_or(Value::Null)
 }
 
 /// Build the §6.4.3 change list for a committed `plan`.
@@ -953,7 +2180,7 @@ pub fn changes_for(plan: &Plan, ctx: &ChangeContext<'_>) -> Vec<Change> {
                         let start = vp.position + note.position;
                         let end = start + note.duration;
                         changes.push(
-                            Change::patch("note.added", note_payload(id, note))
+                            Change::patch("note.added", note_payload(id, note, ctx.project))
                                 .with_track(track_id_string(ctx.ids, track).unwrap_or_default())
                                 .with_part(part_id_string(ctx.ids, track, part).unwrap_or_default())
                                 .with_note(id)
@@ -996,7 +2223,7 @@ pub fn changes_for(plan: &Plan, ctx: &ChangeContext<'_>) -> Vec<Change> {
                         let start = vp.position + note.position;
                         let end = start + note.duration;
                         changes.push(
-                            Change::patch("note.changed", note_payload(note_id, note))
+                            Change::patch("note.changed", note_payload(note_id, note, ctx.project))
                                 .with_track(track_id.clone())
                                 .with_part(part_id.clone())
                                 .with_note(note_id.clone())

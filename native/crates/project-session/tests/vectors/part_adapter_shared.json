@@ -1,0 +1,16 @@
+{
+  "name": "stable part metadata edit has matching patch",
+  "command": {
+    "type": "part.set_metadata",
+    "part_id": "@part:0",
+    "fields": { "name": "Shared part vector", "comment": "adapter parity" }
+  },
+  "expected": {
+    "revision": 1,
+    "changed": true,
+    "child_change_kinds": [],
+    "change_kinds": ["history.changed", "part.changed", "render.invalidated"],
+    "name": "Shared part vector",
+    "comment": "adapter parity"
+  }
+}

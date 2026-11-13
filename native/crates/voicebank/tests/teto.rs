@@ -11,8 +11,8 @@ fn teto_library() -> PathBuf {
     if let Ok(dir) = std::env::var("TETO_VOICEBANK_DIR") {
         return PathBuf::from(dir);
     }
-    let default = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../test/golden/teto-english/library");
+    let default =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../test/golden/teto-english/library");
     assert!(
         default.is_dir(),
         "Teto voicebank not found at {} (set TETO_VOICEBANK_DIR)",
@@ -27,7 +27,11 @@ fn parses_real_teto_oto_ini() {
     // 2681 non-empty lines, all valid, no parse errors.
     assert_eq!(vb.otos.len(), 2681);
     assert_eq!(vb.oto_map.len(), 2673); // 8 aliases are duplicated across wavs
-    assert!(vb.warnings.is_empty(), "unexpected warnings: {:?}", vb.warnings);
+    assert!(
+        vb.warnings.is_empty(),
+        "unexpected warnings: {:?}",
+        vb.warnings
+    );
 
     // oto set discovered at voice/oto.ini.
     assert_eq!(vb.oto_sets.len(), 1);
@@ -68,7 +72,10 @@ fn all_558_wavs_referenced() {
     // Every wav on disk is referenced (so no filename aliases were added).
     assert_eq!(referenced.len(), 558);
     for wav in &wavs {
-        assert!(referenced.contains(wav.as_str()), "missing reference: {wav}");
+        assert!(
+            referenced.contains(wav.as_str()),
+            "missing reference: {wav}"
+        );
     }
     // And every referenced wav exists on disk.
     for oto in &vb.otos {

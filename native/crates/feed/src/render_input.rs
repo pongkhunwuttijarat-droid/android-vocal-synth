@@ -27,8 +27,18 @@ pub struct RenderInput {
     /// Pitch in cents, sampled every 5 ticks over the pitch grid
     /// (starts `leading` ticks before the first phoneme).
     pub pitches_cents: Vec<i32>,
+    /// Unrounded OpenUtau pitch samples. The sample-based resampler request
+    /// interpolates these floats before rounding each pitch-bend value.
+    pub pitches_cents_f32: Vec<f32>,
     /// Sampled expression curves, per-5-tick aligned with `pitches_cents`.
     pub curves: Curves,
+    /// Absolute project tick represented by sample zero of pitch and curve
+    /// arrays. Kept fixed when a phrase is chunked so sub-renderers preserve
+    /// the source grid's phase even when their local start is between samples.
+    pub curve_grid_start_tick: i32,
+    /// Absolute project millisecond at which renderer frame zero begins.
+    /// Chunk inputs align this to the original phrase's synthesis-frame grid.
+    pub render_origin_ms: f64,
     /// Sample-based (worldline/classic) inputs; filled when the renderer
     /// capability declares `needs_oto` / `needs_wav`.
     pub sample_based: Option<SampleBased>,
@@ -48,8 +58,19 @@ pub struct PhraseInfo {
     pub leading_ms: f64,
     /// Leading time in ticks (used by the pitch grid start).
     pub leading_ticks: i32,
+    /// Tempo map needed to reproduce OpenUtau's millisecond↔tick conversions
+    /// when sampling resampler pitch bends.
+    pub tempo_map: Vec<TempoMapPoint>,
     /// Human-readable tempo/time-signature hint, e.g. `"120bpm 4/4"`.
     pub time_axis_hint: Option<String>,
+}
+
+/// One tempo marker with its absolute time-axis position.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TempoMapPoint {
+    pub tick_pos: i32,
+    pub ms_pos: f64,
+    pub bpm: f64,
 }
 
 /// A note as the feed sees it (`render-input.example.json` → `notes[]`).
@@ -76,6 +97,15 @@ pub struct RenderPhoneme {
     pub overlap_ms: f64,
     /// MIDI tone of the parent note.
     pub tone: i32,
+    /// OpenUtau `RenderPhone.adjustedTempo`, derived from phoneme ticks and
+    /// elapsed milliseconds (accounting for tempo changes inside the note).
+    pub adjusted_tempo: f64,
+    /// Per-phoneme velocity/consonant stretch (USTX `vel`, default 100).
+    pub consonant_velocity: f32,
+    /// Per-phoneme resampler volume expression (USTX `vol`, default 100).
+    pub volume: f32,
+    /// Per-phoneme resampler modulation expression (USTX `mod`, default 0).
+    pub modulation: f32,
     /// Per-phoneme tone shift in semitones (`shft` expression).
     pub tone_shift: i32,
     /// Index of the phoneme within its note.

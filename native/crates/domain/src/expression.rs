@@ -83,7 +83,10 @@ impl<'de> Deserialize<'de> for UExpressionType {
             type Value = UExpressionType;
 
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                write!(f, "an expression type name (Numerical/Options/Curve) or 0/1/2")
+                write!(
+                    f,
+                    "an expression type name (Numerical/Options/Curve) or 0/1/2"
+                )
             }
 
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
@@ -140,7 +143,11 @@ pub struct UExpressionDescriptor {
     pub max: f32,
     #[serde(default)]
     pub default_value: f32,
-    #[serde(default, rename = "_custom_default_value", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "_custom_default_value",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub custom_default_value: Option<f32>,
     #[serde(default)]
     pub is_flag: bool,
@@ -217,7 +224,17 @@ impl UExpressionDescriptor {
         default_value: f32,
         flag: Option<&str>,
     ) -> Self {
-        Self::new(name, abbr, UExpressionType::Numerical, min, max, default_value, flag, None, false)
+        Self::new(
+            name,
+            abbr,
+            UExpressionType::Numerical,
+            min,
+            max,
+            default_value,
+            flag,
+            None,
+            false,
+        )
     }
 
     /// Curve expression constructor.
@@ -228,7 +245,17 @@ impl UExpressionDescriptor {
         max: f32,
         default_value: f32,
     ) -> Self {
-        Self::new(name, abbr, UExpressionType::Curve, min, max, default_value, None, None, false)
+        Self::new(
+            name,
+            abbr,
+            UExpressionType::Curve,
+            min,
+            max,
+            default_value,
+            None,
+            None,
+            false,
+        )
     }
 
     /// Options expression constructor: `type = Options`, `min = 0`,
@@ -265,12 +292,20 @@ impl UExpressionDescriptor {
     /// Set the custom default value; values equal to `default_value` reset
     /// it to `None` (C# `CustomDefaultValue` setter).
     pub fn set_custom_default_value(&mut self, value: f32) {
-        self.custom_default_value = if value == self.default_value { None } else { Some(value) };
+        self.custom_default_value = if value == self.default_value {
+            None
+        } else {
+            Some(value)
+        };
     }
 
     /// Create a `UExpression` initialized to the default value.
     pub fn create(&self) -> UExpression {
-        UExpression { index: None, abbr: self.abbr.clone(), value: self.default_value }
+        UExpression {
+            index: None,
+            abbr: self.abbr.clone(),
+            value: self.default_value,
+        }
     }
 }
 
@@ -313,28 +348,149 @@ impl UExpression {
 /// (`Format.Ustx.AddDefaultExpressions`). Existing expressions with the same
 /// abbreviation are preserved (see [`UProject::register_expression`]).
 pub fn add_default_expressions(project: &mut UProject) {
-    project.register_expression(UExpressionDescriptor::curve("dynamics (curve)", DYN, -240.0, 120.0, 0.0));
-    project.register_expression(UExpressionDescriptor::curve("pitch deviation (curve)", PITD, -1200.0, 1200.0, 0.0));
-    project.register_expression(UExpressionDescriptor::options("voice color", CLR, false, vec![]));
-    project.register_expression(UExpressionDescriptor::options("resampler engine", ENG, false, ENG_OPTIONS.map(str::to_string).to_vec()));
-    project.register_expression(UExpressionDescriptor::numerical("velocity", VEL, 0.0, 200.0, 100.0, None));
-    project.register_expression(UExpressionDescriptor::numerical("volume", VOL, 0.0, 200.0, 100.0, None));
-    project.register_expression(UExpressionDescriptor::numerical("attack", ATK, 0.0, 200.0, 100.0, None));
-    project.register_expression(UExpressionDescriptor::numerical("decay", DEC, 0.0, 100.0, 0.0, None));
-    project.register_expression(UExpressionDescriptor::numerical("gender", GEN, -100.0, 100.0, 0.0, Some("g")));
-    project.register_expression(UExpressionDescriptor::curve("gender (curve)", GENC, -100.0, 100.0, 0.0));
-    project.register_expression(UExpressionDescriptor::numerical("breath", BRE, 0.0, 100.0, 0.0, Some("B")));
-    project.register_expression(UExpressionDescriptor::curve("breathiness (curve)", BREC, -100.0, 100.0, 0.0));
-    project.register_expression(UExpressionDescriptor::numerical("lowpass", LPF, 0.0, 100.0, 0.0, Some("H")));
-    project.register_expression(UExpressionDescriptor::numerical("normalize", NORM, 0.0, 100.0, 86.0, Some("P")));
-    project.register_expression(UExpressionDescriptor::numerical("modulation", MOD, 0.0, 100.0, 0.0, None));
-    project.register_expression(UExpressionDescriptor::numerical("modulation plus", MODP, 0.0, 100.0, 0.0, None));
-    project.register_expression(UExpressionDescriptor::numerical("alternate", ALT, 0.0, 16.0, 0.0, None));
-    project.register_expression(UExpressionDescriptor::options("direct", DIR, false, vec!["off".into(), "on".into()]));
-    project.register_expression(UExpressionDescriptor::numerical("tone shift", SHFT, -36.0, 36.0, 0.0, None));
-    project.register_expression(UExpressionDescriptor::curve("tone shift (curve)", SHFC, -1200.0, 1200.0, 0.0));
-    project.register_expression(UExpressionDescriptor::curve("tension (curve)", TENC, -100.0, 100.0, 0.0));
-    project.register_expression(UExpressionDescriptor::curve("voicing (curve)", VOIC, 0.0, 100.0, 100.0));
+    project.register_expression(UExpressionDescriptor::curve(
+        "dynamics (curve)",
+        DYN,
+        -240.0,
+        120.0,
+        0.0,
+    ));
+    project.register_expression(UExpressionDescriptor::curve(
+        "pitch deviation (curve)",
+        PITD,
+        -1200.0,
+        1200.0,
+        0.0,
+    ));
+    project.register_expression(UExpressionDescriptor::options(
+        "voice color",
+        CLR,
+        false,
+        vec![],
+    ));
+    project.register_expression(UExpressionDescriptor::options(
+        "resampler engine",
+        ENG,
+        false,
+        ENG_OPTIONS.map(str::to_string).to_vec(),
+    ));
+    project.register_expression(UExpressionDescriptor::numerical(
+        "velocity", VEL, 0.0, 200.0, 100.0, None,
+    ));
+    project.register_expression(UExpressionDescriptor::numerical(
+        "volume", VOL, 0.0, 200.0, 100.0, None,
+    ));
+    project.register_expression(UExpressionDescriptor::numerical(
+        "attack", ATK, 0.0, 200.0, 100.0, None,
+    ));
+    project.register_expression(UExpressionDescriptor::numerical(
+        "decay", DEC, 0.0, 100.0, 0.0, None,
+    ));
+    project.register_expression(UExpressionDescriptor::numerical(
+        "gender",
+        GEN,
+        -100.0,
+        100.0,
+        0.0,
+        Some("g"),
+    ));
+    project.register_expression(UExpressionDescriptor::curve(
+        "gender (curve)",
+        GENC,
+        -100.0,
+        100.0,
+        0.0,
+    ));
+    project.register_expression(UExpressionDescriptor::numerical(
+        "breath",
+        BRE,
+        0.0,
+        100.0,
+        0.0,
+        Some("B"),
+    ));
+    project.register_expression(UExpressionDescriptor::curve(
+        "breathiness (curve)",
+        BREC,
+        -100.0,
+        100.0,
+        0.0,
+    ));
+    project.register_expression(UExpressionDescriptor::numerical(
+        "lowpass",
+        LPF,
+        0.0,
+        100.0,
+        0.0,
+        Some("H"),
+    ));
+    project.register_expression(UExpressionDescriptor::numerical(
+        "normalize",
+        NORM,
+        0.0,
+        100.0,
+        86.0,
+        Some("P"),
+    ));
+    project.register_expression(UExpressionDescriptor::numerical(
+        "modulation",
+        MOD,
+        0.0,
+        100.0,
+        0.0,
+        None,
+    ));
+    project.register_expression(UExpressionDescriptor::numerical(
+        "modulation plus",
+        MODP,
+        0.0,
+        100.0,
+        0.0,
+        None,
+    ));
+    project.register_expression(UExpressionDescriptor::numerical(
+        "alternate",
+        ALT,
+        0.0,
+        16.0,
+        0.0,
+        None,
+    ));
+    project.register_expression(UExpressionDescriptor::options(
+        "direct",
+        DIR,
+        false,
+        vec!["off".into(), "on".into()],
+    ));
+    project.register_expression(UExpressionDescriptor::numerical(
+        "tone shift",
+        SHFT,
+        -36.0,
+        36.0,
+        0.0,
+        None,
+    ));
+    project.register_expression(UExpressionDescriptor::curve(
+        "tone shift (curve)",
+        SHFC,
+        -1200.0,
+        1200.0,
+        0.0,
+    ));
+    project.register_expression(UExpressionDescriptor::curve(
+        "tension (curve)",
+        TENC,
+        -100.0,
+        100.0,
+        0.0,
+    ));
+    project.register_expression(UExpressionDescriptor::curve(
+        "voicing (curve)",
+        VOIC,
+        0.0,
+        100.0,
+        100.0,
+    ));
 }
 
 #[cfg(test)]
@@ -343,11 +499,28 @@ mod tests {
 
     #[test]
     fn type_serde_names_and_ints() {
-        assert_eq!(serde_yaml::to_string(&UExpressionType::Curve).unwrap().trim(), "Curve");
-        assert_eq!(serde_yaml::from_str::<UExpressionType>("Curve").unwrap(), UExpressionType::Curve);
-        assert_eq!(serde_yaml::from_str::<UExpressionType>("curve").unwrap(), UExpressionType::Curve);
-        assert_eq!(serde_yaml::from_str::<UExpressionType>("2").unwrap(), UExpressionType::Curve);
-        assert_eq!(serde_yaml::from_str::<UExpressionType>("Numerical").unwrap(), UExpressionType::Numerical);
+        assert_eq!(
+            serde_yaml::to_string(&UExpressionType::Curve)
+                .unwrap()
+                .trim(),
+            "Curve"
+        );
+        assert_eq!(
+            serde_yaml::from_str::<UExpressionType>("Curve").unwrap(),
+            UExpressionType::Curve
+        );
+        assert_eq!(
+            serde_yaml::from_str::<UExpressionType>("curve").unwrap(),
+            UExpressionType::Curve
+        );
+        assert_eq!(
+            serde_yaml::from_str::<UExpressionType>("2").unwrap(),
+            UExpressionType::Curve
+        );
+        assert_eq!(
+            serde_yaml::from_str::<UExpressionType>("Numerical").unwrap(),
+            UExpressionType::Numerical
+        );
         assert!(serde_yaml::from_str::<UExpressionType>("nope").is_err());
     }
 

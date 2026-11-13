@@ -1,0 +1,18 @@
+{
+  "name": "project and part invalid/no-op shared vectors",
+  "cases": [
+    {"name":"project metadata no-op","command":{"type":"project.set_metadata","fields":{"name":"Demo Song"}},"expected":{"changed":false,"revision":0,"code":null}},
+    {"name":"project tempo no-op","command":{"type":"project.set_tempo","position_tick":0,"bpm":120.0},"expected":{"changed":false,"revision":0,"code":null}},
+    {"name":"project meter cannot remove origin","command":{"type":"project.remove_time_signature","bar_position":0},"expected":{"changed":null,"revision":0,"code":"validation_error"}},
+    {"name":"project tempo cannot remove origin","command":{"type":"project.remove_tempo","position_tick":0},"expected":{"changed":null,"revision":0,"code":"validation_error"}},
+    {"name":"project meter rejects non-integral bar duration","command":{"type":"project.set_time_signature","bar_position":1,"numerator":7,"denominator":11},"expected":{"changed":null,"revision":0,"code":"validation_error"}},
+    {"name":"project remove missing tempo","command":{"type":"project.remove_tempo","position_tick":480},"expected":{"changed":null,"revision":0,"code":"not_found"}},
+    {"name":"part create rejects unknown track","command":{"type":"part.create","track_id":"missing","kind":"voice","name":"Part","position_ticks":0,"duration_ticks":480},"expected":{"changed":null,"revision":0,"code":"not_found"}},
+    {"name":"part create rejects empty duration","command":{"type":"part.create","track_id":"@track:0","kind":"voice","name":"Part","position_ticks":0,"duration_ticks":0},"expected":{"changed":null,"revision":0,"code":"validation_error"}},
+    {"name":"part move rejects negative position","command":{"type":"part.move","part_id":"@part:0","position_ticks":-1},"expected":{"changed":null,"revision":0,"code":"validation_error"}},
+    {"name":"part resize rejects zero duration","command":{"type":"part.resize","part_id":"@part:0","duration_ticks":0},"expected":{"changed":null,"revision":0,"code":"validation_error"}},
+    {"name":"part metadata rejects empty name","command":{"type":"part.set_metadata","part_id":"@part:0","fields":{"name":""}},"expected":{"changed":null,"revision":0,"code":"validation_error"}},
+    {"name":"part split rejects origin boundary","command":{"type":"part.split","part_id":"@part:0","at_tick":0},"expected":{"changed":null,"revision":0,"code":"validation_error"}},
+    {"name":"part remove rejects unknown ID","command":{"type":"part.remove","part_id":"00000000-0000-4000-8000-000000000001"},"expected":{"changed":null,"revision":0,"code":"not_found"}}
+  ]
+}

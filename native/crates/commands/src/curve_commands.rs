@@ -169,6 +169,67 @@ pub fn apply_stroke_to_curves(
     }
 }
 
+/// Simplify one committed curve with recursive Ramer-Douglas-Peucker.
+/// Input ticks must be strictly increasing. Equal-distance ties retain the
+/// first point, matching OpenUtau's ascending scan and strict `>` comparison.
+pub fn simplify_curve(curve: &mut UCurve, tolerance: f64) {
+    if curve.xs.len() < 3 || curve.xs.len() != curve.ys.len() || tolerance < 0.0 {
+        return;
+    }
+    let mut keep = vec![false; curve.xs.len()];
+    keep[0] = true;
+    let last = keep.len() - 1;
+    keep[last] = true;
+    simplify_span(&curve.xs, &curve.ys, 0, last, tolerance, &mut keep);
+    let mut xs = Vec::with_capacity(curve.xs.len());
+    let mut ys = Vec::with_capacity(curve.ys.len());
+    for (i, (&x, &y)) in curve.xs.iter().zip(&curve.ys).enumerate() {
+        if keep[i] {
+            xs.push(x);
+            ys.push(y);
+        }
+    }
+    curve.xs = xs;
+    curve.ys = ys;
+}
+
+fn simplify_span(
+    xs: &[i32],
+    ys: &[i32],
+    first: usize,
+    last: usize,
+    tolerance: f64,
+    keep: &mut [bool],
+) {
+    if last <= first + 1 {
+        return;
+    }
+    let (x1, y1) = (xs[first] as f64, ys[first] as f64);
+    let (x2, y2) = (xs[last] as f64, ys[last] as f64);
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let length = dx.hypot(dy);
+    let mut best = first + 1;
+    let mut max_distance = -1.0_f64;
+    for i in first + 1..last {
+        let (px, py) = (xs[i] as f64, ys[i] as f64);
+        let distance = if length == 0.0 {
+            (px - x1).hypot(py - y1)
+        } else {
+            ((dy * px - dx * py + x2 * y1 - y2 * x1).abs()) / length
+        };
+        if distance > max_distance {
+            max_distance = distance;
+            best = i;
+        }
+    }
+    if max_distance > tolerance {
+        keep[best] = true;
+        simplify_span(xs, ys, first, best, tolerance, keep);
+        simplify_span(xs, ys, best, last, tolerance, keep);
+    }
+}
+
 /// Replace/clear one curve interval as a single reversible edit.
 pub struct ApplyCurveStrokeCommand {
     part: PartFingerprint,
@@ -189,9 +250,23 @@ impl ApplyCurveStrokeCommand {
         default_value: i32,
         stroke: &CanonicalStroke,
     ) -> Result<Self, String> {
+        Self::new_with_tolerance(project, part_hint, target, default_value, stroke, 5.0)
+    }
+
+    pub fn new_with_tolerance(
+        project: &UProject,
+        part_hint: usize,
+        target: &StrokeTarget,
+        default_value: i32,
+        stroke: &CanonicalStroke,
+        tolerance: f64,
+    ) -> Result<Self, String> {
         let vp = voice_part_at(project, part_hint)?;
-        let (after, after_index) =
+        let (mut after, after_index) =
             apply_stroke_to_curves(&vp.curves, target, default_value, stroke)?;
+        if let Some(index) = after_index {
+            simplify_curve(&mut after[index], tolerance);
+        }
         let name = match stroke.mode {
             StrokeMode::Replace => "Draw curve",
             StrokeMode::Clear => "Clear curve",
@@ -248,6 +323,45 @@ mod tests {
     use super::*;
     use crate::UndoStack;
     use domain::UProject;
+
+    #[test]
+    fn curve_simplification_obeys_threshold_endpoints_and_first_tie() {
+        let mut curve = UCurve {
+            abbr: "dyn".into(),
+            xs: vec![0, 5, 10, 15, 20],
+            ys: vec![0, 5, 5, 5, 0],
+        };
+        simplify_curve(&mut curve, 4.9);
+        // Equal maxima choose x=5 in ascending tick order.
+        assert_eq!(curve.xs, vec![0, 5, 20]);
+        assert_eq!(curve.ys, vec![0, 5, 0]);
+    }
+
+    #[test]
+    fn curve_simplification_preserves_above_threshold_spikes_and_collinear_endpoints() {
+        let mut boundary = UCurve {
+            abbr: "dyn".into(),
+            xs: vec![0, 5, 10],
+            ys: vec![0, 5, 0],
+        };
+        simplify_curve(&mut boundary, 5.0);
+        assert_eq!(boundary.xs, vec![0, 10]);
+        let mut spike = UCurve {
+            abbr: "dyn".into(),
+            xs: vec![0, 5, 10],
+            ys: vec![0, 6, 0],
+        };
+        simplify_curve(&mut spike, 5.0);
+        assert_eq!(spike.xs, vec![0, 5, 10]);
+        let mut line = UCurve {
+            abbr: "dyn".into(),
+            xs: vec![0, 5, 10, 20],
+            ys: vec![0, 5, 10, 20],
+        };
+        simplify_curve(&mut line, 0.0);
+        assert_eq!(line.xs, vec![0, 20]);
+        assert_eq!(line.ys, vec![0, 20]);
+    }
 
     fn curve(abbr: &str, xs: Vec<i32>, ys: Vec<i32>) -> UCurve {
         UCurve {

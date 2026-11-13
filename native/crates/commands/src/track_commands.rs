@@ -8,7 +8,7 @@
 //! Tracks are located by value equality with the construction-time
 //! snapshot, falling back to the construction-time index hint.
 
-use domain::{UPart, UProject, UTrack};
+use domain::{UMixFx, UPart, UProject, UTrack};
 
 use crate::command::Command;
 
@@ -217,6 +217,56 @@ impl Command for RenameTrackCommand {
     }
 }
 
+/// Set a track's singer (`OpenUtau.Core/Commands/TrackCommands.cs`
+/// `SetTrackSingerCommand`).
+///
+/// `None` clears it, which is the state an audio-only track has in OpenUtau and
+/// what this engine reports as `singer_id: null`. The value is stored verbatim:
+/// the singer name is what the track's USTX carried, and whether an installed
+/// bank answers to it is a render-time question, not a document one.
+pub struct SetTrackSingerCommand {
+    name: &'static str,
+    track_index: usize,
+    old_track: UTrack,
+    new_track: UTrack,
+}
+
+impl SetTrackSingerCommand {
+    pub fn new(
+        project: &UProject,
+        track_index: usize,
+        singer: Option<String>,
+    ) -> Result<Self, String> {
+        let old_track = project
+            .tracks
+            .get(track_index)
+            .cloned()
+            .ok_or_else(|| "track index out of bounds".to_string())?;
+        let mut new_track = old_track.clone();
+        new_track.singer = singer;
+        Ok(SetTrackSingerCommand {
+            name: "Set track singer",
+            track_index,
+            old_track,
+            new_track,
+        })
+    }
+}
+
+impl Command for SetTrackSingerCommand {
+    fn execute(&mut self, project: &mut UProject) -> Result<(), String> {
+        replace_track(project, self.track_index, &self.old_track, &self.new_track)
+    }
+
+    fn unexecute(&mut self, project: &mut UProject) -> Result<(), String> {
+        replace_track(project, self.track_index, &self.new_track, &self.old_track)
+    }
+
+    fn name(&self) -> &str {
+        self.name
+    }
+}
+
 /// Set a track's solo flag.
 pub struct SetTrackSoloCommand {
     name: &'static str,
@@ -364,6 +414,50 @@ impl SetTrackPanCommand {
 }
 
 impl Command for SetTrackPanCommand {
+    fn execute(&mut self, project: &mut UProject) -> Result<(), String> {
+        replace_track(project, self.track_index, &self.old_track, &self.new_track)
+    }
+
+    fn unexecute(&mut self, project: &mut UProject) -> Result<(), String> {
+        replace_track(project, self.track_index, &self.new_track, &self.old_track)
+    }
+
+    fn name(&self) -> &str {
+        self.name
+    }
+}
+
+/// Replace or clear one track's complete OpenUtau Mix-FX configuration.
+pub struct SetTrackMixFxCommand {
+    name: &'static str,
+    track_index: usize,
+    old_track: UTrack,
+    new_track: UTrack,
+}
+
+impl SetTrackMixFxCommand {
+    pub fn new(
+        project: &UProject,
+        track_index: usize,
+        mix_fx: Option<UMixFx>,
+    ) -> Result<Self, String> {
+        let old_track = project
+            .tracks
+            .get(track_index)
+            .cloned()
+            .ok_or_else(|| "track index out of bounds".to_string())?;
+        let mut new_track = old_track.clone();
+        new_track.mix_fx = mix_fx;
+        Ok(Self {
+            name: "Set track Mix FX",
+            track_index,
+            old_track,
+            new_track,
+        })
+    }
+}
+
+impl Command for SetTrackMixFxCommand {
     fn execute(&mut self, project: &mut UProject) -> Result<(), String> {
         replace_track(project, self.track_index, &self.old_track, &self.new_track)
     }

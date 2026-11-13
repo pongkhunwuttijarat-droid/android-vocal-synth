@@ -115,6 +115,47 @@ impl Default for UMixFx {
     }
 }
 
+impl UMixFx {
+    /// First invalid field, if this project FX object is unsuitable for the
+    /// realtime DSP/session command. Imported unknown values remain readable
+    /// and serializable; validation is applied when a user submits an edit.
+    pub fn validation_error(&self) -> Option<(&'static str, &'static str)> {
+        if !["off", "vocal_air", "warm", "demud", "telephone"].contains(&self.eq_preset.as_str()) {
+            return Some(("eq_preset", "unknown EQ preset"));
+        }
+        if !["off", "gentle", "pop", "limit"].contains(&self.comp_preset.as_str()) {
+            return Some(("comp_preset", "unknown compressor preset"));
+        }
+        if !["off", "small_room", "vocal_plate", "hall", "ambient"]
+            .contains(&self.reverb_preset.as_str())
+        {
+            return Some(("reverb_preset", "unknown reverb preset"));
+        }
+        let fields = [
+            ("eq_low_db", self.eq_low_db, -24.0, 24.0),
+            ("eq_mid_freq", self.eq_mid_freq, 20.0, 20_000.0),
+            ("eq_mid_db", self.eq_mid_db, -24.0, 24.0),
+            ("eq_high_db", self.eq_high_db, -24.0, 24.0),
+            ("comp_threshold_db", self.comp_threshold_db, -60.0, 0.0),
+            ("comp_ratio", self.comp_ratio, 1.0, 20.0),
+            ("comp_makeup_db", self.comp_makeup_db, -24.0, 24.0),
+            ("reverb_size", self.reverb_size, 0.0, 1.0),
+            ("reverb_damp", self.reverb_damp, 0.0, 1.0),
+            ("reverb_wet", self.reverb_wet, 0.0, 2.0),
+            ("reverb_pre_delay_ms", self.reverb_pre_delay_ms, 0.0, 200.0),
+        ];
+        fields.into_iter().find_map(|(name, value, min, max)| {
+            if !value.is_finite() {
+                Some((name, "must be finite"))
+            } else if value < min || value > max {
+                Some((name, "value is out of range"))
+            } else {
+                None
+            }
+        })
+    }
+}
+
 /// A track (`UTrack`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UTrack {
@@ -178,7 +219,10 @@ impl Default for UTrack {
 
 impl UTrack {
     pub fn new(track_name: impl Into<String>) -> Self {
-        UTrack { track_name: track_name.into(), ..Default::default() }
+        UTrack {
+            track_name: track_name.into(),
+            ..Default::default()
+        }
     }
 
     /// `UTrack(UProject)` constructor: derive the next `TrackN` name from
@@ -256,7 +300,11 @@ mod tests {
 
     #[test]
     fn track_yaml_keys() {
-        let t = UTrack { mute: true, volume: -3.0, ..Default::default() };
+        let t = UTrack {
+            mute: true,
+            volume: -3.0,
+            ..Default::default()
+        };
         let yaml = serde_yaml::to_string(&t).unwrap();
         assert!(yaml.contains("track_name: New Track"));
         assert!(yaml.contains("track_color: Blue"));

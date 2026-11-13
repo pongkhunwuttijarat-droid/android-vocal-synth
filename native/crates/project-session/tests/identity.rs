@@ -182,10 +182,10 @@ fn unknown_sidecar_schema_is_rejected() {
     let (table, _) = reconcile(&project, None, &mut gen);
     let json = table_to_json(&table)
         .unwrap()
-        .replace(ID_SCHEMA, "lilt.ids/99");
+        .replace(ID_SCHEMA, "rusted-utau.ids/99");
 
     let err = table_from_json(&json).expect_err("schema must be checked");
-    assert!(err.contains("lilt.ids/99"), "unexpected error: {err}");
+    assert!(err.contains("rusted-utau.ids/99"), "unexpected error: {err}");
 }
 
 /// A duplicated id costs the later entity its identity, not the project's.
@@ -308,7 +308,7 @@ fn identity_does_not_change_ustx_bytes() {
     let after = yaml_of(&project);
 
     assert_eq!(before, after, "identity changed the serialized document");
-    assert!(!after.contains("lilt"), "sidecar data leaked into .ustx");
+    assert!(!after.contains("rusted-utau"), "sidecar data leaked into .ustx");
     assert!(!after.contains(table.project_id.as_str()));
     assert!(!after.contains(table.tracks[0].id.as_str()));
 }

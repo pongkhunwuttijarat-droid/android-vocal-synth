@@ -184,6 +184,27 @@ fn opening_without_a_sidecar_regenerates_ids_and_says_so() {
 }
 
 #[test]
+fn staged_save_as_forks_only_project_identity_after_commit() {
+    let mut session = Session::open(DEMO, None, 83).expect("open");
+    let original_project_id = session.identity().project_id.as_str().to_string();
+    let original_note_id = session.note_id(0, 0, 0).unwrap().as_str().to_string();
+    let original_revision = session.revision();
+    let payload = session.prepare_save_as().expect("prepare Save As");
+    let forked = project_session::identity::table_from_json(&payload.sidecar).unwrap();
+    assert_ne!(forked.project_id.as_str(), original_project_id);
+    assert_eq!(forked.note_id(0, 0, 0).unwrap().as_str(), original_note_id);
+    assert_eq!(session.identity().project_id.as_str(), original_project_id);
+    assert_eq!(session.revision(), original_revision);
+
+    let committed_id = session.commit_save_as_identity();
+    assert_eq!(committed_id, forked.project_id.as_str());
+    assert_eq!(session.identity().project_id.as_str(), committed_id);
+    assert_eq!(session.note_id(0, 0, 0).unwrap().as_str(), original_note_id);
+    assert_eq!(session.revision(), original_revision);
+    assert_eq!(session.save_sidecar().unwrap(), payload.sidecar);
+}
+
+#[test]
 fn opening_with_a_sidecar_adopts_the_ids() {
     let mut source = Session::open(DEMO, None, 7).expect("open");
     let sidecar = source.save_sidecar().expect("sidecar");
@@ -258,7 +279,7 @@ fn identity_never_appears_in_the_ustx() {
     let yaml = session.yaml();
 
     assert!(
-        !yaml.contains("lilt"),
+        !yaml.contains("rusted-utau"),
         "sidecar hint leaked into the project"
     );
     assert!(!yaml.contains(session.identity().project_id.as_str()));

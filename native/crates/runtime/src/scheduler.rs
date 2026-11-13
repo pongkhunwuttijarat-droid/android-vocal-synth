@@ -253,7 +253,10 @@ impl<T> Scheduler<T> {
 
     /// Whether a running job was cancelled (worker poll point).
     pub fn is_cancelled(&self, id: JobId) -> bool {
-        matches!(self.jobs.get(&id).map(|e| &e.status), Some(JobStatus::Cancelled))
+        matches!(
+            self.jobs.get(&id).map(|e| &e.status),
+            Some(JobStatus::Cancelled)
+        )
     }
 
     /// Current status of a job.

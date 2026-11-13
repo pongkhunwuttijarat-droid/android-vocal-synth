@@ -212,7 +212,10 @@ mod tests {
     #[test]
     fn hash_stability_verified_against_xxhsum() {
         let strings = vec!["a".to_string(), "b".to_string(), "hello".to_string()];
-        assert_eq!(Chunker::<String>::hash_items(&strings), 0xe852_cbd2_4f23_2b1f);
+        assert_eq!(
+            Chunker::<String>::hash_items(&strings),
+            0xe852_cbd2_4f23_2b1f
+        );
 
         // u32 items: count LE + raw 4-byte LE values.
         let u32s = vec![1u32, 2, 3, 1000];
@@ -229,11 +232,20 @@ mod tests {
         let a = vec!["a".to_string(), "b".to_string()];
         let b = vec!["a".to_string(), "b".to_string()];
         let c = vec!["b".to_string(), "a".to_string()];
-        assert_eq!(Chunker::<String>::hash_items(&a), Chunker::<String>::hash_items(&b));
-        assert_ne!(Chunker::<String>::hash_items(&a), Chunker::<String>::hash_items(&c));
+        assert_eq!(
+            Chunker::<String>::hash_items(&a),
+            Chunker::<String>::hash_items(&b)
+        );
+        assert_ne!(
+            Chunker::<String>::hash_items(&a),
+            Chunker::<String>::hash_items(&c)
+        );
         // Different lengths must not collide either.
         let d = vec!["ab".to_string()];
-        assert_ne!(Chunker::<String>::hash_items(&a), Chunker::<String>::hash_items(&d));
+        assert_ne!(
+            Chunker::<String>::hash_items(&a),
+            Chunker::<String>::hash_items(&d)
+        );
     }
 
     #[test]

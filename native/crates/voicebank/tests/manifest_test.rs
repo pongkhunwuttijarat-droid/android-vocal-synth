@@ -61,10 +61,14 @@ fn manifest_collects_pairs_from_multitoken_aliases() {
     let manifest = vb.phoneme_manifest();
     // CVVC-style pairs actually present in the bank: "- A" (as in the
     // alias "- A"), "A hA", "A A". The pair set must contain them.
-    assert!(manifest.pairs.contains(&("-".into(), "A".into())),
-        "expected pair (-, A) in pairs");
-    assert!(manifest.pairs.contains(&("A".into(), "hA".into())),
-        "expected pair (A, hA) in pairs");
+    assert!(
+        manifest.pairs.contains(&("-".into(), "A".into())),
+        "expected pair (-, A) in pairs"
+    );
+    assert!(
+        manifest.pairs.contains(&("A".into(), "hA".into())),
+        "expected pair (A, hA) in pairs"
+    );
 }
 
 #[test]

@@ -279,6 +279,20 @@ fn other_operations_are_rejected_while_a_group_is_open() {
     assert!(session.undo().is_err());
     assert!(session.redo().is_err());
     assert_eq!(
+        session
+            .undo_v2(99)
+            .expect_err("busy takes precedence")
+            .code(),
+        ERR_SESSION_BUSY
+    );
+    assert_eq!(
+        session
+            .redo_v2(99)
+            .expect_err("busy takes precedence")
+            .code(),
+        ERR_SESSION_BUSY
+    );
+    assert_eq!(
         session.group_begin(0, "Nested").expect_err("nested").code(),
         ERR_INVALID_GROUP_STATE
     );
@@ -338,10 +352,11 @@ fn a_child_with_the_wrong_group_id_is_refused() {
 }
 
 #[test]
-fn a_child_that_does_not_exist_is_an_error_code_not_a_poison() {
-    // `not_found` is raised while planning, before anything is applied, so the
-    // contract's "failed child" rule (drop the transaction) must not fire.
+fn a_child_with_an_unresolvable_id_fails_and_discards_the_group() {
+    // Planning is part of child validation: every failed child poisons the
+    // tentative transaction, including errors raised before engine apply.
     let mut session = open();
+    let before = session.yaml();
     let begin = session.group_begin(0, "Plan failure").expect("begin");
 
     let err = session
@@ -352,12 +367,17 @@ fn a_child_that_does_not_exist_is_an_error_code_not_a_poison() {
         ))
         .expect_err("unknown id");
 
-    assert_eq!(err.code(), ERR_NOT_FOUND);
-    assert!(
-        session.group_is_open(),
-        "planning failures keep the group open"
+    assert_eq!(err.code(), ERR_GROUP_FAILED);
+    assert!(!session.group_is_open());
+    assert_eq!(session.revision(), 0);
+    assert_eq!(session.yaml(), before);
+    assert_eq!(
+        session
+            .group_commit(&begin.group_id, 0)
+            .expect_err("failed group is closed")
+            .code(),
+        ERR_NOT_FOUND
     );
-    session.group_cancel(&begin.group_id).expect("cleanup");
 }
 
 #[test]

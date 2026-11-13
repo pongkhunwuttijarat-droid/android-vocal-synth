@@ -1,0 +1,15 @@
+{
+  "name": "project metadata edit emits a shared project patch",
+  "command": {
+    "type": "project.set_metadata",
+    "fields": { "name": "Shared document vector", "comment": "adapter parity", "key": 7 }
+  },
+  "expected": {
+    "revision": 1,
+    "changed": true,
+    "change_kinds": ["history.changed", "project.changed"],
+    "name": "Shared document vector",
+    "comment": "adapter parity",
+    "key": 7
+  }
+}

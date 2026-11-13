@@ -18,15 +18,17 @@ pub mod session;
 pub mod v2;
 mod views;
 
-pub use session::{GroupBegin, MutationOutcome, Session};
+pub use session::{GroupBegin, MutationOutcome, SaveAsPayload, Session};
 pub use v2::{capabilities, Capabilities, Change, MutationResult, SessionError};
 
 use commands::{
     AddNoteCommand, ApplyCurveStrokeCommand, ChangeNoteLyricCommand, ChangeNoteToneCommand,
-    MoveNoteCommand, RemoveNoteCommand, ResizeNoteCommand, SetTrackMuteCommand, SetTrackPanCommand,
-    SetTrackSoloCommand, SetTrackVolumeCommand, StrokeMode, StrokeTarget, UndoStack,
+    ChangeNoteTuningCommand, MoveNoteCommand, RemoveNoteCommand, ResizeNoteCommand,
+    SetNotePitchCommand, SetNoteVibratoCommand, SetTrackMixFxCommand, SetTrackMuteCommand,
+    SetTrackPanCommand, SetTrackSingerCommand, SetTrackSoloCommand, SetTrackVolumeCommand,
+    StrokeMode, StrokeTarget, UndoStack,
 };
-use domain::{UExpressionType, UPart, UProject};
+use domain::{PitchPoint, PitchPointShape, UExpressionType, UMixFx, UPart, UPitch, UProject};
 
 /// A Rust-owned project plus reversible edit history and a last-known-good
 /// serialized snapshot. Commands validate before mutating; rejected commands
@@ -57,13 +59,11 @@ impl ProjectDoc {
     }
 
     /// Parse and normalize a USTX YAML document.
+    ///
+    /// Uses [`UProject::parse_yaml`] so a UTF-8 BOM is tolerated — every
+    /// OpenUtau-written `.ustx` has one, so without this no real project opens.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
-        let mut project: UProject =
-            serde_yaml::from_str(yaml).map_err(|e| format!("parse project: {e}"))?;
-        project
-            .after_load()
-            .map_err(|e| format!("after_load: {e}"))?;
-        Ok(Self::from_project(project))
+        Ok(Self::from_project(UProject::parse_yaml(yaml)?))
     }
 
     /// Wrap an already-parsed, already-normalized project.
@@ -111,6 +111,15 @@ impl ProjectDoc {
 
     pub fn project(&self) -> &UProject {
         &self.project
+    }
+    /// Restore sidecar-owned Rusted UTAU metadata before a freshly opened document is
+    /// published. This path deliberately does not create undo history.
+    pub fn restore_rusted_utau_pronunciations(
+        &mut self,
+        pronunciations: std::collections::BTreeMap<String, domain::UPronunciation>,
+    ) {
+        self.project.rusted_utau_pronunciations = pronunciations;
+        self.snapshot_stale = true;
     }
     pub fn yaml(&self) -> String {
         to_yaml(&self.project)
@@ -211,6 +220,29 @@ impl ProjectDoc {
                 note.ok_or("change_tone needs `note`")? as usize,
                 int_field(v, "tone").ok_or("change_tone needs `tone`")?,
             )?),
+            "set_pitch" => Box::new(SetNotePitchCommand::new(
+                project,
+                part,
+                note.ok_or("set_pitch needs `note`")? as usize,
+                parse_pitch_field(v.get("pitch"))?,
+            )?),
+            "set_vibrato" => Box::new(SetNoteVibratoCommand::new(
+                project,
+                part,
+                note.ok_or("set_vibrato needs `note`")? as usize,
+                serde_json::from_value(
+                    v.get("vibrato")
+                        .cloned()
+                        .ok_or("set_vibrato needs `vibrato`")?,
+                )
+                .map_err(|e| format!("invalid vibrato: {e}"))?,
+            )?),
+            "set_tuning" => Box::new(ChangeNoteTuningCommand::new(
+                project,
+                part,
+                note.ok_or("set_tuning needs `note`")? as usize,
+                int_field(v, "cents").ok_or("set_tuning needs integer `cents`")?,
+            )?),
             "change_lyric" => Box::new(ChangeNoteLyricCommand::new(
                 project,
                 part,
@@ -241,6 +273,25 @@ impl ProjectDoc {
                 int_field(v, "track").unwrap_or(0) as usize,
                 float_field(v, "pan").ok_or("set_track_pan needs `pan`")?,
             )?),
+            "set_track_mix_fx" => {
+                let mix_fx = match v.get("mix_fx") {
+                    None => return Err("set_track_mix_fx needs `mix_fx`".into()),
+                    Some(serde_json::Value::Null) => None,
+                    Some(value) => {
+                        let fx: UMixFx = serde_json::from_value(value.clone())
+                            .map_err(|e| format!("invalid set_track_mix_fx value: {e}"))?;
+                        if let Some((field, message)) = fx.validation_error() {
+                            return Err(format!("set_track_mix_fx {field}: {message}"));
+                        }
+                        Some(fx)
+                    }
+                };
+                Box::new(SetTrackMixFxCommand::new(
+                    project,
+                    int_field(v, "track").unwrap_or(0) as usize,
+                    mix_fx,
+                )?)
+            }
             "set_track_mute" => Box::new(SetTrackMuteCommand::new(
                 project,
                 int_field(v, "track").unwrap_or(0) as usize,
@@ -255,6 +306,20 @@ impl ProjectDoc {
                 project,
                 int_field(v, "track").unwrap_or(0) as usize,
                 str_field(v, "name").ok_or("set_track_name needs `name`")?,
+            )?),
+            // `null` clears the singer (an audio-only track); a string sets it.
+            "set_track_singer" => Box::new(SetTrackSingerCommand::new(
+                project,
+                int_field(v, "track").unwrap_or(0) as usize,
+                match v.get("singer") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => Some(
+                        value
+                            .as_str()
+                            .ok_or("set_track_singer needs a string or null `singer`")?
+                            .to_string(),
+                    ),
+                },
             )?),
             "apply_curve_stroke" => {
                 match project.parts.get(part) {
@@ -277,6 +342,8 @@ impl ProjectDoc {
                 // (what the renderer samples with).
                 let min = descriptor.min as i32;
                 let max = descriptor.max as i32;
+                let simplify_tolerance =
+                    5.0_f64.min((descriptor.max as f64 - descriptor.min as f64) * 0.005);
                 let default = descriptor.custom_default_value() as i32;
                 let mode = match str_field(v, "mode") {
                     Some("clear") => StrokeMode::Clear,
@@ -294,8 +361,13 @@ impl ProjectDoc {
                     Some(index) => StrokeTarget::Existing(index as usize),
                     None => StrokeTarget::Create(abbr.to_string()),
                 };
-                Box::new(ApplyCurveStrokeCommand::new(
-                    project, part, &target, default, &stroke,
+                Box::new(ApplyCurveStrokeCommand::new_with_tolerance(
+                    project,
+                    part,
+                    &target,
+                    default,
+                    &stroke,
+                    simplify_tolerance,
                 )?)
             }
             other => return Err(format!("unknown command: {other}")),
@@ -398,14 +470,17 @@ fn snapshot_name(kind: &str) -> String {
         "add_note" => "Add note",
         "remove_note" => "Remove note",
         "change_tone" => "Change tone",
+        "set_pitch" => "Draw pitch",
         "change_lyric" => "Change lyric",
         "move_note" => "Move note",
         "resize_note" => "Resize note",
         "set_track_volume" => "Track volume",
         "set_track_pan" => "Track pan",
+        "set_track_mix_fx" => "Track Mix FX",
         "set_track_mute" => "Track mute",
         "set_track_solo" => "Track solo",
         "set_track_name" => "Track name",
+        "set_track_singer" => "Track singer",
         other => other,
     }
     .to_string()
@@ -432,6 +507,50 @@ fn json_string(s: &str) -> String {
 }
 fn opt_json_string(s: Option<&str>) -> String {
     s.map(json_string).unwrap_or_else(|| "null".to_string())
+}
+
+/// Parse `pitch: {data: [{x, y, shape}], snap_first}` from the wire.
+///
+/// `x` is milliseconds from the note start and `y` is tenths of a semitone
+/// relative to the note's tone — the units `domain::PitchPoint` and the USTX
+/// codec already use, so a host sends what it drew. `shape` is the lowercase
+/// C# enum name (`io`/`l`/`i`/`o`/`sp`) and defaults to `io`, which is what
+/// OpenUtau's `PitchPoint` constructor defaults to.
+fn parse_pitch_field(value: Option<&serde_json::Value>) -> Result<UPitch, String> {
+    let Some(value) = value else {
+        return Ok(UPitch::default());
+    };
+    let snap_first = value
+        .get("snap_first")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let mut data = Vec::new();
+    if let Some(points) = value.get("data").and_then(serde_json::Value::as_array) {
+        for point in points {
+            let x = point
+                .get("x")
+                .and_then(serde_json::Value::as_f64)
+                .ok_or("pitch point needs a numeric `x`")?;
+            let y = point
+                .get("y")
+                .and_then(serde_json::Value::as_f64)
+                .ok_or("pitch point needs a numeric `y`")?;
+            let shape = match point.get("shape").and_then(serde_json::Value::as_str) {
+                None | Some("io") => PitchPointShape::Io,
+                Some("l") => PitchPointShape::L,
+                Some("i") => PitchPointShape::I,
+                Some("o") => PitchPointShape::O,
+                Some("sp") => PitchPointShape::Sp,
+                Some(other) => return Err(format!("unknown pitch point shape '{other}'")),
+            };
+            data.push(PitchPoint {
+                x: x as f32,
+                y: y as f32,
+                shape,
+            });
+        }
+    }
+    Ok(UPitch { data, snap_first })
 }
 
 /// Parse `points: [[tick, value], ...]` for a curve stroke.

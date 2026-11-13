@@ -10,11 +10,11 @@
 
 use std::io::Write;
 
+use crate::chunker::HashKey;
 use feed::render_input::{
     Curves, EnvelopePoint, NeuralInput, OtoEntry, PhraseInfo, RenderInput, RenderNote,
     RenderPhoneme, SampleBased,
 };
-use crate::chunker::HashKey;
 
 impl HashKey for PhraseInfo {
     fn write_hash(&self, out: &mut dyn Write) -> std::io::Result<()> {
@@ -22,6 +22,12 @@ impl HashKey for PhraseInfo {
         out.write_all(&self.duration_ms.to_le_bytes())?;
         out.write_all(&self.leading_ms.to_le_bytes())?;
         out.write_all(&self.leading_ticks.to_le_bytes())?;
+        out.write_all(&(self.tempo_map.len() as u64).to_le_bytes())?;
+        for point in &self.tempo_map {
+            out.write_all(&point.tick_pos.to_le_bytes())?;
+            out.write_all(&point.ms_pos.to_le_bytes())?;
+            out.write_all(&point.bpm.to_le_bytes())?;
+        }
         match &self.time_axis_hint {
             Some(h) => {
                 out.write_all(&1u8.to_le_bytes())?;
@@ -51,6 +57,10 @@ impl HashKey for RenderPhoneme {
         out.write_all(&self.leading_ms.to_le_bytes())?;
         out.write_all(&self.overlap_ms.to_le_bytes())?;
         out.write_all(&self.tone.to_le_bytes())?;
+        out.write_all(&self.adjusted_tempo.to_le_bytes())?;
+        out.write_all(&self.consonant_velocity.to_le_bytes())?;
+        out.write_all(&self.volume.to_le_bytes())?;
+        out.write_all(&self.modulation.to_le_bytes())?;
         out.write_all(&self.tone_shift.to_le_bytes())?;
         out.write_all(&self.index.to_le_bytes())?;
         out.write_all(&self.parent_note.to_le_bytes())?;
@@ -124,7 +134,13 @@ impl HashKey for NeuralInput {
 
 impl HashKey for Curves {
     fn write_hash(&self, out: &mut dyn Write) -> std::io::Result<()> {
-        for v in [&self.dynamics, &self.gender, &self.breathiness, &self.tension, &self.voicing] {
+        for v in [
+            &self.dynamics,
+            &self.gender,
+            &self.breathiness,
+            &self.tension,
+            &self.voicing,
+        ] {
             out.write_all(&(v.len() as u64).to_le_bytes())?;
             for x in v {
                 out.write_all(&x.to_le_bytes())?;
@@ -157,6 +173,12 @@ impl HashKey for RenderInput {
         for p in &self.pitches_cents {
             out.write_all(&p.to_le_bytes())?;
         }
+        out.write_all(&(self.pitches_cents_f32.len() as u64).to_le_bytes())?;
+        for p in &self.pitches_cents_f32 {
+            out.write_all(&p.to_le_bytes())?;
+        }
+        out.write_all(&self.curve_grid_start_tick.to_le_bytes())?;
+        out.write_all(&self.render_origin_ms.to_le_bytes())?;
         self.curves.write_hash(out)?;
         match &self.sample_based {
             Some(sb) => {
@@ -203,6 +225,7 @@ mod tests {
                 duration_ms: 500.0,
                 leading_ms: 20.0,
                 leading_ticks: 96,
+                tempo_map: vec![],
                 time_axis_hint: None,
             },
             notes: vec![],
@@ -213,11 +236,18 @@ mod tests {
                 leading_ms: 20.0,
                 overlap_ms: 0.0,
                 tone: 60,
+                adjusted_tempo: 120.0,
+                consonant_velocity: 100.0,
+                volume: 100.0,
+                modulation: 0.0,
                 tone_shift: 0,
                 index: 0,
                 parent_note: 0,
             }],
             pitches_cents: vec![0; 25],
+            pitches_cents_f32: vec![0.0; 25],
+            curve_grid_start_tick: 384,
+            render_origin_ms: 480.0,
             curves: Curves::default(),
             sample_based: Some(SampleBased {
                 oto: vec![OtoEntry {
@@ -242,7 +272,10 @@ mod tests {
 
     #[test]
     fn deterministic_same_input() {
-        assert_eq!(base_input().write_hash_bytes(), base_input().write_hash_bytes());
+        assert_eq!(
+            base_input().write_hash_bytes(),
+            base_input().write_hash_bytes()
+        );
     }
 
     #[test]
@@ -264,5 +297,30 @@ mod tests {
         let mut b = base_input();
         b.sample_based.as_mut().unwrap().oto[0].preutter = 30.0;
         assert_ne!(base_input().write_hash_bytes(), b.write_hash_bytes());
+    }
+
+    #[test]
+    fn differs_on_phoneme_velocity() {
+        let mut b = base_input();
+        b.phonemes[0].consonant_velocity = 150.0;
+        assert_ne!(base_input().write_hash_bytes(), b.write_hash_bytes());
+    }
+
+    #[test]
+    fn differs_on_phoneme_adjusted_tempo() {
+        let mut b = base_input();
+        b.phonemes[0].adjusted_tempo = 240.0;
+        assert_ne!(base_input().write_hash_bytes(), b.write_hash_bytes());
+    }
+
+    #[test]
+    fn differs_on_phoneme_volume_and_modulation() {
+        let base = base_input();
+        let mut b = base_input();
+        b.phonemes[0].volume = 50.0;
+        assert_ne!(base.write_hash_bytes(), b.write_hash_bytes());
+        let mut b = base_input();
+        b.phonemes[0].modulation = 25.0;
+        assert_ne!(base.write_hash_bytes(), b.write_hash_bytes());
     }
 }

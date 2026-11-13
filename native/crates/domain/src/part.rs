@@ -23,7 +23,10 @@ pub struct PartBase {
 
 impl PartBase {
     pub fn new(name: impl Into<String>) -> Self {
-        PartBase { name: name.into(), ..Default::default() }
+        PartBase {
+            name: name.into(),
+            ..Default::default()
+        }
     }
 }
 
@@ -66,7 +69,10 @@ impl Default for UVoicePart {
 
 impl UVoicePart {
     pub fn new(name: impl Into<String>) -> Self {
-        UVoicePart { name: name.into(), ..Default::default() }
+        UVoicePart {
+            name: name.into(),
+            ..Default::default()
+        }
     }
 
     /// Part end tick (`UPart.End`).
@@ -129,7 +135,10 @@ impl Default for UWavePart {
 
 impl UWavePart {
     pub fn new(name: impl Into<String>) -> Self {
-        UWavePart { name: name.into(), ..Default::default() }
+        UWavePart {
+            name: name.into(),
+            ..Default::default()
+        }
     }
 
     /// Part end tick (`UPart.End`); wave part duration is computed from the

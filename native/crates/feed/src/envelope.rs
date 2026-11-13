@@ -7,7 +7,7 @@
 //! offset by the skip-over (preutter-derived) samples; amplitudes are
 //! normalized from 0..100 to 0..1.
 
-use domain::{UNote, UPhoneme, UProject, UTrack, ATK, DEC, VOL};
+use domain::{UNote, UPhoneme, UProject, UTrack, ATK, DEC, VEL, VOL};
 
 use crate::render_input::EnvelopePoint;
 
@@ -18,6 +18,36 @@ pub const DEFAULT_SAMPLE_RATE: f64 = 44100.0;
 pub struct EnvelopeBuilder;
 
 impl EnvelopeBuilder {
+    /// Apply OpenUtau's per-phoneme velocity stretch to oto timing before
+    /// adjacency caps are calculated, then run the shared overlap pass.
+    pub fn compute_adjacency_with_expressions(
+        phonemes: &mut [UPhoneme],
+        notes: &[UNote],
+        project: &UProject,
+        track: &UTrack,
+    ) {
+        for phoneme in phonemes.iter_mut() {
+            let Some(parent) = phoneme.parent else {
+                continue;
+            };
+            let Some(note) = notes.get(parent) else {
+                continue;
+            };
+            let velocity = phoneme
+                .get_expression(note, project, track, VEL)
+                .map(|(value, _)| value)
+                .unwrap_or(100.0);
+            let consonant_stretch = 2.0_f64.powf(1.0 - f64::from(velocity) / 100.0);
+            phoneme.auto_preutter *= consonant_stretch;
+            phoneme.auto_overlap *= consonant_stretch;
+            phoneme.max_oto_preutter *= consonant_stretch;
+            phoneme.leading_ms =
+                (phoneme.auto_preutter + phoneme.preutter_delta.unwrap_or(0.0)).max(0.0);
+            phoneme.overlap_ms = phoneme.auto_overlap + phoneme.overlap_delta.unwrap_or(0.0);
+        }
+        Self::compute_adjacency(phonemes);
+    }
+
     /// Port of `UPhoneme.ValidateOverlap`: fills adjacency fields and caps
     /// `leading_ms` (preutter) / `overlap_ms` against the previous phoneme,
     /// exactly like the reference. Phonemes without an oto entry (zero
@@ -28,8 +58,11 @@ impl EnvelopeBuilder {
             if prev.auto_preutter <= 0.0 && prev.auto_overlap == 0.0 {
                 continue; // prev unmapped; C# ValidateOverlap returns early
             }
-            let (prev_dur, prev_leading, prev_end) =
-                (prev.duration_ms, prev.leading_ms, prev.position_ms + prev.duration_ms);
+            let (prev_dur, prev_leading, prev_end) = (
+                prev.duration_ms,
+                prev.leading_ms,
+                prev.position_ms + prev.duration_ms,
+            );
             let cur = &mut phonemes[i];
             let gap_ms = cur.position_ms - prev_end;
             let mut max_preutter = cur.auto_preutter;
@@ -38,9 +71,8 @@ impl EnvelopeBuilder {
                 adjacent = true;
                 if cur.auto_overlap > 0.0 {
                     if cur.auto_preutter - cur.auto_overlap > prev_dur * 0.5 {
-                        max_preutter =
-                            prev_dur * 0.5 / (cur.auto_preutter - cur.auto_overlap)
-                                * cur.auto_preutter;
+                        max_preutter = prev_dur * 0.5 / (cur.auto_preutter - cur.auto_overlap)
+                            * cur.auto_preutter;
                     }
                 } else {
                     // Plosive consonants.
@@ -171,7 +203,7 @@ impl EnvelopeBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::UEnvelope;
+    use domain::{UEnvelope, UExpression};
 
     fn project_with_expressions() -> UProject {
         let mut p = UProject::new();
@@ -221,7 +253,14 @@ mod tests {
         let note = UNote::default();
         let ph = UPhoneme::new("zz"); // no oto -> auto fields are 0
         let env = EnvelopeBuilder::build_ms(&ph, &note, &project, track);
-        assert_eq!(env, UEnvelope::default().data.iter().map(|&(x, y)| EnvelopePoint::new(x, y / 100.0)).collect::<Vec<_>>());
+        assert_eq!(
+            env,
+            UEnvelope::default()
+                .data
+                .iter()
+                .map(|&(x, y)| EnvelopePoint::new(x, y / 100.0))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -240,10 +279,14 @@ mod tests {
         // gap 0, autoOverlap 83.333 > 0 → overlap branch (C# ValidateOverlap
         // lines 125-128): 250-83.333=166.667 > 250×0.5=125 →
         // maxPreutter = 125/166.667×250 ≈ 187.4996 (float rounding — C# same).
-        assert!((phs[1].leading_ms - 187.5).abs() < 1e-3, "got {}", phs[1].leading_ms);
+        assert!(
+            (phs[1].leading_ms - 187.5).abs() < 1e-3,
+            "got {}",
+            phs[1].leading_ms
+        );
         assert!(phs[1].adjacent);
         assert!(phs[1].overlapped); // overlap after ratio scaling ≈ 62.5 > 0
-        // tailIntrude = max(preutter, preutter - overlap) ≈ 187.5
+                                    // tailIntrude = max(preutter, preutter - overlap) ≈ 187.5
         assert!((phs[0].tail_intrude - 187.5).abs() < 1e-3);
         // tailOverlap = max(overlap, 0) ≈ 62.5 (scaled by ratio)
         assert!((phs[0].tail_overlap - 62.5).abs() < 1e-3);
@@ -251,6 +294,45 @@ mod tests {
         let env = EnvelopeBuilder::build_ms(&phs[0], &note, &project, track);
         // p4.x = DurationMs - tailIntrude + tailOverlap ≈ 125
         assert_point(&env[4], 125.0, 0.0);
+    }
+
+    #[test]
+    fn velocity_scales_oto_timing_before_adjacency_caps() {
+        let project = project_with_expressions();
+        let track = &project.tracks[0];
+        let mut notes = vec![UNote::default(), UNote::default()];
+        notes[0].position = 0;
+        notes[0].duration = 375;
+        notes[1].position = 375;
+        notes[1].duration = 375;
+        for note in &mut notes {
+            note.phoneme_expressions.push(UExpression {
+                index: Some(0),
+                abbr: VEL.to_string(),
+                value: 150.0,
+            });
+        }
+        let mut phonemes = vec![
+            phoneme_with_oto(360.0, 120.0, 375.0),
+            phoneme_with_oto(360.0, 120.0, 375.0),
+        ];
+        for phoneme in &mut phonemes {
+            phoneme.max_oto_preutter = 360.0;
+        }
+        phonemes[0].parent = Some(0);
+        phonemes[1].parent = Some(1);
+        phonemes[0].position_ms = 0.0;
+        phonemes[1].position_ms = 375.0;
+
+        EnvelopeBuilder::compute_adjacency_with_expressions(&mut phonemes, &notes, &project, track);
+
+        let expected_preutter = 360.0 * 2.0_f64.powf(-0.5);
+        let expected_overlap = 120.0 * 2.0_f64.powf(-0.5);
+        assert!((phonemes[1].leading_ms - expected_preutter).abs() < 1e-9);
+        assert!((phonemes[1].overlap_ms - expected_overlap).abs() < 1e-9);
+        assert!((phonemes[1].auto_preutter - expected_preutter).abs() < 1e-9);
+        assert!((phonemes[1].auto_overlap - expected_overlap).abs() < 1e-9);
+        assert!((phonemes[1].max_oto_preutter - expected_preutter).abs() < 1e-9);
     }
 
     #[test]

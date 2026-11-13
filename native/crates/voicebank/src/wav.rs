@@ -122,7 +122,8 @@ pub fn parse_wav(bytes: &[u8]) -> Result<WavData, WavError> {
                 }
                 let audio_format = u16::from_le_bytes(bytes[start..start + 2].try_into().unwrap());
                 let channels = u16::from_le_bytes(bytes[start + 2..start + 4].try_into().unwrap());
-                let sample_rate = u32::from_le_bytes(bytes[start + 4..start + 8].try_into().unwrap());
+                let sample_rate =
+                    u32::from_le_bytes(bytes[start + 4..start + 8].try_into().unwrap());
                 let bits = u16::from_le_bytes(bytes[start + 14..start + 16].try_into().unwrap());
                 let mut format = audio_format;
                 if audio_format == WAVE_FORMAT_EXTENSIBLE {
@@ -130,7 +131,8 @@ pub fn parse_wav(bytes: &[u8]) -> Result<WavData, WavError> {
                     // (after cbSize + validBits + channelMask); its first two
                     // bytes are the actual format code.
                     if end >= start + 26 {
-                        format = u16::from_le_bytes(bytes[start + 24..start + 26].try_into().unwrap());
+                        format =
+                            u16::from_le_bytes(bytes[start + 24..start + 26].try_into().unwrap());
                     }
                 }
                 fmt = Some((format, channels, sample_rate, bits));
@@ -172,28 +174,26 @@ pub fn parse_wav(bytes: &[u8]) -> Result<WavData, WavError> {
 fn decode_samples(data: &[u8], format: u16, bits: u16) -> Result<Vec<f32>, WavError> {
     let bytes_per_sample = bits as usize / 8;
     if bytes_per_sample == 0 || bytes_per_sample > 4 {
-        return Err(WavError::UnsupportedFormat { audio_format: format, bits });
+        return Err(WavError::UnsupportedFormat {
+            audio_format: format,
+            bits,
+        });
     }
     let mut out = Vec::with_capacity(data.len() / bytes_per_sample + 1);
     let mut i = 0;
     while i + bytes_per_sample <= data.len() {
         let v = match (format, bits) {
             (WAVE_FORMAT_PCM, 8) => (data[i] as f32 - 128.0) / 128.0,
-            (WAVE_FORMAT_PCM, 16) => {
-                i16::from_le_bytes([data[i], data[i + 1]]) as f32 / 32768.0
-            }
+            (WAVE_FORMAT_PCM, 16) => i16::from_le_bytes([data[i], data[i + 1]]) as f32 / 32768.0,
             (WAVE_FORMAT_PCM, 24) => {
-                let raw = (data[i] as i32)
-                    | ((data[i + 1] as i32) << 8)
-                    | ((data[i + 2] as i32) << 16);
+                let raw =
+                    (data[i] as i32) | ((data[i + 1] as i32) << 8) | ((data[i + 2] as i32) << 16);
                 ((raw << 8) >> 8) as f32 / 8388608.0 // arithmetic shift sign-extends
             }
             (WAVE_FORMAT_PCM, 32) => {
                 i32::from_le_bytes(data[i..i + 4].try_into().unwrap()) as f32 / 2147483648.0
             }
-            (WAVE_FORMAT_IEEE_FLOAT, 32) => {
-                f32::from_le_bytes(data[i..i + 4].try_into().unwrap())
-            }
+            (WAVE_FORMAT_IEEE_FLOAT, 32) => f32::from_le_bytes(data[i..i + 4].try_into().unwrap()),
             _ => {
                 return Err(WavError::UnsupportedFormat {
                     audio_format: format,
@@ -330,7 +330,10 @@ mod tests {
         let mut b = wav_bytes(&[0u8; 2], 1, 44100, 16);
         b[8..12].copy_from_slice(b"AVI ");
         assert!(matches!(parse_wav(&b), Err(WavError::NotWave)));
-        assert!(matches!(parse_wav(b"RIFF....WAVE"), Err(WavError::MissingFmt)));
+        assert!(matches!(
+            parse_wav(b"RIFF....WAVE"),
+            Err(WavError::MissingFmt)
+        ));
     }
 
     #[test]

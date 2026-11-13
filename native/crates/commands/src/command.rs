@@ -30,7 +30,14 @@ use domain::UProject;
 ///
 /// Commands are executed through an [`UndoStack`](crate::UndoStack) in
 /// normal use, but can also be driven directly.
-pub trait Command {
+/// # Thread safety
+///
+/// The trait requires `Send`: a session that owns an undo stack must be
+/// movable between threads, which the multi-threaded `synth-server` needs
+/// (`Arc<AppState>` must be `Sync`). Every command is plain domain data
+/// (`UProject` clones, indices, strings), so this is a marker, not a
+/// restriction on what a command may do.
+pub trait Command: Send {
     /// Apply the edit, validating preconditions first.
     ///
     /// On `Err` the project must be left exactly as it was.

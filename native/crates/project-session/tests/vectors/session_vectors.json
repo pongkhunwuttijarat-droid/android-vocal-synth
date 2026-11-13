@@ -581,8 +581,20 @@
       "name": "Save As forks the project id but keeps entity ids",
       "project": "demo",
       "seed": 1,
-      "skip": "no Session save-as yet; identity::fork_for_save_as is unit-tested",
-      "steps": []
+      "steps": [
+        {
+          "op": "save_as",
+          "expect": {
+            "revision": 0,
+            "project_id_changed": true,
+            "entity_ids_stable": true
+          }
+        },
+        {
+          "op": "snapshot",
+          "expect": {"revision": 0, "ids_stable": false}
+        }
+      ]
     },
     {
       "name": "a render job captures an immutable revision",

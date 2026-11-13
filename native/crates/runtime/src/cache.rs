@@ -87,7 +87,8 @@ impl<S: Storage> RenderCache<S> {
     /// Returns the underlying IO error if the disk write fails; the
     /// memory cache is left untouched in that case.
     pub fn put(&mut self, key: u64, data: Vec<f32>) -> io::Result<()> {
-        self.storage.write_bytes(&self.disk_logical(key), &encode(&data))?;
+        self.storage
+            .write_bytes(&self.disk_logical(key), &encode(&data))?;
         self.insert_memory(key, data);
         Ok(())
     }
@@ -468,6 +469,9 @@ mod tests {
     fn key_files_use_hex_res_pattern() {
         let tmp = TempDir::new("name");
         let cache = RenderCache::new_in_dir(tmp.path(), 100);
-        assert_eq!(cache.disk_path(0xabc), tmp.path().join("cache/res-0000000000000abc.bin"));
+        assert_eq!(
+            cache.disk_path(0xabc),
+            tmp.path().join("cache/res-0000000000000abc.bin")
+        );
     }
 }

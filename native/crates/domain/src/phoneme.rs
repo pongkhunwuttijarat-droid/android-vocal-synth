@@ -121,7 +121,10 @@ impl Default for UPhoneme {
 
 impl UPhoneme {
     pub fn new(phoneme: impl Into<String>) -> Self {
-        UPhoneme { phoneme: phoneme.into(), ..Default::default() }
+        UPhoneme {
+            phoneme: phoneme.into(),
+            ..Default::default()
+        }
     }
 
     /// `UPhoneme.End` — end tick within the part.
@@ -223,7 +226,7 @@ impl UPhoneme {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{UProject, UPhonemeOverride};
+    use crate::{UPhonemeOverride, UProject};
 
     #[test]
     fn envelope_defaults() {
@@ -245,12 +248,29 @@ mod tests {
             value: 123.0,
         });
         note.phoneme_overrides.push(UPhonemeOverride::default());
-        let ph = UPhoneme { index: 0, parent: Some(0), ..Default::default() };
-        assert_eq!(ph.get_expression(&note, &p, track, crate::VEL), Some((123.0, true)));
-        assert_eq!(ph.get_expression(&note, &p, track, crate::VOL), Some((100.0, false)));
+        let ph = UPhoneme {
+            index: 0,
+            parent: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(
+            ph.get_expression(&note, &p, track, crate::VEL),
+            Some((123.0, true))
+        );
+        assert_eq!(
+            ph.get_expression(&note, &p, track, crate::VOL),
+            Some((100.0, false))
+        );
         assert_eq!(ph.get_expression(&note, &p, track, "nope"), None);
         // index 1 has no expression -> falls back to the default
-        let ph1 = UPhoneme { index: 1, parent: Some(0), ..Default::default() };
-        assert_eq!(ph1.get_expression(&note, &p, track, crate::VEL), Some((100.0, false)));
+        let ph1 = UPhoneme {
+            index: 1,
+            parent: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(
+            ph1.get_expression(&note, &p, track, crate::VEL),
+            Some((100.0, false))
+        );
     }
 }

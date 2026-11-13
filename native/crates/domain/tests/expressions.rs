@@ -2,9 +2,9 @@
 //! and per-phoneme resampler flags.
 
 use domain::{
-    UExpression, UExpressionDescriptor, UExpressionType, UPhoneme, UProject, UTrack, ALT, ATK,
-    BRE, BREC, CLR, DEC, DIR, DYN, ENG, EXP_SELECTORS_DEFAULT, GEN, GENC, LPF, MOD, MODP, NORM,
-    PITD, REQUIRED, SHFC, SHFT, TENC, VEL, VOIC, VOL,
+    UExpression, UExpressionDescriptor, UExpressionType, UPhoneme, UProject, UTrack, ALT, ATK, BRE,
+    BREC, CLR, DEC, DIR, DYN, ENG, EXP_SELECTORS_DEFAULT, GEN, GENC, LPF, MOD, MODP, NORM, PITD,
+    REQUIRED, SHFC, SHFT, TENC, VEL, VOIC, VOL,
 };
 
 #[test]
@@ -19,7 +19,10 @@ fn all_default_expressions_registered() {
     // Curve expressions.
     let dyn_ = &e[DYN];
     assert_eq!(dyn_.r#type, UExpressionType::Curve);
-    assert_eq!((dyn_.min, dyn_.max, dyn_.default_value), (-240.0, 120.0, 0.0));
+    assert_eq!(
+        (dyn_.min, dyn_.max, dyn_.default_value),
+        (-240.0, 120.0, 0.0)
+    );
     let pitd = &e[PITD];
     assert_eq!(pitd.r#type, UExpressionType::Curve);
     assert_eq!((pitd.min, pitd.max), (-1200.0, 1200.0));
@@ -37,11 +40,17 @@ fn all_default_expressions_registered() {
     assert_eq!(clr.max, -1.0); // empty options -> max = len - 1 = -1 (OpenUtau)
     let eng = &e[ENG];
     assert_eq!(eng.r#type, UExpressionType::Options);
-    assert_eq!(eng.options.as_deref(), Some(&["".to_string(), "worldline".to_string()][..]));
+    assert_eq!(
+        eng.options.as_deref(),
+        Some(&["".to_string(), "worldline".to_string()][..])
+    );
     assert_eq!(eng.max, 1.0);
     let dir = &e[DIR];
     assert_eq!(dir.r#type, UExpressionType::Options);
-    assert_eq!(dir.options.as_deref(), Some(&["off".to_string(), "on".to_string()][..]));
+    assert_eq!(
+        dir.options.as_deref(),
+        Some(&["off".to_string(), "on".to_string()][..])
+    );
 
     // Numerical expressions with ranges and flags.
     let vel = &e[VEL];
@@ -70,7 +79,10 @@ fn all_default_expressions_registered() {
     assert!(!e[SHFT].is_flag);
 
     // Default selectors and primary/secondary.
-    assert_eq!(p.exp_selectors, EXP_SELECTORS_DEFAULT.map(str::to_string).to_vec());
+    assert_eq!(
+        p.exp_selectors,
+        EXP_SELECTORS_DEFAULT.map(str::to_string).to_vec()
+    );
     assert_eq!(p.exp_primary, 0);
     assert_eq!(p.exp_secondary, 1);
 }
@@ -122,10 +134,18 @@ fn descriptor_constructors_clamp_and_lowercase() {
 
 #[test]
 fn expression_value_clamping() {
-    let mut e = UExpression { index: Some(0), abbr: VEL.into(), value: 999.0 };
+    let mut e = UExpression {
+        index: Some(0),
+        abbr: VEL.into(),
+        value: 999.0,
+    };
     e.clamp_value(0.0, 200.0);
     assert_eq!(e.value, 200.0);
-    let mut c = UExpression { index: Some(0), abbr: CLR.into(), value: 999.0 };
+    let mut c = UExpression {
+        index: Some(0),
+        abbr: CLR.into(),
+        value: 999.0,
+    };
     c.clamp_value(0.0, 2.0);
     assert_eq!(c.value, 999.0); // clr is never clamped
 }
@@ -144,9 +164,21 @@ fn phoneme_resampler_flags() {
     let p = UProject::create();
     let track = &p.tracks[0];
     let mut note = p.create_note_at(60, 0, 480);
-    note.phoneme_expressions.push(UExpression { index: Some(0), abbr: GEN.into(), value: 5.0 });
-    note.phoneme_expressions.push(UExpression { index: Some(0), abbr: DIR.into(), value: 1.0 });
-    let ph = UPhoneme { index: 0, parent: Some(0), ..Default::default() };
+    note.phoneme_expressions.push(UExpression {
+        index: Some(0),
+        abbr: GEN.into(),
+        value: 5.0,
+    });
+    note.phoneme_expressions.push(UExpression {
+        index: Some(0),
+        abbr: DIR.into(),
+        value: 1.0,
+    });
+    let ph = UPhoneme {
+        index: 0,
+        parent: Some(0),
+        ..Default::default()
+    };
 
     let flags = ph.get_resampler_flags(&note, &p, track);
     assert!(flags.contains(&("g".to_string(), Some(5), "gen".to_string())));
@@ -177,7 +209,11 @@ fn options_flag_emitted_for_custom_descriptor() {
         vec!["a".into(), "b".into()],
     ));
     let track = &p.tracks[0];
-    let ph = UPhoneme { index: 0, parent: Some(0), ..Default::default() };
+    let ph = UPhoneme {
+        index: 0,
+        parent: Some(0),
+        ..Default::default()
+    };
 
     // Default value 0 -> option "a".
     let note = p.create_note_at(60, 0, 480);
@@ -185,10 +221,17 @@ fn options_flag_emitted_for_custom_descriptor() {
     assert!(flags.contains(&("a".to_string(), None, "mop".to_string())));
     // Value 1 -> option "b".
     let mut note2 = p.create_note_at(60, 0, 480);
-    note2.phoneme_expressions.push(UExpression { index: Some(0), abbr: "mop".into(), value: 1.0 });
+    note2.phoneme_expressions.push(UExpression {
+        index: Some(0),
+        abbr: "mop".into(),
+        value: 1.0,
+    });
     let flags2 = ph.get_resampler_flags(&note2, &p, track);
     assert!(flags2.contains(&("b".to_string(), None, "mop".to_string())));
-    assert!(ph.flags_as_strings(&note2, &p, track).iter().any(|s| s == "b"));
+    assert!(ph
+        .flags_as_strings(&note2, &p, track)
+        .iter()
+        .any(|s| s == "b"));
 }
 
 #[test]
@@ -199,14 +242,25 @@ fn skip_output_if_default_suppresses_flag() {
     p.register_expression(d);
     let track = &p.tracks[0];
     let note = p.create_note_at(60, 0, 480);
-    let ph = UPhoneme { index: 0, parent: Some(0), ..Default::default() };
+    let ph = UPhoneme {
+        index: 0,
+        parent: Some(0),
+        ..Default::default()
+    };
 
     // At the default value the flag is suppressed...
     let flags = ph.get_resampler_flags(&note, &p, track);
-    assert!(!flags.iter().any(|(f, _, _)| f == "T"), "flag should be suppressed at default");
+    assert!(
+        !flags.iter().any(|(f, _, _)| f == "T"),
+        "flag should be suppressed at default"
+    );
     // ...but emitted otherwise.
     let mut note2 = p.create_note_at(60, 0, 480);
-    note2.phoneme_expressions.push(UExpression { index: Some(0), abbr: "tst".into(), value: 7.0 });
+    note2.phoneme_expressions.push(UExpression {
+        index: Some(0),
+        abbr: "tst".into(),
+        value: 7.0,
+    });
     let flags2 = ph.get_resampler_flags(&note2, &p, track);
     assert!(flags2.contains(&("T".to_string(), Some(7), "tst".to_string())));
 }
@@ -224,14 +278,20 @@ fn track_expression_overrides_project() {
     // Custom track-only expression resolves too.
     p.tracks[0]
         .track_expressions
-        .push(UExpressionDescriptor::numerical("myexp", "myexp", 0.0, 10.0, 1.0, None));
+        .push(UExpressionDescriptor::numerical(
+            "myexp", "myexp", 0.0, 10.0, 1.0, None,
+        ));
     assert!(p.tracks[0].try_get_exp_descriptor(&p, "myexp").is_some());
     assert_eq!(p.tracks[0].try_get_exp_descriptor(&p, "unknown"), None);
 
     // Project-level "gen" descriptor is shadowed: no duplicate flag pair.
     let track = &p.tracks[0];
     let note = p.create_note_at(60, 0, 480);
-    let ph = UPhoneme { index: 0, parent: Some(0), ..Default::default() };
+    let ph = UPhoneme {
+        index: 0,
+        parent: Some(0),
+        ..Default::default()
+    };
     let flags = ph.get_resampler_flags(&note, &p, track);
     let gen_flags: Vec<_> = flags.iter().filter(|(f, _, _)| f == "g").collect();
     assert_eq!(gen_flags.len(), 1);
@@ -246,8 +306,16 @@ fn unknown_expression_dropped_on_load() {
     let mut part = domain::UVoicePart::new("P");
     part.track_no = 1;
     let mut note = p.create_note_at(60, 0, 480);
-    note.phoneme_expressions.push(UExpression { index: Some(0), abbr: "ghost".into(), value: 1.0 });
-    note.phoneme_expressions.push(UExpression { index: Some(0), abbr: "vel".into(), value: 90.0 });
+    note.phoneme_expressions.push(UExpression {
+        index: Some(0),
+        abbr: "ghost".into(),
+        value: 1.0,
+    });
+    note.phoneme_expressions.push(UExpression {
+        index: Some(0),
+        abbr: "vel".into(),
+        value: 90.0,
+    });
     part.notes.push(note);
     p.parts.push(domain::UPart::Voice(part));
 
@@ -255,7 +323,9 @@ fn unknown_expression_dropped_on_load() {
     let yaml = serde_yaml::to_string(&p).unwrap();
     let mut q: UProject = serde_yaml::from_str(&yaml).unwrap();
     q.after_load().unwrap();
-    let domain::UPart::Voice(vp) = &q.parts[0] else { panic!() };
+    let domain::UPart::Voice(vp) = &q.parts[0] else {
+        panic!()
+    };
     // "vel" resolves through the default expressions added on load; "ghost" does not.
     assert_eq!(vp.notes[0].phoneme_expressions.len(), 1);
     assert_eq!(vp.notes[0].phoneme_expressions[0].abbr, "vel");

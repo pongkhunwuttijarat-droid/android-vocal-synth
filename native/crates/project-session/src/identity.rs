@@ -25,18 +25,18 @@
 //! # Persistence
 //!
 //! The table is the only ID store. `ProjectDoc`/host adapters serialize it to
-//! the sidecar `<project-file-name>.lilt-ids.json` via [`table_to_json`] and
+//! the sidecar `<project-file-name>.rusted-utau-ids.json` via [`table_to_json`] and
 //! restore it with [`table_from_json`]. `.ustx` bytes are unaffected by this
 //! module — see the module tests for the byte-stability guarantee.
 
 use std::collections::HashSet;
 
-use domain::{UNote, UPart, UProject, UTrack, UVoicePart};
+use domain::{UNote, UPart, UProject, UTrack, UVoicePart, UWavePart};
 use serde::{Deserialize, Serialize};
 
 /// Sidecar schema identifier. A sidecar with an unknown schema is ignored
 /// (the caller regenerates IDs) rather than partially interpreted.
-pub const ID_SCHEMA: &str = "lilt.ids/1";
+pub const ID_SCHEMA: &str = "rusted-utau.ids/1";
 
 /// Bumped whenever a fingerprint's input fields change. Recorded in the
 /// sidecar so a future change can be distinguished from corruption.
@@ -219,6 +219,18 @@ pub fn fingerprint_part(part: &UVoicePart) -> String {
     ])
 }
 
+/// Wave-part identity follows the same stable fields as voice parts. Prefix
+/// the payload so a voice and wave part with matching name/track/position can
+/// never exchange IDs during reconciliation.
+pub fn fingerprint_wave_part(part: &UWavePart) -> String {
+    hash_fields(&[
+        "wave",
+        &part.name,
+        &part.track_no.to_string(),
+        &part.position.to_string(),
+    ])
+}
+
 /// Identity-relevant fields of a note: position, duration, tone, lyric.
 ///
 /// The `id`-free subset is intentional: an edit to any of these still matches
@@ -340,6 +352,9 @@ pub enum IdentityWarning {
     UnregisteredCurveAbbr { abbr: String },
     /// More than one curve in a part shares an `abbr`.
     DuplicateCurveAbbr { abbr: String },
+    /// A Rusted UTAU pronunciation sidecar was present but could not be safely
+    /// adopted; the USTX remains open with those choices dropped.
+    PronunciationSidecarIgnored,
     /// The project had no `tracks`; a default `Track1` was created.
     MissingTracksRepaired { created: usize },
     /// A voice part references a track index that does not exist.
@@ -357,6 +372,7 @@ impl IdentityWarning {
             IdentityWarning::RepairedCurveArrays => "repaired_curve_arrays",
             IdentityWarning::UnregisteredCurveAbbr { .. } => "unregistered_curve_abbr",
             IdentityWarning::DuplicateCurveAbbr { .. } => "duplicate_curve_abbr",
+            IdentityWarning::PronunciationSidecarIgnored => "pronunciation_sidecar_ignored",
             IdentityWarning::MissingTracksRepaired { .. } => "missing_tracks_repaired",
             IdentityWarning::PartReferencesMissingTrack { .. } => "part_references_missing_track",
         }
@@ -515,6 +531,22 @@ pub fn voice_parts_of_track(project: &UProject, track: usize) -> Vec<&UVoicePart
         .collect()
 }
 
+/// All part kinds of `track`, in the same project ordering used by USTX.
+pub fn parts_of_track(project: &UProject, track: usize) -> Vec<&UPart> {
+    project
+        .parts
+        .iter()
+        .filter(|part| part.track_no() == track as i32)
+        .collect()
+}
+
+fn fingerprint_upart(part: &UPart) -> String {
+    match part {
+        UPart::Voice(part) => fingerprint_part(part),
+        UPart::Wave(part) => fingerprint_wave_part(part),
+    }
+}
+
 /// Reconcile `project` against `previous`, minting IDs where nothing matches.
 ///
 /// `previous == None` means "no usable sidecar": everything is minted and an
@@ -542,7 +574,7 @@ pub fn reconcile(
     };
 
     let previous_tracks: &[TrackIds] = previous.map(|p| p.tracks.as_slice()).unwrap_or(&[]);
-    let track_entries: Vec<PrevEntry> = previous_tracks
+    let mut track_entries: Vec<PrevEntry> = previous_tracks
         .iter()
         .map(|t| PrevEntry {
             id: Some(t.id.clone()),
@@ -550,6 +582,7 @@ pub fn reconcile(
             abbr: None,
         })
         .collect();
+    track_entries.extend(orphan_candidates(previous, "track"));
     let track_fps: Vec<String> = project.tracks.iter().map(fingerprint_track).collect();
     let track_match = match_list(
         &track_fps,
@@ -565,13 +598,13 @@ pub fn reconcile(
     let mut orphans: Vec<OrphanIds> = Vec::new();
 
     for track_index in 0..project.tracks.len() {
-        let voice_parts: Vec<&UVoicePart> = voice_parts_of_track(project, track_index);
+        let track_parts = parts_of_track(project, track_index);
 
         let prev_parts: &[PartIds] = previous_tracks
             .get(track_index)
             .map(|t| t.parts.as_slice())
             .unwrap_or(&[]);
-        let part_entries: Vec<PrevEntry> = prev_parts
+        let mut part_entries: Vec<PrevEntry> = prev_parts
             .iter()
             .map(|p| PrevEntry {
                 id: Some(p.id.clone()),
@@ -579,7 +612,8 @@ pub fn reconcile(
                 abbr: None,
             })
             .collect();
-        let part_fps: Vec<String> = voice_parts.iter().map(|p| fingerprint_part(p)).collect();
+        part_entries.extend(orphan_candidates(previous, "part"));
+        let part_fps: Vec<String> = track_parts.iter().map(|p| fingerprint_upart(p)).collect();
         let part_match = match_list(
             &part_fps,
             &[],
@@ -590,56 +624,87 @@ pub fn reconcile(
             &duplicate,
         );
 
-        let mut parts = Vec::with_capacity(voice_parts.len());
-        for (part_index, vp) in voice_parts.iter().enumerate() {
+        let mut parts = Vec::with_capacity(track_parts.len());
+        for (part_index, part) in track_parts.iter().enumerate() {
             let prev_part = prev_parts.get(part_index);
-
-            let note_entries: Vec<PrevEntry> = prev_part
-                .map(|p| {
-                    p.notes
-                        .iter()
-                        .map(|n| PrevEntry {
-                            id: Some(n.id.clone()),
-                            fingerprint: n.fingerprint.clone(),
-                            abbr: None,
+            let (note_match, curve_match, note_fps, curve_fps, curve_abbrs) = match part {
+                UPart::Voice(vp) => {
+                    let mut note_entries: Vec<PrevEntry> = prev_part
+                        .map(|p| {
+                            p.notes
+                                .iter()
+                                .map(|n| PrevEntry {
+                                    id: Some(n.id.clone()),
+                                    fingerprint: n.fingerprint.clone(),
+                                    abbr: None,
+                                })
+                                .collect()
                         })
-                        .collect()
-                })
-                .unwrap_or_default();
-            let note_fps: Vec<String> = vp.notes.iter().map(fingerprint_note).collect();
-            let note_match = match_list(
-                &note_fps,
-                &[],
-                &note_entries,
-                gen,
-                &mut used,
-                &malformed,
-                &duplicate,
-            );
-
-            let curve_entries: Vec<PrevEntry> = prev_part
-                .map(|p| {
-                    p.curves
-                        .iter()
-                        .map(|c| PrevEntry {
-                            id: Some(c.id.clone()),
-                            fingerprint: c.fingerprint.clone(),
-                            abbr: Some(c.abbr.clone()),
+                        .unwrap_or_default();
+                    note_entries.extend(orphan_candidates(previous, "note"));
+                    let note_fps: Vec<String> = vp.notes.iter().map(fingerprint_note).collect();
+                    let note_match = match_list(
+                        &note_fps,
+                        &[],
+                        &note_entries,
+                        gen,
+                        &mut used,
+                        &malformed,
+                        &duplicate,
+                    );
+                    let mut curve_entries: Vec<PrevEntry> = prev_part
+                        .map(|p| {
+                            p.curves
+                                .iter()
+                                .map(|c| PrevEntry {
+                                    id: Some(c.id.clone()),
+                                    fingerprint: c.fingerprint.clone(),
+                                    abbr: Some(c.abbr.clone()),
+                                })
+                                .collect()
                         })
-                        .collect()
-                })
-                .unwrap_or_default();
-            let curve_fps: Vec<String> = vp.curves.iter().map(fingerprint_curve).collect();
-            let curve_abbrs: Vec<String> = vp.curves.iter().map(|c| c.abbr.clone()).collect();
-            let curve_match = match_list(
-                &curve_fps,
-                &curve_abbrs,
-                &curve_entries,
-                gen,
-                &mut used,
-                &malformed,
-                &duplicate,
-            );
+                        .unwrap_or_default();
+                    curve_entries.extend(orphan_candidates(previous, "curve"));
+                    let curve_fps: Vec<String> = vp.curves.iter().map(fingerprint_curve).collect();
+                    let curve_abbrs: Vec<String> =
+                        vp.curves.iter().map(|c| c.abbr.clone()).collect();
+                    let curve_match = match_list(
+                        &curve_fps,
+                        &curve_abbrs,
+                        &curve_entries,
+                        gen,
+                        &mut used,
+                        &malformed,
+                        &duplicate,
+                    );
+                    (note_match, curve_match, note_fps, curve_fps, curve_abbrs)
+                }
+                UPart::Wave(_) => {
+                    let note_orphans: Vec<_> = prev_part
+                        .into_iter()
+                        .flat_map(|p| p.notes.iter())
+                        .map(|n| (n.id.clone(), n.fingerprint.clone()))
+                        .collect();
+                    let curve_orphans: Vec<_> = prev_part
+                        .into_iter()
+                        .flat_map(|p| p.curves.iter())
+                        .map(|c| (c.id.clone(), c.fingerprint.clone()))
+                        .collect();
+                    (
+                        ListMatch {
+                            ids: Vec::new(),
+                            orphans: note_orphans,
+                        },
+                        ListMatch {
+                            ids: Vec::new(),
+                            orphans: curve_orphans,
+                        },
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                    )
+                }
+            };
 
             for (id, fp) in note_match.orphans.iter() {
                 orphans.push(OrphanIds {
@@ -706,6 +771,16 @@ pub fn reconcile(
         });
     }
 
+    if let Some(previous) = previous {
+        for entry in &previous.orphans {
+            if !used.contains(entry.id.as_str()) && is_valid_id_shape(entry.id.as_str()) {
+                orphans.push(entry.clone());
+            }
+        }
+    }
+    let mut seen_orphans = HashSet::new();
+    orphans.retain(|entry| seen_orphans.insert(entry.id.as_str().to_string()));
+
     if malformed.get() > 0 {
         warnings.push(IdentityWarning::MalformedIdEntry {
             count: malformed.get(),
@@ -730,6 +805,19 @@ pub fn reconcile(
         orphans,
     };
     (table, warnings)
+}
+
+fn orphan_candidates(previous: Option<&IdentityTable>, kind: &str) -> Vec<PrevEntry> {
+    previous
+        .into_iter()
+        .flat_map(|table| table.orphans.iter())
+        .filter(|entry| entry.kind == kind)
+        .map(|entry| PrevEntry {
+            id: Some(entry.id.clone()),
+            fingerprint: entry.fingerprint.clone(),
+            abbr: None,
+        })
+        .collect()
 }
 
 /// Outcome of matching one flat list of entities against previous entries.

@@ -15,7 +15,9 @@ pub mod tone;
 pub mod voicebank;
 pub mod wav;
 
-pub use config::{parse_character_txt, parse_character_yaml, CharacterTxt, Subbank, VoicebankConfigYaml};
+pub use config::{
+    parse_character_txt, parse_character_yaml, CharacterTxt, Subbank, VoicebankConfigYaml,
+};
 pub use frq::{frq_path_for_wav, parse_frq, read_frq, read_frq_for_wav, FrqData, FrqError};
 pub use oto::{detect_charset, parse_oto_ini, Oto, OtoError, OtoIni, OtoSet};
 pub use prefix_map::parse_prefix_map;

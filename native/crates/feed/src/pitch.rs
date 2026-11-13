@@ -11,7 +11,7 @@
 //! phrase and covers the whole phrase, one sample per 5 ticks
 //! (`pitchInterval = 5`, the same constant as `UCurve.INTERVAL`).
 
-use domain::{PitchPointShape, TimeAxis, UNote, UPhoneme, UCurve};
+use domain::{PitchPointShape, TimeAxis, UCurve, UNote, UPhoneme};
 
 use crate::music_math::interpolate_shape;
 
@@ -32,16 +32,7 @@ struct CubicSplineSegment {
 
 impl CubicSplineSegment {
     #[allow(clippy::too_many_arguments)] // mirrors C# SplineInterpolate.cs ctor
-    fn new(
-        x_1: f64,
-        y_1: f64,
-        x0: f64,
-        y0: f64,
-        x1: f64,
-        y1: f64,
-        x2: f64,
-        y2: f64,
-    ) -> Self {
+    fn new(x_1: f64, y_1: f64, x0: f64, y0: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> Self {
         let m0 = (y1 - y_1) * (x1 - x0) / (x1 - x_1);
         let m1 = (y2 - y0) * (x1 - x0) / (x2 - x0);
         CubicSplineSegment {
@@ -93,8 +84,11 @@ fn vibrato_evaluate(
     let n_out = vibrato.length / 100.0 * vibrato.out / 100.0;
     let n_out_pos = 1.0 - n_out;
     let t = (n_pos - n_start) / n_period + vibrato.shift / 100.0;
-    let mut y = (2.0 * std::f32::consts::PI * t).sin() * vibrato.depth
-        + (vibrato.depth / 100.0 * vibrato.drift);
+    // OpenUtau calls `Math.Sin` with a double expression (`2 * Math.PI * t`)
+    // and casts the result to float. Keep the phase calculation in f64 too;
+    // f32 argument reduction accumulates visible error for short periods.
+    let sine = (2.0_f64 * std::f64::consts::PI * t as f64).sin() as f32;
+    let mut y = sine * vibrato.depth + (vibrato.depth / 100.0 * vibrato.drift);
     if n_pos < n_start {
         y = 0.0;
     } else if n_pos < n_in_pos {
@@ -186,16 +180,20 @@ impl<'a> PitchComputer<'a> {
             let start_index = ((note.position - pitch_start) as f32 / PITCH_INTERVAL as f32)
                 .ceil()
                 .max(0.0) as usize;
-            let end_index = (((note.end() - pitch_start) / PITCH_INTERVAL) as usize).min(pitches.len());
+            let end_index =
+                (((note.end() - pitch_start) / PITCH_INTERVAL) as usize).min(pitches.len());
             // Use the tempo at note start to calculate the vibrato period.
-            let note_duration_ms = self
-                .time_axis
-                .ms_between_ticks(
-                    (self.part_position + note.position) as f64,
-                    (self.part_position + note.end()) as f64,
-                );
+            let note_duration_ms = self.time_axis.ms_between_ticks(
+                (self.part_position + note.position) as f64,
+                (self.part_position + note.end()) as f64,
+            );
             let n_period = note.vibrato.period / note_duration_ms as f32;
-            for (i, pitch) in pitches.iter_mut().enumerate().take(end_index).skip(start_index) {
+            for (i, pitch) in pitches
+                .iter_mut()
+                .enumerate()
+                .take(end_index)
+                .skip(start_index)
+            {
                 let n_pos = (pitch_start + i as i32 * PITCH_INTERVAL - note.position) as f32
                     / note.duration as f32;
                 let point = vibrato_evaluate(&note.vibrato, n_pos, n_period, note.adjusted_tone());
@@ -213,7 +211,9 @@ impl<'a> PitchComputer<'a> {
         if let Some(curve) = self.pitd {
             if !curve.is_empty() {
                 for (i, pitch) in pitches.iter_mut().enumerate() {
-                    *pitch += curve.sample(pitch_start + i as i32 * PITCH_INTERVAL).unwrap_or(0) as f32;
+                    *pitch += curve
+                        .sample(pitch_start + i as i32 * PITCH_INTERVAL)
+                        .unwrap_or(0) as f32;
                 }
             }
         }
@@ -233,7 +233,9 @@ impl<'a> PitchComputer<'a> {
             .data
             .iter()
             .map(|point| {
-                let node_pos_ms = self.time_axis.tick_to_ms((part_position + note.position) as f64);
+                let node_pos_ms = self
+                    .time_axis
+                    .tick_to_ms((part_position + note.position) as f64);
                 PhrasePitchPoint {
                     x: self.time_axis.ms_to_tick(node_pos_ms + point.x as f64) - part_position,
                     y: point.y * 10.0 + adjusted_cents,
@@ -288,16 +290,21 @@ impl<'a> PitchComputer<'a> {
             });
         }
 
-        let mut index = (((points[0].x - pitch_start) as f64) / PITCH_INTERVAL as f64).max(0.0)
-            as usize;
+        let mut index =
+            (((points[0].x - pitch_start) as f64) / PITCH_INTERVAL as f64).max(0.0) as usize;
         for i in 0..points.len().saturating_sub(1) {
             let point_1 = if i == 0 { points[i] } else { points[i - 1] };
             let point0 = points[i];
             let point1 = points[i + 1];
-            let point2 = if i >= points.len() - 2 { points[i + 1] } else { points[i + 2] };
+            let point2 = if i >= points.len() - 2 {
+                points[i + 1]
+            } else {
+                points[i + 2]
+            };
             let mut x = pitch_start + index as i32 * PITCH_INTERVAL;
 
-            let spline = note.pitch.data.len() > 2 && point0.shape == PitchPointShape::Sp
+            let spline = note.pitch.data.len() > 2
+                && point0.shape == PitchPointShape::Sp
                 && !point1.auto_completed;
             while x < point1.x && index < pitches.len() {
                 let pitch = if spline {
@@ -338,7 +345,7 @@ impl<'a> PitchComputer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::{UTempo, UTimeSignature, UVibrato, UPitch};
+    use domain::{UPitch, UTempo, UTimeSignature, UVibrato};
 
     fn axis_120bpm() -> TimeAxis {
         let mut axis = TimeAxis::default();
@@ -348,11 +355,21 @@ mod tests {
     }
 
     fn note(position: i32, duration: i32, tone: i32) -> UNote {
-        UNote { position, duration, tone, ..Default::default() }
+        UNote {
+            position,
+            duration,
+            tone,
+            ..Default::default()
+        }
     }
 
     fn phoneme(position: i32, duration: i32) -> UPhoneme {
-        UPhoneme { position, raw_position: position, duration, ..Default::default() }
+        UPhoneme {
+            position,
+            raw_position: position,
+            duration,
+            ..Default::default()
+        }
     }
 
     fn computer<'a>(
@@ -434,11 +451,77 @@ mod tests {
     }
 
     #[test]
+    fn vibrato_evaluation_matches_openutau_csharp_reference_vectors() {
+        // Captured from OpenUtau.Core.UVibrato.Evaluate in UNote.cs using an
+        // adjusted note tone of 60.17. These exercise fade-in/out, period
+        // shift, drift and the unfaded center of a full-length vibrato.
+        let cases = [
+            (
+                "swept", 65.0, 180.0, 37.5, 17.5, 22.5, 12.5, -40.0, 0.0, 0.0005, 60.17,
+            ),
+            (
+                "swept", 65.0, 180.0, 37.5, 17.5, 22.5, 12.5, -40.0, 0.5, 0.0005, 60.28506,
+            ),
+            (
+                "swept", 65.0, 180.0, 37.5, 17.5, 22.5, 12.5, -40.0, 0.8, 0.0005, 60.28506,
+            ),
+            (
+                "swept", 65.0, 180.0, 37.5, 17.5, 22.5, 12.5, -40.0, 0.98, 0.0005, 60.18572,
+            ),
+            (
+                "full", 100.0, 175.0, 25.0, 0.0, 0.0, 100.0, 0.0, 0.25, 0.0004, 60.17,
+            ),
+            (
+                "full", 100.0, 175.0, 25.0, 0.0, 0.0, 100.0, 0.0, 0.5, 0.0004, 60.17,
+            ),
+            (
+                "drift", 100.0, 250.0, 80.0, 0.0, 0.0, 50.0, 70.0, 0.4, 0.0008, 60.729843,
+            ),
+            (
+                "drift", 100.0, 250.0, 80.0, 0.0, 0.0, 50.0, 70.0, 0.7, 0.0008, 60.73,
+            ),
+        ];
+
+        for (
+            name,
+            length,
+            period,
+            depth,
+            fade_in,
+            fade_out,
+            shift,
+            drift,
+            n_pos,
+            n_period,
+            expected,
+        ) in cases
+        {
+            let mut vibrato = UVibrato::default();
+            vibrato.set_length(length);
+            vibrato.set_period(period);
+            vibrato.set_depth(depth);
+            vibrato.set_in(fade_in);
+            vibrato.set_out(fade_out);
+            vibrato.set_shift(shift);
+            vibrato.set_drift(drift);
+            let actual = vibrato_evaluate(&vibrato, n_pos, n_period, 60.17);
+            assert!(
+                (actual - expected).abs() <= 2.0e-5,
+                "{name} n_pos={n_pos}: expected OpenUtau {expected:?}, got Rust {actual:?}"
+            );
+        }
+    }
+
+    #[test]
     fn pitd_curve_shifts_pitches() {
         let axis = axis_120bpm();
         let notes = [note(0, 480, 60)];
         let phs = [phoneme(0, 480)];
-        let curve = UCurve { abbr: "pitd".into(), xs: vec![0, 480], ys: vec![0, 100] };
+        let curve = UCurve {
+            abbr: "pitd".into(),
+            xs: vec![0, 480],
+            ys: vec![0, 100],
+        };
         let pitches = PitchComputer::new(&notes, 0, &phs, 0, &axis, Some(&curve)).compute();
         assert_eq!(pitches[0], 6000.0);
         assert_eq!(pitches[96], 6100.0); // +100 cents at the end
