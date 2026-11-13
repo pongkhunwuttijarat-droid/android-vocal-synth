@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../ref(openutau+openutau mobile)/core/OpenUtau.Core/OpenUtau.Core.csproj" />
+    <ProjectReference Include="../Plugin/OfficialBuiltins/T013.OpenUtauOfficialBuiltins.Plugin.csproj" ReferenceOutputAssembly="false" />
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="9.0.2" />
+  </ItemGroup>
+
+  <Target Name="CopyOfficialBuiltinsPlugin" AfterTargets="Build">
+    <Copy SourceFiles="$(MSBuildProjectDirectory)/../Plugin/OfficialBuiltins/bin/$(Configuration)/net8.0/OpenUtau.Plugin.Builtin.dll"
+          DestinationFiles="$(TargetDir)OpenUtau.Plugin.Builtin.dll" />
+  </Target>
+</Project>

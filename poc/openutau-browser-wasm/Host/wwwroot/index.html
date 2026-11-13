@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenUtau phonemizer · browser WASM POC</title>
+    <base href="/" />
+    <link rel="stylesheet" href="css/bootstrap/bootstrap.min.css" />
+    <link rel="stylesheet" href="css/app.css" />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <link href="OpenUtauBrowserWasmHost.styles.css" rel="stylesheet" />
+</head>
+
+<body>
+    <div id="app">
+        <svg class="loading-progress">
+            <circle r="40%" cx="50%" cy="50%" />
+            <circle r="40%" cx="50%" cy="50%" />
+        </svg>
+        <div class="loading-progress-text"></div>
+    </div>
+
+    <div id="blazor-error-ui">
+        An unhandled error has occurred.
+        <a href="" class="reload">Reload</a>
+        <a class="dismiss">🗙</a>
+    </div>
+    <script>
+        window.t013Metrics = {
+            bootMs: () => performance.now(),
+            frameworkPayloadBytes: () => performance.getEntriesByType("resource")
+                .filter(entry => new URL(entry.name).origin === location.origin
+                    && new URL(entry.name).pathname.startsWith("/_framework/"))
+                .reduce((total, entry) => total + entry.encodedBodySize, 0),
+            wasmMemoryBytes: () => window.Module?.HEAPU8?.buffer?.byteLength ?? 0
+        };
+        window.t013SelectedFileName = input => input.files?.[0]?.name ?? "";
+        window.t013ReadSelectedDll = async (input, maxBytes) => {
+            const file = input.files?.[0];
+            if (!file) throw new Error("Choose a .dll file first.");
+            if (file.size > maxBytes) throw new Error(`DLL is ${file.size} bytes; limit is ${maxBytes} bytes.`);
+            return new Uint8Array(await file.arrayBuffer());
+        };
+    </script>
+    <script src="_framework/blazor.webassembly.js"></script>
+</body>
+
+</html>

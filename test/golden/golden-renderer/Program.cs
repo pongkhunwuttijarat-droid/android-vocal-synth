@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using System.Collections.Concurrent;
 using System.Threading.Tasks;
 using OpenUtau.Api;
 using OpenUtau.Classic;
@@ -21,6 +22,42 @@ namespace GoldenRenderer {
     // programmatic single note) with the Teto voicebank using OpenUtau's
     // real RenderEngine, and writes 16-bit PCM mono 44100 Hz wav.
     class Program {
+        /// TaskScheduler that runs every work item on one dedicated thread, in
+        /// submission order. Used as OpenUtau's "UI thread" so the async
+        /// phonemizer's re-Validate cannot race the harness's own Validate —
+        /// see the DocManager.Inst.Initialize comment below.
+        class SingleThreadTaskScheduler : TaskScheduler {
+            readonly BlockingCollection<Action> queue = new BlockingCollection<Action>();
+            readonly Thread thread;
+
+            public SingleThreadTaskScheduler() {
+                thread = new Thread(() => {
+                    foreach (var action in queue.GetConsumingEnumerable()) {
+                        try { action(); } catch (Exception e) {
+                            Console.Error.WriteLine("UI action error: " + e);
+                        }
+                    }
+                }) { IsBackground = true, Name = "OpenUtauUI" };
+                thread.Start();
+            }
+
+            /// Run `action` on this scheduler's thread, in submission order.
+            public void Post(Action action) {
+                queue.Add(action);
+            }
+
+            protected override IEnumerable<Task> GetScheduledTasks() => Enumerable.Empty<Task>();
+
+            protected override void QueueTask(Task task) {
+                queue.Add(() => {
+                    try { TryExecuteTask(task); } catch (Exception e) {
+                        Console.Error.WriteLine("UI task error: " + e);
+                    }
+                });
+            }
+
+            protected override bool TryExecuteTaskInline(Task task, bool taskWasPreviouslyQueued) => false;
+        }
         const string TETO_DIR_DEFAULT = "/home/seal/project/android-voice-synth/test/golden/teto-english";
         // Overridable so diagnostics can ablate voicebank files (e.g. .frq).
         static string TetoDir => Environment.GetEnvironmentVariable("TETO_DIR") ?? TETO_DIR_DEFAULT;
@@ -42,24 +79,58 @@ namespace GoldenRenderer {
             Environment.SetEnvironmentVariable("XDG_CACHE_HOME", cacheHome);
             Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
-            // Headless DocManager: notifications run on a dedicated pump
-            // thread (a real UI message loop — NOT inline, which would
-            // recurse: ExecuteCmd -> PostOnUIThread -> ExecuteCmd -> ...).
-            var uiQueue = new System.Collections.Concurrent.ConcurrentQueue<Action>();
-            var uiThread = new Thread(() => {
-                while (true) {
-                    while (uiQueue.TryDequeue(out var action)) {
-                        try { action(); } catch (Exception e) {
-                            Console.Error.WriteLine("UI action error: " + e.Message);
-                        }
-                    }
-                    Thread.Sleep(2);
-                }
-            }) { IsBackground = true, Name = "OpenUtauUI" };
-            uiThread.Start();
-            DocManager.Inst.PostOnUIThread = action => uiQueue.Enqueue(action);
-            DocManager.Inst.Initialize(Thread.CurrentThread, TaskScheduler.Current);
+            // Headless DocManager: ALL project work must land on ONE thread.
+            //
+            // OpenUtau's desktop app gets that for free — the Avalonia UI thread
+            // runs UProject.Validate, and the async phonemizer's response is
+            // posted back to that same thread (PhonemizerRunner.SendResponse
+            // schedules `Project.Validate` on the *main* scheduler handed to
+            // DocManager.Initialize). The earlier harness gave the phonemizer
+            // the main thread's scheduler while running its own ValidateFull on a
+            // separate pump thread, so on a multi-track project two threads were
+            // inside UPart.Validate at once, both rebuilding `phonemes`, and it
+            // died with "Collection was modified; enumeration operation may not
+            // execute." (UPart.cs:277). Single-track runs never overlapped, so
+            // the bug stayed hidden.
+            //
+            // A single-concurrency scheduler is the fix: PostOnUIThread and the
+            // phonemizer's main scheduler are both that scheduler, so every
+            // Validate/notification is serialized no matter who posts it.
+            var uiScheduler = new SingleThreadTaskScheduler();
+            DocManager.Inst.PostOnUIThread = action =>
+                uiScheduler.Post(action);
+            DocManager.Inst.Initialize(Thread.CurrentThread, uiScheduler);
             ToolsManager.Inst.Initialize();
+
+            // Run `action` on the UI pump thread and wait for it.
+            //
+            // ValidateFull has to happen there, not on the main thread: the
+            // phonemizer is async and applies its response by posting to the UI
+            // thread, and UPart.Validate enumerates `phonemes` while walking
+            // notes. Once more than one track phonemizes at the same time, doing
+            // that from two threads crashes with
+            // "Collection was modified; enumeration operation may not execute."
+            // (UPart.cs:277) — which is why the earlier single-track runs never
+            // hit it. The desktop app gets this for free because Validate and the
+            // posted responses share the one UI thread.
+            System.Action<System.Action> runOnUi = body => {
+                var done = new ManualResetEventSlim(false);
+                Exception failure = null;
+                uiScheduler.Post(() => {
+                    try { body(); } catch (Exception e) { failure = e; } finally { done.Set(); }
+                });
+                if (!done.Wait(300000)) {
+                    throw new TimeoutException("UI-thread action timed out after 300s");
+                }
+                // Rethrow through ExceptionDispatchInfo so the original stack
+                // (which thread, which UPart.Validate frame) survives — a plain
+                // `throw failure` resets it to the rethrow site and hides the
+                // race we are trying to diagnose.
+                if (failure != null) {
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                        .Capture(failure).Throw();
+                }
+            };
 
             // --- Load the Teto voicebank -----------------------------------
             // DIFFSINGER_SINGER=<dir> switches to the C# DiffSinger
@@ -132,9 +203,24 @@ namespace GoldenRenderer {
                 return 2;
             }
 
-            // Set the singer and let the whole project re-validate (this sets
-            // the default renderer = WORLDLINE-R for classic singers and
-            // triggers phonemization).
+            // Set the singer on EVERY track that declares one, and let the whole
+            // project re-validate (this sets the default renderer =
+            // WORLDLINE-R for classic singers and triggers phonemization).
+            //
+            // Only track 0 used to be set. On a multi-track project the other
+            // tracks resolve their Singer by NAME through SingerManager, and
+            // the harness registers the bank under the name the loader reported
+            // (which carries the `（かさねてと）` infix this project's
+            // `singer:` field does not have). Those tracks therefore ended up
+            // with SingerManager.CreateMissing → `Found == false`, so
+            // UPhoneme.ValidateOto marked EVERY phoneme
+            // Error = "Singer is not loaded." and RenderPhrase.FromPart —
+            // which filters on `!phoneme.Error` — returned zero phrases. Their
+            // per-track export was then a 0-frame WAV.
+            foreach (var track in project.tracks) {
+                if (string.IsNullOrEmpty(track.singer)) continue;
+                track.Singer = singer;
+            }
             project.tracks[0].Singer = singer;
             if (diffSingerMode) {
                 // The track's phonemizer must match the bank: the singer's
@@ -179,7 +265,7 @@ namespace GoldenRenderer {
                 Console.WriteLine($"  renderer override -> {rendererName} (WORLDLINE_RENDERER)");
             }
 
-            project.ValidateFull();
+            runOnUi(() => project.ValidateFull());
 
             // --- Wait for the async phonemizer ------------------------------
             var part0 = project.parts.OfType<UVoicePart>().FirstOrDefault();
@@ -192,25 +278,46 @@ namespace GoldenRenderer {
                 Console.WriteLine($"  part notes: {part0.notes.Count}, first lyric: {part0.notes.First().lyric}");
             }
             int waitedMs = 0;
-            while (!part0.PhonemesUpToDate && waitedMs < 30000) {
-                Thread.Sleep(100);
-                waitedMs += 100;
+            // Wait for EVERY voice part, not just the first one. The
+            // phonemizer is async and per-part: with a multi-track project
+            // only part0 being up to date left tracks 1..3 with zero render
+            // phrases, so both the mixdown and every per-track export came
+            // out containing track 0 alone (the per-track WAVs were even
+            // 0 frames long). Wait for the slowest part, then report each.
+            while (waitedMs < 60000) {
+                var pending = project.parts.OfType<UVoicePart>()
+                    .Where(p => !p.PhonemesUpToDate).ToList();
+                if (pending.Count == 0) break;
+                Thread.Sleep(200);
+                waitedMs += 200;
             }
-            if (!part0.PhonemesUpToDate) {
-                Console.Error.WriteLine("ERROR: phonemizer did not finish in 30s");
+            foreach (var vp in project.parts.OfType<UVoicePart>()) {
+                Console.WriteLine($"  part '{vp.name}' track={vp.trackNo}: notes={vp.notes.Count} " +
+                    $"phonemes={(vp.phonemes?.Count ?? -1)} upToDate={vp.PhonemesUpToDate} " +
+                    $"renderPhrases={vp.renderPhrases?.Count ?? -1}");
+            }
+            var stale = project.parts.OfType<UVoicePart>().Where(p => !p.PhonemesUpToDate).ToList();
+            if (stale.Count > 0) {
+                Console.Error.WriteLine("ERROR: phonemizer did not finish in 60s for: " +
+                    string.Join(", ", stale.Select(p => $"'{p.name}'(track {p.trackNo})")));
                 return 2;
             }
-            // The render phrases are built during Validate — but every
-            // ValidateFull re-triggers the async phonemizer, so the build
-            // keeps racing it. Build the phrases DIRECTLY now that the
-            // phonemes are up to date (no-op for Teto — its phrases were
-            // already built).
-            if (diffSingerMode && part0.renderPhrases.Count == 0) {
+            // The render phrases are built during Validate, but ONLY IF the
+            // phonemes are already up to date at that moment
+            // (UPart.cs: `if (PhonemesUpToDate) renderPhrases.AddRange(...)`).
+            // The phonemizer is async per part, so on a multi-track project the
+            // later parts finish after Validate and are left with zero phrases —
+            // their per-track export then came out 0 frames long. Now that every
+            // part is up to date, rebuild the phrases for every part that has
+            // none. This is the same call Validate makes, not a reimplementation.
+            foreach (var vp in project.parts.OfType<UVoicePart>()) {
+                if (vp.renderPhrases.Count > 0) continue;
                 try {
-                    part0.renderPhrases.Clear();
-                    part0.renderPhrases.AddRange(RenderPhrase.FromPart(project, project.tracks[0], part0));
+                    vp.renderPhrases.AddRange(
+                        RenderPhrase.FromPart(project, project.tracks[vp.trackNo], vp));
+                    Console.WriteLine($"  rebuilt phrases for '{vp.name}' (track {vp.trackNo}): {vp.renderPhrases.Count}");
                 } catch (Exception re) {
-                    Console.WriteLine($"  FromPart threw: {re.Message}");
+                    Console.WriteLine($"  FromPart threw for '{vp.name}': {re.Message}");
                     Console.WriteLine($"  FromPart stack: {re.StackTrace}");
                 }
             }
@@ -279,6 +386,73 @@ namespace GoldenRenderer {
             var cts = new CancellationTokenSource();
             Console.WriteLine("Rendering...");
             var (mix, _) = engine.RenderMixdown(TaskScheduler.Current, ref cts, wait: true, applyMixFx: false);
+
+            // --- Per-track export (OpenUtau's File > Export wav) -------------
+            // `mix` above is the whole-project sum, so it cannot be compared
+            // against a single-track render: every note of every other track is
+            // mixed into it. `RenderTracks` is what PlaybackManager.RenderToFiles
+            // uses for the desktop per-track export, and it keeps one WaveMix per
+            // track — that is the apples-to-apples reference for our engine's
+            // `render --track N`. Written to <out>.trackNN.wav next to the
+            // mixdown so one run produces both.
+            var trackMixes = engine.RenderTracks(TaskScheduler.Current, ref cts);
+            string outDir = Path.GetDirectoryName(Path.GetFullPath(args[1]));
+            string outStem = Path.GetFileNameWithoutExtension(args[1]);
+            for (int i = 0; i < trackMixes.Count; i++) {
+                if (trackMixes[i] == null) {
+                    Console.WriteLine($"  track {i}: no render request — skipped");
+                    continue;
+                }
+                string trackPath = Path.Combine(outDir, $"{outStem}.track{i:D2}.wav");
+                using (var tfs = File.Create(trackPath))
+                using (var tw = new BinaryWriter(tfs)) {
+                    tw.Write(Encoding.ASCII.GetBytes("RIFF"));
+                    tw.Write(0);
+                    tw.Write(Encoding.ASCII.GetBytes("WAVE"));
+                    tw.Write(Encoding.ASCII.GetBytes("fmt "));
+                    tw.Write(16);
+                    tw.Write((short)1);
+                    tw.Write((short)1);          // MONO
+                    tw.Write(44100);
+                    tw.Write(44100 * 2);
+                    tw.Write((short)2);
+                    tw.Write((short)16);
+                    tw.Write(Encoding.ASCII.GetBytes("data"));
+                    tw.Write(0);
+                    var tb = new float[4096];
+                    double tpeak = 0;
+                    int tpos = 0;
+                    int tFrames = 0;
+                    while (true) {
+                        // Same reason as the stereo loop below: WaveMix.Mix does
+                        // not clear the buffer and WaveSource.Mix accumulates.
+                        Array.Clear(tb, 0, tb.Length);
+                        int next = trackMixes[i].Mix(tpos, tb, 0, tb.Length);
+                        if (next <= tpos) break;
+                        // ISignalSource.Mix speaks in stereo-interleaved FLOAT
+                        // units (2 per frame). PlaybackManager.RenderToFiles
+                        // exports via `new ExportAdapter(mix).ToMono(1, 0)`, i.e.
+                        // NAudio's stereo->mono fold-down. Writing raw floats into
+                        // a mono header doubles the length and the pitch comes out
+                        // an octave low, so fold to mono here the same way.
+                        int floats = next - tpos;
+                        int frames = floats / 2;
+                        for (int k = 0; k < frames; k++) {
+                            float mono = 0.5f * (tb[2 * k] + tb[2 * k + 1]);
+                            tpeak = Math.Max(tpeak, Math.Abs(mono));
+                            tw.Write((short)Math.Max(-32768, Math.Min(32767, mono * 32767)));
+                        }
+                        tFrames += frames;
+                        tpos = next;
+                    }
+                    long tend = tfs.Position;
+                    tfs.Seek(4, SeekOrigin.Begin);
+                    tw.Write((int)(tend - 8));
+                    tfs.Seek(40, SeekOrigin.Begin);
+                    tw.Write((int)(tend - 44));
+                    Console.WriteLine($"  track {i}: {trackPath} ({tFrames} frames, {tFrames * 1000.0 / 44100:F1} ms, peak {tpeak:F4})");
+                }
+            }
 
             // --- Write 16-bit PCM STEREO 44100 --------------------------------
             // OpenUtau's internal mix is stereo interleaved (WaveSource

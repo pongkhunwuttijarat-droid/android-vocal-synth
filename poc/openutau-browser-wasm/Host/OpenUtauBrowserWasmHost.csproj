@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- The fixture-catalog JSON deserialize needs the full
+         NullabilityInfoContext, which the default WASM trim strips. -->
+    <NullabilityInfoContext_Supported>true</NullabilityInfoContext_Supported>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Plugin\T013.OpenUtauProbe.Plugin.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Plugin\JapaneseVcv\T013.OpenUtauJapaneseVcv.Plugin.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Plugin\OfficialBuiltins\T013.OpenUtauOfficialBuiltins.Plugin.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\..\ref(openutau+openutau mobile)\core\OpenUtau.Core\OpenUtau.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="8.0.31" />
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="8.0.31" PrivateAssets="all" />
+  </ItemGroup>
+
+  <Target Name="CopyT013ProbePlugin" AfterTargets="Build">
+    <MakeDir Directories="$(MSBuildProjectDirectory)\wwwroot\plugins" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\Plugin\bin\$(Configuration)\net8.0\T013.OpenUtauProbe.Plugin.dll"
+          DestinationFiles="$(MSBuildProjectDirectory)\wwwroot\plugins\T013.OpenUtauProbe.Plugin.dll" />
+  </Target>
+
+  <Target Name="PublishT013ProbePlugin" AfterTargets="Publish">
+    <MakeDir Directories="$(PublishDir)wwwroot\plugins" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\Plugin\bin\$(Configuration)\net8.0\T013.OpenUtauProbe.Plugin.dll"
+          DestinationFiles="$(PublishDir)wwwroot\plugins\T013.OpenUtauProbe.Plugin.dll" />
+  </Target>
+
+  <Target Name="CopyT013JapaneseVcvPlugin" AfterTargets="Build">
+    <MakeDir Directories="$(MSBuildProjectDirectory)\wwwroot\plugins" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\Plugin\JapaneseVcv\bin\$(Configuration)\net8.0\T013.OpenUtauJapaneseVcv.Plugin.dll"
+          DestinationFiles="$(MSBuildProjectDirectory)\wwwroot\plugins\T013.OpenUtauJapaneseVcv.Plugin.dll" />
+  </Target>
+
+  <Target Name="PublishT013JapaneseVcvPlugin" AfterTargets="Publish">
+    <MakeDir Directories="$(PublishDir)wwwroot\plugins" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\Plugin\JapaneseVcv\bin\$(Configuration)\net8.0\T013.OpenUtauJapaneseVcv.Plugin.dll"
+          DestinationFiles="$(PublishDir)wwwroot\plugins\T013.OpenUtauJapaneseVcv.Plugin.dll" />
+  </Target>
+
+  <Target Name="CopyT013OfficialBuiltinPlugin" AfterTargets="Build">
+    <MakeDir Directories="$(MSBuildProjectDirectory)\wwwroot\plugins" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\Plugin\OfficialBuiltins\bin\$(Configuration)\net8.0\OpenUtau.Plugin.Builtin.dll"
+          DestinationFiles="$(MSBuildProjectDirectory)\wwwroot\plugins\OpenUtau.Plugin.Builtin.dll" />
+  </Target>
+
+  <Target Name="PublishT013OfficialBuiltinPlugin" AfterTargets="Publish">
+    <MakeDir Directories="$(PublishDir)wwwroot\plugins" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\Plugin\OfficialBuiltins\bin\$(Configuration)\net8.0\OpenUtau.Plugin.Builtin.dll"
+          DestinationFiles="$(PublishDir)wwwroot\plugins\OpenUtau.Plugin.Builtin.dll" />
+  </Target>
+</Project>

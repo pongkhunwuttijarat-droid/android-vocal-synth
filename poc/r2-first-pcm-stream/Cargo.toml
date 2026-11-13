@@ -1,0 +1,13 @@
+[package]
+name = "r2-first-pcm-feature-poc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+synth-cli = { path = "../../native/tools/synth-cli", default-features = false, features = ["ffi"] }
+worldline-plugin = { path = "../../native/crates/worldline-plugin", default-features = false, features = ["ffi", "r2"] }
+worldline-sys = { path = "../../native/crates/worldline-sys" }
+voicebank = { path = "../../native/crates/voicebank" }
+domain = { path = "../../native/crates/domain" }
+feed = { path = "../../native/crates/feed" }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["api-17", "std", "ndarray", "load-dynamic"] }

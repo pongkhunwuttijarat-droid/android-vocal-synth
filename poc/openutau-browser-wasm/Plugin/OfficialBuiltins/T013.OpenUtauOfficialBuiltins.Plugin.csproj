@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>OpenUtau.Plugin.Builtin</AssemblyName>
+    <RootNamespace>OpenUtau.Plugin.Builtin</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <DebugType>embedded</DebugType>
+    <DefineConstants>$(DefineConstants);DEBUG</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../../../ref(openutau+openutau mobile)/desktop-ref/OpenUtau.Plugin.Builtin/**/*.cs"
+             Exclude="../../../../ref(openutau+openutau mobile)/desktop-ref/OpenUtau.Plugin.Builtin/bin/**;../../../../ref(openutau+openutau mobile)/desktop-ref/OpenUtau.Plugin.Builtin/obj/**" />
+    <EmbeddedResource Include="../../../../ref(openutau+openutau mobile)/desktop-ref/OpenUtau.Plugin.Builtin/Data/Resources.resx">
+      <LogicalName>OpenUtau.Plugin.Builtin.Data.Resources.resources</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../../../ref(openutau+openutau mobile)/core/OpenUtau.Core/OpenUtau.Core.csproj" />
+    <PackageReference Include="System.Text.Json" Version="9.0.2" />
+  </ItemGroup>
+</Project>

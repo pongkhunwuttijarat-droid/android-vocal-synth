@@ -1,0 +1,558 @@
+@page "/"
+@using System.Diagnostics
+@using System.Reflection
+@using OpenUtau.Classic
+@using OpenUtau.Api
+@using OpenUtau.Core
+@using OpenUtau.Core.Ustx
+@inject HttpClient Http
+@inject IJSRuntime JS
+@inject NavigationManager Navigation
+
+<PageTitle>OpenUtau phonemizer · browser WASM POC</PageTitle>
+
+<main class="shell">
+    <header class="hero">
+        <div class="eyebrow">T013 · RUNTIME PROBE</div>
+        <h1>OpenUtau phonemizer in the browser</h1>
+        <p>Load a managed DLL into .NET Browser WASM, discover an OpenUtau phonemizer, and invoke <code>Process()</code>.</p>
+    </header>
+
+    <section class="card">
+        <div class="section-heading">
+            <div>
+                <div class="eyebrow">1 · PLUGIN</div>
+                <h2>Load an OpenUtau DLL</h2>
+            </div>
+            <span class="badge">OpenUtau.Core @_openUtauVersion</span>
+        </div>
+
+        <div class="actions">
+            <button class="primary" @onclick="LoadSampleAndRun" disabled="@_busy">Load bundled probe and run</button>
+            <button @onclick="LoadJapaneseVcvAndRun" disabled="@_busy">Load OpenUtau Japanese VCV and run</button>
+            <button @onclick="CompareClassicFixtures" disabled="@_busy">Compare real Classic fixtures</button>
+            <button @onclick="() => LoadAndRunOfficialMatrix()" disabled="@_busy">Try every official phonemizer (73)</button>
+            <button @onclick="() => LoadAndRunOfficialMatrix(randomLyrics: true, useFixtureSingers: true)" disabled="@_busy">Random lyrics + real singers (73)</button>
+            <label class="file-button">
+                <input @ref="_fileInput" type="file" accept=".dll" disabled="@_busy" />
+                Choose a DLL…
+            </label>
+            <button @onclick="ImportPlugin" disabled="@_busy">Load selected DLL</button>
+        </div>
+        <p class="hint">The probe, Japanese VCV phonemizer, and official built-in phonemizer pack are separate .NET 8 DLLs compiled from the checked-in OpenUtau sources. Choose another local managed plugin DLL to try it.</p>
+
+        @if (_pluginName is not null)
+        {
+            <div class="plugin-summary">
+                <span class="status-dot"></span>
+                <div>
+                    <strong>@_pluginName</strong>
+                    <div class="hint">@_fileName · @_pluginBytes.ToString("N0") bytes · @_pluginType</div>
+                </div>
+            </div>
+        }
+
+        @if (_error is not null)
+        {
+            <pre class="error" role="alert">@_error</pre>
+        }
+    </section>
+
+    @if (_officialCases.Count > 0)
+    {
+        <section class="card matrix-card">
+            <div class="section-heading">
+                <div>
+                    <div class="eyebrow">OFFICIAL SOURCE MATRIX</div>
+                    <h2>@_officialCases.Count official phonemizers tried in Browser WASM</h2>
+                </div>
+                <span class="badge">@_officialOutputCount returned phones · @(_officialCases.Count - _officialOutputCount) blocked</span>
+            </div>
+            <p class="hint">Each case constructs the official class, exercises singer changes, supplies a one-note project plus the explicit hint <code>a</code>, then calls <code>SetUp()</code> and <code>Process()</code>. No real voicebank or engine is used; results that need a specific singer package, dictionary, server, or model are reported with the missing context.</p>
+            <div class="matrix-scroll">
+                <table class="matrix">
+                    <thead><tr><th>Result</th><th>Type / tag</th><th>Package</th><th>Output / reason</th></tr></thead>
+                    <tbody>
+                        @foreach (var testCase in _officialCases)
+                        {
+                            <tr>
+                                <td><span class="matrix-status @(testCase.Status == "PASS" ? "pass" : testCase.Status == "PARTIAL" ? "partial" : "fail")">@testCase.Status</span></td>
+                                <td><strong>@testCase.Name</strong><code>@testCase.Tag · @testCase.TypeName</code></td>
+                                <td>@testCase.Package</td>
+                                <td><code>@(string.IsNullOrEmpty(testCase.Output) ? "—" : testCase.Output)</code>@if (!string.IsNullOrWhiteSpace(testCase.Detail)) { <small>@testCase.Detail</small> }</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    }
+
+    @if (_fixtureCases.Count > 0)
+    {
+        <section class="card matrix-card">
+            <div class="section-heading">
+                <div>
+                    <div class="eyebrow">REAL CLASSIC FIXTURES</div>
+                    <h2>@_fixtureCases.Count OpenUtau cases run in Browser WASM</h2>
+                </div>
+                <span class="badge">@_fixtureCases.Count(testCase => testCase.MatchesExpected)/@_fixtureCases.Count match</span>
+            </div>
+            <p class="hint">The plugins receive the actual aliases and tone/color subbanks from OpenUtau's checked-in <code>ja_vcv</code> and <code>en_vccv</code> test banks. The files contain phonemizer fixtures, not WAV samples; this compares phone output only.</p>
+            <div class="matrix-scroll">
+                <table class="matrix">
+                    <thead><tr><th>Result</th><th>Bank / case</th><th>OpenUtau test output</th><th>Browser WASM output</th></tr></thead>
+                    <tbody>
+                        @foreach (var testCase in _fixtureCases)
+                        {
+                            <tr>
+                                <td><span class="matrix-status @(testCase.MatchesExpected ? "pass" : "fail")">@(testCase.Error is null ? (testCase.MatchesExpected ? "MATCH" : "DIFF") : "ERROR")</span></td>
+                                <td><strong>@testCase.Bank</strong><code>@testCase.Name</code>@if (testCase.Error is not null) { <small>@testCase.Error</small> }</td>
+                                <td><code>@string.Join(" · ", testCase.Expected)</code></td>
+                                <td><code>@(testCase.Actual.Length == 0 ? "—" : string.Join(" · ", testCase.Actual))</code></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    }
+
+    @if (_genericCases.Count > 0)
+    {
+        <section class="card matrix-card">
+            <div class="section-heading">
+                <div>
+                    <div class="eyebrow">GENERIC PLUGIN DLL</div>
+                    <h2>@_genericCases.Count phonemizer type(s) from the loaded DLL</h2>
+                </div>
+                <span class="badge">@(_genericSingerName is null ? "no singer attached" : $"singer: {_genericSingerName}")</span>
+            </div>
+            <p class="hint">Loaded from bytes, types discovered by reflection, lyric processed with the fixture singer when one is attached. This is the same path a real plugin import would take in Browser WASM.</p>
+            <div class="matrix-scroll">
+                <table class="matrix">
+                    <thead><tr><th>Result</th><th>Type / tag</th><th>Output / reason</th></tr></thead>
+                    <tbody>
+                        @foreach (var row in _genericCases)
+                        {
+                            <tr>
+                                <td><span class="matrix-status @(row.Status == "PASS" ? "pass" : "fail")">@row.Status</span></td>
+                                <td><strong>@(row.Name ?? row.Type)</strong><code>@(row.Tag is null ? row.Type : $"{row.Tag} · {row.Type}")</code></td>
+                                <td><code>@row.Output</code>@if (row.Detail is not null) { <small>@row.Detail</small> }</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    }
+
+    <section class="card">
+        <div class="eyebrow">2 · PHONEMIZE</div>
+        <h2>Call the plugin</h2>
+        <div class="input-row">
+            <label for="lyric">Lyric input</label>
+            <input id="lyric" @bind="_lyric" @bind:event="oninput" />
+            @if (_isJapaneseVcvPlugin)
+            {
+                <button @onclick="() => RunLoadedPlugin(false)" disabled="@(_busy || _phonemizer is null)">First note</button>
+                <button @onclick="() => RunLoadedPlugin(true)" disabled="@(_busy || _phonemizer is null)">After か</button>
+            }
+            else
+            {
+                <button @onclick="() => RunLoadedPlugin(false)" disabled="@(_busy || _phonemizer is null)">Run Process()</button>
+            }
+        </div>
+
+        @if (_isJapaneseVcvPlugin)
+        {
+            <p class="hint">Runs the checked-in Japanese VCV implementation with an in-memory singer alias map: “- な” for a starting note and “a な” after “か”.</p>
+        }
+
+        @if (_result is not null)
+        {
+            <div class="result" role="status">
+                <div class="phoneme">@_result.Phonemes</div>
+                <div class="metrics">
+                    <span>load: @_result.LoadMs.ToString("F1") ms</span>
+                    <span>Process(): @_result.ProcessMs.ToString("F1") ms</span>
+                    <span>managed GC heap: @_result.ManagedHeapBytes.ToString("N0") B</span>
+                    <span>per-call heap Δ: @_result.AllocationDelta.ToString("N0") B</span>
+                </div>
+            </div>
+        }
+        @if (_busy)
+        {
+            <div class="hint">Loading / calling plugin…</div>
+        }
+    </section>
+
+    <section class="facts">
+        <div><span>Browser app ready</span><strong>@(_readyMs is null ? "measuring…" : $"{_readyMs:F0} ms")</strong></div>
+        <div><span>.NET framework payload (encoded)</span><strong>@(_frameworkPayloadBytes is null ? "measuring…" : FormatBytes(_frameworkPayloadBytes.Value))</strong></div>
+        <div><span>WASM memory buffer</span><strong>@(_wasmMemoryBytes is null ? "measuring…" : FormatBytes(_wasmMemoryBytes.Value))</strong></div>
+        <div><span>.NET / API</span><strong>8.0 Browser WASM / OpenUtau.Core @_openUtauVersion</strong></div>
+        <div><span>Plugin execution</span><strong>In-browser · no server request</strong></div>
+    </section>
+
+    <footer>POC boundary: the Japanese VCV scenario uses an in-memory Oto alias map, not a loaded voicebank. Real plugins may need additional project context, dictionaries, assemblies, or native APIs.</footer>
+</main>
+
+@code {
+    private const long MaxPluginBytes = 20 * 1024 * 1024;
+    private const string SamplePath = "plugins/T013.OpenUtauProbe.Plugin.dll";
+    private const string JapaneseVcvSamplePath = "plugins/T013.OpenUtauJapaneseVcv.Plugin.dll";
+    private const string OfficialBuiltinPath = "plugins/OpenUtau.Plugin.Builtin.dll";
+    private const string ClassicFixtureDataPath = "data/classic-fixtures.json";
+
+    private string _lyric = "ka";
+    private ElementReference _fileInput;
+    private string? _fileName;
+    private string? _pluginName;
+    private string? _pluginType;
+    private string? _error;
+    private double? _readyMs;
+    private long? _frameworkPayloadBytes;
+    private long? _wasmMemoryBytes;
+    private int _pluginBytes;
+    private double _loadMs;
+    private bool _busy;
+    private bool _isJapaneseVcvPlugin;
+    private string _openUtauVersion = typeof(Phonemizer).Assembly.GetName().Version?.ToString() ?? "unknown";
+    private Phonemizer? _phonemizer;
+    private RunResult? _result;
+    private IReadOnlyList<OfficialPhonemizerCase> _officialCases = [];
+    private int _officialOutputCount;
+    private IReadOnlyList<ClassicFixtureResult> _fixtureCases = [];
+    private List<GenericPluginCase> _genericCases = [];
+    private string? _genericSingerName;
+
+    private sealed record GenericPluginCase(string Type, string? Name, string? Tag, string Status, string Output, string? Detail);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender) {
+        if (firstRender) {
+            _readyMs = await JS.InvokeAsync<double>("t013Metrics.bootMs");
+            _frameworkPayloadBytes = await JS.InvokeAsync<long>("t013Metrics.frameworkPayloadBytes");
+            _wasmMemoryBytes = await JS.InvokeAsync<long>("t013Metrics.wasmMemoryBytes");
+            StateHasChanged();
+            var query = new Uri(Navigation.Uri).Query;
+            if (query.Contains("autojapanesevcv=1", StringComparison.Ordinal)) {
+                await LoadJapaneseVcvAndRun();
+            } else if (query.Contains("autoclassic=1", StringComparison.Ordinal)) {
+                await CompareClassicFixtures();
+            } else if (query.Contains("autofull=1", StringComparison.Ordinal)) {
+                await LoadAndRunOfficialMatrix(randomLyrics: true, useFixtureSingers: true);
+            } else if (query.Contains("autoofficial=1", StringComparison.Ordinal)) {
+                await LoadAndRunOfficialMatrix();
+            } else if (query.Contains("autodll=1", StringComparison.Ordinal)) {
+                var parameters = System.Web.HttpUtility.ParseQueryString(new Uri(Navigation.Uri).Query);
+                var dllPath = parameters["dll"];
+                var lyric = parameters["lyric"];
+                var singer = parameters["singer"];
+                if (!string.IsNullOrWhiteSpace(dllPath)) {
+                    await LoadAndRunGenericDll(
+                        dllPath, string.IsNullOrWhiteSpace(lyric) ? "hello" : lyric,
+                        string.IsNullOrWhiteSpace(singer) ? null : singer);
+                } else {
+                    _error = "autodll=1 requires &dll=plugins/<file.dll>";
+                }
+            } else if (query.Contains("autoprobe=1", StringComparison.Ordinal)) {
+                await LoadSampleAndRun();
+            }
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadSampleAndRun() {
+        _busy = true;
+        _error = null;
+        try {
+            var bytes = await Http.GetByteArrayAsync(SamplePath);
+            LoadPlugin(bytes, "T013.OpenUtauProbe.Plugin.dll");
+            await RunLoadedPlugin(false);
+        } catch (Exception ex) {
+            _error = FormatError(ex);
+        } finally {
+            _busy = false;
+        }
+    }
+
+    private async Task LoadJapaneseVcvAndRun() {
+        _busy = true;
+        _error = null;
+        _lyric = "な";
+        try {
+            var bytes = await Http.GetByteArrayAsync(JapaneseVcvSamplePath);
+            LoadPlugin(bytes, "T013.OpenUtauJapaneseVcv.Plugin.dll", isJapaneseVcvPlugin: true);
+            await RunLoadedPlugin(false);
+            var firstNote = _result?.Phonemes ?? "(no result)";
+            if (_error is null) {
+                await RunLoadedPlugin(true);
+                if (_result is not null) {
+                    _result = _result with { Phonemes = $"first note: {firstNote}  |  after か: {_result.Phonemes}" };
+                }
+            }
+        } catch (Exception ex) {
+            _error = FormatError(ex);
+        } finally {
+            _busy = false;
+        }
+    }
+
+    private async Task LoadAndRunOfficialMatrix(bool randomLyrics = false, bool useFixtureSingers = false) {
+        _busy = true;
+        _error = null;
+        _officialCases = [];
+        try {
+            var bytes = await Http.GetByteArrayAsync(OfficialBuiltinPath);
+            var started = Stopwatch.GetTimestamp();
+            var catalog = useFixtureSingers ? await LoadFixtureCatalog() : null;
+            _officialCases = OfficialPhonemizerMatrixRunner.Run(bytes, catalog, randomLyrics);
+            _loadMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            _pluginName = randomLyrics
+                ? "OpenUtau official built-in phonemizers (random per-language lyrics + fixture singers)"
+                : "OpenUtau official built-in phonemizers";
+            _pluginType = "OpenUtau.Plugin.Builtin + OpenUtau.Core";
+            _fileName = "OpenUtau.Plugin.Builtin.dll";
+            _pluginBytes = bytes.Length;
+            _officialOutputCount = _officialCases.Count(testCase => testCase.Status is "PASS" or "PARTIAL");
+            _wasmMemoryBytes = await JS.InvokeAsync<long>("t013Metrics.wasmMemoryBytes");
+        } catch (Exception ex) {
+            _error = FormatError(ex);
+        } finally {
+            _busy = false;
+        }
+    }
+
+    private Task<ClassicFixtureCatalog?> LoadFixtureCatalog() {
+        // Baked-in catalog (FixtureCatalogData.cs): no JSON deserialization, so
+        // WASM trimming cannot break it via NullabilityInfoContext stripping.
+        return Task.FromResult<ClassicFixtureCatalog?>(FixtureCatalogData.Build());
+    }
+
+    /// <summary>Generic plugin path: fetch ANY managed plugin DLL served under
+    /// plugins/, load from bytes, discover every Phonemizer type, optionally
+    /// attach a fixture singer, and Process() one lyric per type.</summary>
+    private async Task LoadAndRunGenericDll(string dllUrl, string lyric, string? singerBank) {
+        _busy = true;
+        _error = null;
+        _genericCases = [];
+        _result = null;
+        _phonemizer = null;
+        try {
+            if (!dllUrl.StartsWith("plugins/", StringComparison.Ordinal)) {
+                throw new InvalidOperationException("dll path must start with plugins/");
+            }
+            var bytes = await Http.GetByteArrayAsync(dllUrl);
+            var started = Stopwatch.GetTimestamp();
+            var catalog = singerBank is null ? null : await LoadFixtureCatalog();
+            var bank = catalog?.Banks.FirstOrDefault(fixture =>
+                string.Equals(fixture.Name, singerBank, StringComparison.OrdinalIgnoreCase));
+            _genericSingerName = bank?.Name;
+            var assembly = Assembly.Load(bytes);
+            var types = assembly.GetExportedTypes()
+                .Where(type => type is { IsAbstract: false } && typeof(Phonemizer).IsAssignableFrom(type))
+                .ToArray();
+            if (types.Length == 0) {
+                throw new InvalidOperationException("No Phonemizer subclass found in the DLL.");
+            }
+            _pluginName = $"{dllUrl} ({types.Length} phonemizer type(s))";
+            _fileName = Path.GetFileName(dllUrl);
+            _pluginBytes = bytes.Length;
+            var project = new UProject();
+            OpenUtau.Core.Format.Ustx.AddDefaultExpressions(project);
+            foreach (var type in types) {
+                var metadata = type.GetCustomAttribute<PhonemizerAttribute>();
+                var row = new GenericPluginCase(
+                    type.FullName ?? type.Name, metadata?.Name, metadata?.Tag, "…", "—", null);
+                try {
+                    var instance = Activator.CreateInstance(type) as Phonemizer
+                        ?? throw new InvalidOperationException($"Could not create {type.Name}");
+                    instance.Testing = true;
+                    if (bank is not null) {
+                        instance.SetSinger(new CatalogSinger(bank));
+                    } else {
+                        instance.SetSinger(null!);
+                    }
+                    instance.SetTiming(project.timeAxis);
+                    var note = new Phonemizer.Note {
+                        lyric = lyric,
+                        phoneticHint = string.Empty,
+                        tone = 60,
+                        position = 240,
+                        duration = 480,
+                        phonemeAttributes = [],
+                    };
+                    instance.SetUp([new[] { note }], project, project.tracks[0]);
+                    var result = instance.Process(new[] { note }, null, null, null, null, []);
+                    var output = result.phonemes is null
+                        ? "(null phoneme array)"
+                        : string.Join(" · ", result.phonemes.Select(phoneme => phoneme.phoneme ?? "(null)"));
+                    if (output.Length == 0) {
+                        output = "(zero phonemes)";
+                    }
+                    _genericCases.Add(row with { Status = "PASS", Output = output });
+                } catch (Exception ex) {
+                    var error = ex is TargetInvocationException { InnerException: not null } tie
+                        ? tie.InnerException!
+                        : ex;
+                    _genericCases.Add(row with {
+                        Status = "ERROR",
+                        Output = "—",
+                        Detail = $"{error.GetType().Name}: {error.Message}",
+                    });
+                }
+            }
+            _loadMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            _wasmMemoryBytes = await JS.InvokeAsync<long>("t013Metrics.wasmMemoryBytes");
+        } catch (Exception ex) {
+            _error = FormatError(ex);
+        } finally {
+            _busy = false;
+        }
+    }
+
+    private async Task CompareClassicFixtures() {
+        _busy = true;
+        _error = null;
+        _fixtureCases = [];
+        try {
+            var pluginBytes = await Http.GetByteArrayAsync(OfficialBuiltinPath);
+            var fixtureCatalog = FixtureCatalogData.Build();
+            _fixtureCases = ClassicFixtureBrowserRunner.Run(pluginBytes, fixtureCatalog);
+            _pluginName = "OpenUtau official VCV/VCCV phonemizers";
+            _pluginType = "OpenUtau.Plugin.Builtin";
+            _fileName = "OpenUtau.Plugin.Builtin.dll";
+            _pluginBytes = pluginBytes.Length;
+            _wasmMemoryBytes = await JS.InvokeAsync<long>("t013Metrics.wasmMemoryBytes");
+        } catch (Exception ex) {
+            _error = FormatError(ex);
+        } finally {
+            _busy = false;
+        }
+    }
+
+    private async Task ImportPlugin() {
+        _busy = true;
+        _error = null;
+        _result = null;
+        try {
+            var fileName = await JS.InvokeAsync<string>("t013SelectedFileName", _fileInput);
+            if (string.IsNullOrWhiteSpace(fileName)) {
+                _error = "Choose a .dll file first.";
+                return;
+            }
+            var bytes = await JS.InvokeAsync<byte[]>("t013ReadSelectedDll", _fileInput, MaxPluginBytes);
+            LoadPlugin(bytes, fileName);
+        } catch (Exception ex) {
+            _phonemizer = null;
+            _pluginName = null;
+            _error = FormatError(ex);
+        } finally {
+            _busy = false;
+        }
+    }
+
+    private void LoadPlugin(byte[] bytes, string fileName, bool isJapaneseVcvPlugin = false) {
+        var started = Stopwatch.GetTimestamp();
+        var assembly = Assembly.Load(bytes);
+        var pluginType = assembly.GetExportedTypes().Single(type =>
+            !type.IsAbstract && typeof(Phonemizer).IsAssignableFrom(type));
+        _phonemizer = Activator.CreateInstance(pluginType) as Phonemizer
+            ?? throw new InvalidOperationException($"Could not create {pluginType.FullName}.");
+
+        var metadata = pluginType.GetCustomAttribute<PhonemizerAttribute>();
+        _pluginName = metadata?.Name ?? pluginType.Name;
+        _pluginType = pluginType.FullName;
+        _isJapaneseVcvPlugin = isJapaneseVcvPlugin;
+        _fileName = fileName;
+        _pluginBytes = bytes.Length;
+        _loadMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        _error = null;
+        _result = new RunResult(
+            "Loaded; click Run Process() to invoke the phonemizer.",
+            _loadMs,
+            0,
+            0,
+            0);
+    }
+
+    private async Task RunLoadedPlugin(bool usePreviousNeighbour) {
+        if (_phonemizer is null) return;
+        try {
+            var before = GC.GetTotalMemory(false);
+            var started = Stopwatch.GetTimestamp();
+
+            Phonemizer.Note? previous = null;
+            Phonemizer.Note[] previousNotes = [];
+            if (_isJapaneseVcvPlugin) {
+                _phonemizer.SetSinger(new DemoSinger(["- な", "a な", "* な", "な"]));
+                if (usePreviousNeighbour) {
+                    previous = new Phonemizer.Note {
+                        lyric = "か",
+                        phoneticHint = string.Empty,
+                        tone = 60,
+                        position = 0,
+                        duration = 480,
+                        phonemeAttributes = [],
+                    };
+                    previousNotes = [previous.Value];
+                }
+            } else {
+                _phonemizer.SetSinger(null!);
+            }
+            var note = new Phonemizer.Note {
+                lyric = _lyric,
+                phoneticHint = string.Empty,
+                tone = 60,
+                position = 0,
+                duration = 480,
+                phonemeAttributes = [],
+            };
+            var output = _phonemizer.Process(
+                [note], previous, null, previous, null, previousNotes);
+            var processMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            var managedHeapBytes = GC.GetTotalMemory(false);
+            var heapDelta = managedHeapBytes - before;
+            _wasmMemoryBytes = await JS.InvokeAsync<long>("t013Metrics.wasmMemoryBytes");
+            var phones = output.phonemes is null
+                ? "(null result)"
+                : string.Join("  ·  ", output.phonemes.Select(phone => phone.phoneme));
+            _result = new RunResult(phones, _loadMs, processMs, managedHeapBytes, heapDelta);
+            _error = null;
+        } catch (Exception ex) {
+            _error = FormatError(ex);
+        }
+    }
+
+    private static string FormatError(Exception ex) {
+        var root = ex is TargetInvocationException { InnerException: not null } tie
+            ? tie.InnerException!
+            : ex;
+        return $"{root.GetType().Name}: {root.Message}";
+    }
+
+    private static string FormatBytes(long bytes) => bytes >= 1024 * 1024
+        ? $"{bytes / (1024d * 1024d):F1} MB"
+        : $"{bytes / 1024d:F0} KB";
+
+    private sealed record RunResult(string Phonemes, double LoadMs, double ProcessMs, long ManagedHeapBytes, long AllocationDelta);
+
+    private sealed class DemoSinger : USinger {
+        private readonly Dictionary<string, UOto> _aliases = new(StringComparer.Ordinal);
+
+        public DemoSinger(IEnumerable<string> aliases) {
+            var otoSet = new OtoSet { Name = "T013 in-memory Japanese VCV bank" };
+            var singerOtoSet = new UOtoSet(otoSet, string.Empty);
+            var subbank = new USubbank(new Subbank());
+            foreach (var alias in aliases) {
+                var oto = new Oto { Alias = alias, IsValid = true };
+                _aliases[alias] = new UOto(oto, singerOtoSet, [subbank]);
+            }
+        }
+
+        public override bool TryGetMappedOto(string phoneme, int tone, string color, out UOto oto) {
+            return _aliases.TryGetValue(phoneme, out oto!);
+        }
+    }
+}

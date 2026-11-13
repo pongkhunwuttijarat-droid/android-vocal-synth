@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+    <ItemGroup>
+    <ProjectReference Include="../../../ref-openutau-clean/core/OpenUtau.Core/OpenUtau.Core.csproj" />
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="9.0.2" />
+  </ItemGroup>
+</Project>

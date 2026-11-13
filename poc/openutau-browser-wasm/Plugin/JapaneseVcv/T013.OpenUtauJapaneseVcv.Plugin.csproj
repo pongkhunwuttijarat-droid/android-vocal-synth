@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>T013.OpenUtauJapaneseVcv.Plugin</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\..\ref(openutau+openutau mobile)\core\OpenUtau.Core\OpenUtau.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\..\..\ref(openutau+openutau mobile)\desktop-ref\OpenUtau.Plugin.Builtin\JapaneseVCVPhonemizer.cs"
+             Link="JapaneseVCVPhonemizer.cs" />
+  </ItemGroup>
+</Project>
