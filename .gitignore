@@ -38,6 +38,8 @@ app/android/app/build/
 *.swp
 *~
 .zcodeignore
+__pycache__/
+*.pyc
 
 # === Hermes ===
 .hermes/
