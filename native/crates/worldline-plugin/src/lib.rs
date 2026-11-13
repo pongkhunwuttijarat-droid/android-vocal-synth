@@ -52,6 +52,8 @@ pub use convert::{
 pub use error::Error;
 #[cfg(feature = "ffi")]
 pub use renderer::WorldlineRenderer;
+#[cfg(feature = "ffi")]
+pub use worldline_sys::WorldlineStreamStats;
 
 /// Preferred output sample rate of the worldline library (mono 44.1 kHz).
 ///
@@ -64,7 +66,7 @@ pub const DEFAULT_SAMPLE_RATE: u32 = 44100;
 /// Available without the FFI feature: the pure-Rust phrases uses it for
 /// curve sampling density. (The C++ side stretches the curves onto its own
 /// model grid, so this only affects sampling density.)
-pub const DEFAULT_FRAME_MS: f64 = 11.6;
+pub const DEFAULT_FRAME_MS: f64 = 10.0;
 
 /// Free a C++-allocated buffer (WorldSynthesis/F0 output).
 #[cfg(feature = "ffi")]

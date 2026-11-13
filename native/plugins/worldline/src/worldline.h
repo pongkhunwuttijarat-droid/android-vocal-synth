@@ -14,8 +14,25 @@
 #endif
 
 using worldline::PhraseSynth;
+using worldline::PreparedCache;
+using worldline::StreamStats;
 
 extern "C" {
+
+struct WorldlineStreamStats {
+  double first_block_ms;
+  double total_ms;
+  double prep_wait_ms;
+  double backpressure_wait_ms;
+  std::int32_t prep_workers;
+  std::int32_t synth_workers;
+  std::int32_t peak_buffered_models;
+  std::int32_t peak_timeline_frames;
+  std::int32_t total_frames;
+  std::int32_t output_samples;
+  std::int32_t cache_hits;
+  std::int32_t cache_misses;
+};
 
 DLL_API int F0(float* samples, int length, int fs, double frame_period,
                int method, double** f0);
@@ -59,9 +76,20 @@ DLL_API int WorldSynthesis(double* const f0, int f0_length,
 
 DLL_API int Resample(const SynthRequest* request, float** y);
 
+DLL_API PreparedCache* PreparedCacheNew(std::int32_t max_entries);
+
+DLL_API void PreparedCacheDelete(PreparedCache* cache);
+
+DLL_API void PreparedCacheClear(PreparedCache* cache);
+
+DLL_API std::int32_t PreparedCacheSize(const PreparedCache* cache);
+
 DLL_API PhraseSynth* PhraseSynthNew();
 
 DLL_API void PhraseSynthDelete(PhraseSynth* phrase_synth);
+
+DLL_API void PhraseSynthSetPreparedCache(PhraseSynth* phrase_synth,
+                                         PreparedCache* cache);
 
 DLL_API void PhraseSynthAddRequest(PhraseSynth* phrase_synth,
                                    const SynthRequest* request, double pos_ms,
@@ -77,6 +105,16 @@ DLL_API void PhraseSynthSetCurves(PhraseSynth* phrase_synth, double* f0,
 
 DLL_API int PhraseSynthSynth(PhraseSynth* phrase_synth, float** y,
                              worldline::LogCallback logCallback);
+
+DLL_API int PhraseSynthSynthStream(PhraseSynth* phrase_synth,
+                                   worldline::PcmStreamCallback callback,
+                                   void* user_data, int block_samples,
+                                   worldline::LogCallback logCallback);
+
+DLL_API int PhraseSynthSynthStreamWithStats(
+    PhraseSynth* phrase_synth, worldline::PcmStreamCallback callback,
+    void* user_data, int block_samples, WorldlineStreamStats* stats_out,
+    worldline::LogCallback logCallback);
 }
 
 #endif  // WORLDLINE_WORLDLINE_H_

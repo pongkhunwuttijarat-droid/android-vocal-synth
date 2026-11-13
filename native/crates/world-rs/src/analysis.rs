@@ -66,11 +66,12 @@ pub fn analyze_world_audio_with_f0<C: Cancellation>(
             .collect::<Vec<_>>();
         (values.to_vec(), time)
     } else {
-        crate::f0::dio(mono, config.sample_rate, dio_option, cancel)
-            .map_err(|error| match error {
+        crate::f0::dio(mono, config.sample_rate, dio_option, cancel).map_err(
+            |error| match error {
                 crate::f0::F0Error::Cancelled => AnalysisError::Cancelled,
                 crate::f0::F0Error::InvalidInput => AnalysisError::InvalidConfig,
-            })?
+            },
+        )?
     };
     if supplied_f0.is_none() {
         crate::f0::stone_mask(mono, config.sample_rate, &time, &mut f0);
@@ -108,7 +109,13 @@ impl Default for AnalysisConfig {
     fn default() -> Self {
         // WORLDLINE v2 (the official `libworldline.so` used by the fixture)
         // advances WORLD frames by one 512-sample hop at 44.1 kHz.
-        Self { sample_rate: 44100, frame_period_ms: 512.0 * 1000.0 / 44100.0, fft_size: 1024, min_f0_hz: 50.0, max_f0_hz: 1100.0 }
+        Self {
+            sample_rate: 44100,
+            frame_period_ms: 512.0 * 1000.0 / 44100.0,
+            fft_size: 1024,
+            min_f0_hz: 50.0,
+            max_f0_hz: 1100.0,
+        }
     }
 }
 
@@ -120,27 +127,45 @@ pub enum AnalysisError {
 }
 
 impl From<FeatureError> for AnalysisError {
-    fn from(value: FeatureError) -> Self { Self::Feature(value) }
+    fn from(value: FeatureError) -> Self {
+        Self::Feature(value)
+    }
 }
 
 /// Analyze mono PCM into contiguous Rust-owned feature rows.
-pub fn analyze<C: Cancellation>(samples: &[f32], config: AnalysisConfig, cancel: &C) -> Result<WorldFeatures, AnalysisError> {
-    if config.sample_rate == 0 || config.fft_size < 4 || !config.fft_size.is_power_of_two()
-        || config.frame_period_ms <= 0.0 || config.min_f0_hz <= 0.0
+pub fn analyze<C: Cancellation>(
+    samples: &[f32],
+    config: AnalysisConfig,
+    cancel: &C,
+) -> Result<WorldFeatures, AnalysisError> {
+    if config.sample_rate == 0
+        || config.fft_size < 4
+        || !config.fft_size.is_power_of_two()
+        || config.frame_period_ms <= 0.0
+        || config.min_f0_hz <= 0.0
         || config.max_f0_hz <= config.min_f0_hz
-    { return Err(AnalysisError::InvalidConfig); }
-    let hop = ((config.sample_rate as f64 * config.frame_period_ms / 1000.0).round() as usize).max(1);
+    {
+        return Err(AnalysisError::InvalidConfig);
+    }
+    let hop =
+        ((config.sample_rate as f64 * config.frame_period_ms / 1000.0).round() as usize).max(1);
     // WORLD's GetSamplesForDIO: floor(1000 * length / fs / frame_ms) + 1.
     // Keep the terminal boundary frame even when the sample count is an
     // exact multiple of the hop.
-    let frames = if samples.is_empty() { 0 } else { (samples.len() / hop) + 1 };
+    let frames = if samples.is_empty() {
+        0
+    } else {
+        (samples.len() / hop) + 1
+    };
     let bins = config.fft_size / 2 + 1;
     let mut out = WorldFeatures::try_new(frames, bins)?;
     let mut fft = RealFft::new(config.fft_size).map_err(|_| AnalysisError::InvalidConfig)?;
     let mut frame = vec![0.0f64; config.fft_size];
     let mut packed = vec![0.0f64; config.fft_size];
     for frame_index in 0..frames {
-        if cancel.is_cancelled() { return Err(AnalysisError::Cancelled); }
+        if cancel.is_cancelled() {
+            return Err(AnalysisError::Cancelled);
+        }
         frame.fill(0.0);
         let center = frame_index * hop;
         let start = center.saturating_sub(config.fft_size / 2);
@@ -149,16 +174,33 @@ pub fn analyze<C: Cancellation>(samples: &[f32], config: AnalysisConfig, cancel:
             let phase = (i as f64 + 0.5) / config.fft_size as f64;
             frame[i] = sample as f64 * (std::f64::consts::PI * phase).sin().powi(2);
         }
-        out.f0[frame_index] = estimate_f0(&frame, config.sample_rate as f64, config.min_f0_hz, config.max_f0_hz);
-        fft.forward_packed(&frame, &mut packed).map_err(|_| AnalysisError::InvalidConfig)?;
+        out.f0[frame_index] = estimate_f0(
+            &frame,
+            config.sample_rate as f64,
+            config.min_f0_hz,
+            config.max_f0_hz,
+        );
+        fft.forward_packed(&frame, &mut packed)
+            .map_err(|_| AnalysisError::InvalidConfig)?;
         let row = frame_index * bins;
         for bin in 0..bins {
-            let re = if bin == 0 { packed[0] } else if bin == config.fft_size / 2 { packed[1] } else { packed[2 * bin] };
-            let im = if bin == 0 || bin == config.fft_size / 2 { 0.0 } else { packed[2 * bin + 1] };
+            let re = if bin == 0 {
+                packed[0]
+            } else if bin == config.fft_size / 2 {
+                packed[1]
+            } else {
+                packed[2 * bin]
+            };
+            let im = if bin == 0 || bin == config.fft_size / 2 {
+                0.0
+            } else {
+                packed[2 * bin + 1]
+            };
             let magnitude = (re * re + im * im).sqrt() / config.fft_size as f64;
             out.spectral[row + bin] = magnitude.max(1e-12);
             // Bring-up aperiodicity: low energy is treated as noise-like.
-            out.aperiodicity[row + bin] = (1.0f64 - magnitude / (magnitude + 1.0f64)).clamp(0.0, 1.0);
+            out.aperiodicity[row + bin] =
+                (1.0f64 - magnitude / (magnitude + 1.0f64)).clamp(0.0, 1.0);
         }
     }
     Ok(out)
@@ -181,15 +223,28 @@ fn estimate_f0(frame: &[f64], sample_rate: f64, min_f0: f64, max_f0: f64) -> f64
     let min_lag = (sample_rate / max_f0).floor().max(1.0) as usize;
     let max_lag = (sample_rate / min_f0).ceil() as usize;
     let energy = frame.iter().map(|x| x * x).sum::<f64>();
-    if energy <= 1e-12 || min_lag >= frame.len() { return 0.0; }
+    if energy <= 1e-12 || min_lag >= frame.len() {
+        return 0.0;
+    }
     let max_lag = max_lag.min(frame.len() - 1);
     let mut best = 0.0;
     let mut best_lag = 0;
     for lag in min_lag..=max_lag {
-        let corr = frame[..frame.len() - lag].iter().zip(&frame[lag..]).map(|(a, b)| a * b).sum::<f64>();
-        if corr > best { best = corr; best_lag = lag; }
+        let corr = frame[..frame.len() - lag]
+            .iter()
+            .zip(&frame[lag..])
+            .map(|(a, b)| a * b)
+            .sum::<f64>();
+        if corr > best {
+            best = corr;
+            best_lag = lag;
+        }
     }
-    if best_lag == 0 || best / energy < 0.2 { 0.0 } else { sample_rate / best_lag as f64 }
+    if best_lag == 0 || best / energy < 0.2 {
+        0.0
+    } else {
+        sample_rate / best_lag as f64
+    }
 }
 
 #[cfg(test)]
@@ -198,7 +253,9 @@ mod tests {
 
     #[test]
     fn analyzes_sine_with_contiguous_rows() {
-        let samples: Vec<f32> = (0..4410).map(|i| (2.0 * std::f64::consts::PI * 220.0 * i as f64 / 44100.0).sin() as f32).collect();
+        let samples: Vec<f32> = (0..4410)
+            .map(|i| (2.0 * std::f64::consts::PI * 220.0 * i as f64 / 44100.0).sin() as f32)
+            .collect();
         let features = analyze(&samples, AnalysisConfig::default(), &()).unwrap();
         assert!(features.frame_count > 0);
         assert_eq!(features.bin_count, 513);
@@ -209,14 +266,22 @@ mod tests {
     #[test]
     fn cancellation_stops_before_next_frame() {
         struct Stop;
-        impl Cancellation for Stop { fn is_cancelled(&self) -> bool { true } }
+        impl Cancellation for Stop {
+            fn is_cancelled(&self) -> bool {
+                true
+            }
+        }
         let err = analyze(&[0.1; 1000], AnalysisConfig::default(), &Stop).unwrap_err();
         assert_eq!(err, AnalysisError::Cancelled);
     }
 
     #[test]
     fn supplied_f0_grid_can_omit_dio_terminal_frame() {
-        let config = AnalysisConfig { frame_period_ms: 10.0, fft_size: 2048, ..Default::default() };
+        let config = AnalysisConfig {
+            frame_period_ms: 10.0,
+            fft_size: 2048,
+            ..Default::default()
+        };
         // C++ Model::Trim can produce exactly N*hop samples but retain an
         // F0 vector of N rows. A fresh DIO count would report N+1.
         let samples = vec![0.0f32; 205 * 441];

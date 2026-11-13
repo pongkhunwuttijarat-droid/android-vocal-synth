@@ -419,12 +419,7 @@ pub fn analyze(param: &PyinConfig, x: &[f64], fs: f64) -> Vec<f64> {
         }
 
         let d = yincorr(&xfrm, yin_w);
-        let vi = find_valleys(
-            &d,
-            1.0,
-            (fs / param.fmax) as i64,
-            (fs / param.fmin) as i64,
-        );
+        let vi = find_valleys(&d, 1.0, (fs / param.fmax) as i64, (fs / param.fmin) as i64);
         let nv = vi.len();
         let mut pairs: Vec<(i32, f64)> = Vec::with_capacity(nv);
         let mut cand: Vec<f64> = Vec::with_capacity(nv);

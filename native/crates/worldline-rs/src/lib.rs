@@ -14,6 +14,7 @@ pub mod effects;
 pub mod f0;
 pub mod model;
 pub mod phrase;
+pub mod prepared_cache;
 pub mod pyin;
 pub mod resampler;
 pub mod source;
@@ -21,7 +22,8 @@ pub mod spline;
 pub mod timing;
 
 pub use model::Model;
-pub use phrase::PhraseSynthRs;
+pub use phrase::{PhraseSynthRs, StreamStatsRs};
+pub use prepared_cache::PreparedModelCache;
 pub use resampler::ResamplerRs;
 pub use source::{FileSource, MemorySource, ResolvedSample, SampleSource};
 pub use timing::ModelTiming;
@@ -85,8 +87,21 @@ pub fn render_phrase_with_source<S: SampleSource + ?Sized>(
     model_frame_ms: f64,
     source: &S,
 ) -> Result<Vec<f32>, String> {
-    let requests = worldline_plugin::build_requests(input)
-        .map_err(|e| format!("build_requests: {e}"))?;
+    render_phrase_with_source_and_cache(input, curve_frame_ms, model_frame_ms, source, None)
+}
+
+/// Render one phrase with an optional bounded cache of exact per-phoneme
+/// WORLD analysis models. The cache affects work performed, never timing,
+/// curves, random state, or the final synthesis path.
+pub fn render_phrase_with_source_and_cache<S: SampleSource + ?Sized>(
+    input: &feed::render_input::RenderInput,
+    curve_frame_ms: f64,
+    model_frame_ms: f64,
+    source: &S,
+    mut cache: Option<&mut PreparedModelCache>,
+) -> Result<Vec<f32>, String> {
+    let requests =
+        worldline_plugin::build_requests(input).map_err(|e| format!("build_requests: {e}"))?;
     if requests.is_empty() {
         return Ok(Vec::new());
     }
@@ -94,16 +109,146 @@ pub fn render_phrase_with_source<S: SampleSource + ?Sized>(
     let mut synth = PhraseSynthRs::new(model_frame_ms);
     for request in &requests {
         let resolved = source.resolve(&request.wav_path)?;
-        worldline_plugin::validate_request(request, resolved.wav.sample_rate, resolved.wav.samples.len())
-            .map_err(|e| format!("validate {}: {e}", request.phoneme))?;
-        let mono: Vec<f64> = resolved.wav.to_mono().into_iter().map(|s| s as f64).collect();
-        synth.add_request_from_samples(
+        worldline_plugin::validate_request(
+            request,
+            resolved.wav.sample_rate,
+            resolved.wav.samples.len(),
+        )
+        .map_err(|e| format!("validate {}: {e}", request.phoneme))?;
+        let mono: Vec<f64> = resolved
+            .wav
+            .to_mono()
+            .into_iter()
+            .map(|s| s as f64)
+            .collect();
+        synth.add_request_from_samples_cached(
             request,
             mono,
             resolved.wav.sample_rate as i32,
             resolved.frq.as_deref(),
+            cache.as_deref_mut(),
         )?;
     }
     synth.set_curves(&curves);
     synth.synth()
+}
+
+/// Shared-mutex variant of [`render_phrase_with_source_and_cache`] so concurrent
+/// callers share prepared models without holding the cache lock across WORLD analysis.
+pub fn render_phrase_with_source_and_shared_cache<S: SampleSource + ?Sized>(
+    input: &feed::render_input::RenderInput,
+    curve_frame_ms: f64,
+    model_frame_ms: f64,
+    source: &S,
+    cache: Option<&std::sync::Mutex<PreparedModelCache>>,
+) -> Result<Vec<f32>, String> {
+    let requests =
+        worldline_plugin::build_requests(input).map_err(|e| format!("build_requests: {e}"))?;
+    if requests.is_empty() {
+        return Ok(Vec::new());
+    }
+    let curves = worldline_plugin::sample_phrase_curves(input, curve_frame_ms);
+    let mut synth = PhraseSynthRs::new(model_frame_ms);
+    for request in &requests {
+        let resolved = source.resolve(&request.wav_path)?;
+        worldline_plugin::validate_request(
+            request,
+            resolved.wav.sample_rate,
+            resolved.wav.samples.len(),
+        )
+        .map_err(|e| format!("validate {}: {e}", request.phoneme))?;
+        let mono: Vec<f64> = resolved
+            .wav
+            .to_mono()
+            .into_iter()
+            .map(|s| s as f64)
+            .collect();
+        synth.add_request_from_samples_shared_cache(
+            request,
+            mono,
+            resolved.wav.sample_rate as i32,
+            resolved.frq.as_deref(),
+            cache,
+        )?;
+    }
+    synth.set_curves(&curves);
+    synth.synth()
+}
+
+/// Stream one phrase to mono f32 PCM at 44.1 kHz via incremental phoneme
+/// preparation and stateful WORLD synthesis.
+pub fn render_phrase_stream<F>(
+    input: &feed::render_input::RenderInput,
+    curve_frame_ms: f64,
+    block_samples: usize,
+    callback: F,
+) -> Result<(usize, StreamStatsRs), String>
+where
+    F: FnMut(&[f32]) -> Result<(), String>,
+{
+    render_phrase_stream_with_frames(input, curve_frame_ms, model_frame_ms(), block_samples, callback)
+}
+
+/// [`render_phrase_stream`] with an explicit synthesis frame grid.
+pub fn render_phrase_stream_with_frames<F>(
+    input: &feed::render_input::RenderInput,
+    curve_frame_ms: f64,
+    model_frame_ms: f64,
+    block_samples: usize,
+    callback: F,
+) -> Result<(usize, StreamStatsRs), String>
+where
+    F: FnMut(&[f32]) -> Result<(), String>,
+{
+    render_phrase_stream_with_source(input, curve_frame_ms, model_frame_ms, &FileSource, block_samples, callback)
+}
+
+/// Stream one phrase resolving voicebank samples through `source`.
+pub fn render_phrase_stream_with_source<S, F>(
+    input: &feed::render_input::RenderInput,
+    curve_frame_ms: f64,
+    model_frame_ms: f64,
+    source: &S,
+    block_samples: usize,
+    callback: F,
+) -> Result<(usize, StreamStatsRs), String>
+where
+    S: SampleSource + Sync + ?Sized,
+    F: FnMut(&[f32]) -> Result<(), String>,
+{
+    render_phrase_stream_with_source_and_cache(
+        input,
+        curve_frame_ms,
+        model_frame_ms,
+        source,
+        None,
+        block_samples,
+        callback,
+    )
+}
+
+/// Stream one phrase with an optional thread-safe cache of prepared WORLD
+/// analysis models.
+pub fn render_phrase_stream_with_source_and_cache<S, F>(
+    input: &feed::render_input::RenderInput,
+    curve_frame_ms: f64,
+    model_frame_ms: f64,
+    source: &S,
+    cache: Option<&std::sync::Mutex<PreparedModelCache>>,
+    block_samples: usize,
+    callback: F,
+) -> Result<(usize, StreamStatsRs), String>
+where
+    S: SampleSource + Sync + ?Sized,
+    F: FnMut(&[f32]) -> Result<(), String>,
+{
+    phrase::render_phrase_stream_with_source_and_cache(
+        input,
+        curve_frame_ms,
+        model_frame_ms,
+        source,
+        cache,
+        block_samples,
+        callback,
+    )
 }

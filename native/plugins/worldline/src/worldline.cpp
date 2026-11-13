@@ -246,10 +246,32 @@ DLL_API int Resample(const SynthRequest* request, float** y) {
   return out.size();
 }
 
+DLL_API PreparedCache* PreparedCacheNew(std::int32_t max_entries) {
+  const size_t cap =
+      max_entries <= 0 ? static_cast<size_t>(512)
+                       : static_cast<size_t>(max_entries);
+  return new PreparedCache(cap);
+}
+
+DLL_API void PreparedCacheDelete(PreparedCache* cache) { delete cache; }
+
+DLL_API void PreparedCacheClear(PreparedCache* cache) {
+  if (cache != nullptr) cache->Clear();
+}
+
+DLL_API std::int32_t PreparedCacheSize(const PreparedCache* cache) {
+  return cache == nullptr ? 0 : static_cast<std::int32_t>(cache->Size());
+}
+
 DLL_API PhraseSynth* PhraseSynthNew() { return new PhraseSynth(); }
 
 DLL_API void PhraseSynthDelete(PhraseSynth* phrase_synth) {
   delete phrase_synth;
+}
+
+DLL_API void PhraseSynthSetPreparedCache(PhraseSynth* phrase_synth,
+                                         PreparedCache* cache) {
+  if (phrase_synth != nullptr) phrase_synth->SetPreparedCache(cache);
 }
 
 DLL_API void PhraseSynthAddRequest(PhraseSynth* phrase_synth,
@@ -277,4 +299,40 @@ DLL_API int PhraseSynthSynth(PhraseSynth* phrase_synth, float** y,
   *y = new float[samples.size()];
   std::copy(samples.begin(), samples.end(), *y);
   return yLength;
+}
+
+DLL_API int PhraseSynthSynthStream(
+    PhraseSynth* phrase_synth, worldline::PcmStreamCallback callback,
+    void* user_data, int block_samples, worldline::LogCallback logCallback) {
+  if (phrase_synth == nullptr || callback == nullptr || block_samples <= 0)
+    return -1;
+  return phrase_synth->SynthStream(callback, user_data, block_samples,
+                                   logCallback);
+}
+
+DLL_API int PhraseSynthSynthStreamWithStats(
+    PhraseSynth* phrase_synth, worldline::PcmStreamCallback callback,
+    void* user_data, int block_samples, WorldlineStreamStats* stats_out,
+    worldline::LogCallback logCallback) {
+  if (phrase_synth == nullptr || callback == nullptr || block_samples <= 0)
+    return -1;
+  StreamStats stats{};
+  const int rc = phrase_synth->SynthStreamWithStats(
+      callback, user_data, block_samples,
+      stats_out != nullptr ? &stats : nullptr, logCallback);
+  if (stats_out != nullptr) {
+    stats_out->first_block_ms = stats.first_block_ms;
+    stats_out->total_ms = stats.total_ms;
+    stats_out->prep_wait_ms = stats.prep_wait_ms;
+    stats_out->backpressure_wait_ms = stats.backpressure_wait_ms;
+    stats_out->prep_workers = stats.prep_workers;
+    stats_out->synth_workers = stats.synth_workers;
+    stats_out->peak_buffered_models = stats.peak_buffered_models;
+    stats_out->peak_timeline_frames = stats.peak_timeline_frames;
+    stats_out->total_frames = stats.total_frames;
+    stats_out->output_samples = stats.output_samples;
+    stats_out->cache_hits = stats.cache_hits;
+    stats_out->cache_misses = stats.cache_misses;
+  }
+  return rc;
 }

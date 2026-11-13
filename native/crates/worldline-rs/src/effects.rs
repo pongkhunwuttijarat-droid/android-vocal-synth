@@ -88,7 +88,14 @@ pub fn get_tension_coefficients_1(f0: f64, fs: i32, value: i32, width: usize) ->
     logspace(&mut envelope, p1, p2, 8.0, 1.0 * factor, 2.0 * factor);
     logspace(&mut envelope, p2, p3, 8.0, 2.0 * factor, 0.0 * factor);
     logspace(&mut envelope, p3, p4, 8.0, 0.0 * factor, -0.75 * factor);
-    logspace(&mut envelope, p4, width, 8.0, -0.75 * factor, -0.75 * factor);
+    logspace(
+        &mut envelope,
+        p4,
+        width,
+        8.0,
+        -0.75 * factor,
+        -0.75 * factor,
+    );
     envelope
 }
 

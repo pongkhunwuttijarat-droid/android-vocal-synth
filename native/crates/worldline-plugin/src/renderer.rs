@@ -11,13 +11,15 @@
 //! [`render_phrase`](WorldlineRenderer::render_phrase). The stored
 //! `synth` keeps the dlopen'd `.so` loaded for the renderer's lifetime.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use feed::render_input::RenderInput;
 use voicebank::WavData;
-use worldline_sys::{PhraseSynth, SynthRequest};
+use worldline_sys::{PhraseSynth, PreparedCache, SynthRequest, WorldlineStreamStats};
 
 use crate::capabilities::WorldlineCapabilities;
 use crate::convert::{self, PhonemeRequest};
@@ -27,13 +29,51 @@ use crate::error::Error;
 pub const DEFAULT_SAMPLE_RATE: u32 = 44100;
 /// Frame size of the per-frame expression curves, in ms.
 ///
-/// The Sprint 2.1 contract picks 11.6 ms (the v2 renderer frame:
-/// `512/44100 × 1000`); the C# v1 renderer uses 10 ms, which matches the
-/// C++ analysis frame. The C++ side stretches the curves to its own 10 ms
-/// grid, so this only affects sampling density. Keeping the v2 frame
-/// (11.6 ms) per the contract — the golden comparison keeps v1/v2
-/// separate, and v2 is our declared renderer.
-pub const DEFAULT_FRAME_MS: f64 = 11.6;
+/// OpenUtau's C# v1 renderer samples at 10 ms. R2 supplies its own
+/// 512/44100 ms frame explicitly.
+pub const DEFAULT_FRAME_MS: f64 = 10.0;
+
+const ASSET_CACHE_CAPACITY: usize = 512;
+const PREPARED_CACHE_CAPACITY: i32 = 512;
+
+struct BoundedCache<V> {
+    cap: usize,
+    map: HashMap<String, V>,
+    order: VecDeque<String>,
+}
+
+impl<V> BoundedCache<V> {
+    fn new(cap: usize) -> Self {
+        Self {
+            cap: cap.max(1),
+            map: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<&V> {
+        self.map.get(key)
+    }
+
+    fn insert(&mut self, key: String, val: V) {
+        if !self.map.contains_key(&key) {
+            if self.map.len() >= self.cap {
+                while let Some(oldest) = self.order.pop_front() {
+                    if self.map.remove(&oldest).is_some() {
+                        break;
+                    }
+                }
+            }
+            self.order.push_back(key.clone());
+        }
+        self.map.insert(key, val);
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+        self.order.clear();
+    }
+}
 
 /// Sample-based renderer plugin: `feed::RenderInput` → PCM.
 pub struct WorldlineRenderer {
@@ -41,12 +81,33 @@ pub struct WorldlineRenderer {
     /// renderer's lifetime; see the module docs for why per-render
     /// instances are spawned from [`Self::so_path`] instead.
     synth: PhraseSynth,
+    /// Shared thread-safe C++ LRU cache of prepared phoneme `Model` data.
+    prepared_cache: Option<PreparedCache>,
+    /// Bounded cache of decoded mono WAV samples keyed by `wav_path`.
+    wav_cache: Mutex<BoundedCache<Arc<(u32, Vec<f64>)>>>,
+    /// Bounded cache of raw OpenUtau `.frq` bytes keyed by `wav_path`.
+    frq_cache: Mutex<BoundedCache<Option<Arc<Vec<u8>>>>>,
     /// Where to spawn fresh `PhraseSynth` instances from.
     so_path: PathBuf,
     /// Output sample rate (mono).
     sample_rate: u32,
     /// Frame size of the per-frame expression curves (ms).
     frame_ms: f64,
+}
+
+struct PreparedPhraseBuild {
+    synth: PhraseSynth,
+    request_count: usize,
+    unique_wavs: usize,
+    unique_frqs: usize,
+    request_build: Duration,
+    curve_build: Duration,
+    synth_open: Duration,
+    wav_load: Duration,
+    validation_time: Duration,
+    frq_load: Duration,
+    request_queue: Duration,
+    set_curves: Duration,
 }
 
 impl WorldlineRenderer {
@@ -59,6 +120,7 @@ impl WorldlineRenderer {
     /// (see `worldline-sys::PhraseSynth::open`).
     pub fn open(so_path: impl AsRef<Path>) -> Result<Self, Error> {
         let synth = PhraseSynth::open(so_path.as_ref())?;
+        let prepared_cache = PreparedCache::open(so_path.as_ref(), PREPARED_CACHE_CAPACITY).ok();
         // DIAGNOSTIC (Sprint 2.3.4): env WORLD_FRAME_MS overrides the
         // SetCurves sampling frame (C# v1 uses 10.0).
         let frame_ms = std::env::var_os("WORLD_FRAME_MS")
@@ -66,10 +128,31 @@ impl WorldlineRenderer {
             .unwrap_or(DEFAULT_FRAME_MS);
         Ok(WorldlineRenderer {
             synth,
+            prepared_cache,
+            wav_cache: Mutex::new(BoundedCache::new(ASSET_CACHE_CAPACITY)),
+            frq_cache: Mutex::new(BoundedCache::new(ASSET_CACHE_CAPACITY)),
             so_path: so_path.as_ref().to_path_buf(),
             sample_rate: DEFAULT_SAMPLE_RATE,
             frame_ms,
         })
+    }
+
+    /// Clear cached WAV samples, `.frq` bytes, and C++ prepared phoneme models.
+    pub fn clear_caches(&self) {
+        if let Some(ref cache) = self.prepared_cache {
+            cache.clear();
+        }
+        if let Ok(mut w) = self.wav_cache.lock() {
+            w.clear();
+        }
+        if let Ok(mut f) = self.frq_cache.lock() {
+            f.clear();
+        }
+    }
+
+    /// Number of phoneme models currently held in the C++ prepared-model cache.
+    pub fn prepared_cache_len(&self) -> usize {
+        self.prepared_cache.as_ref().map(|c| c.len()).unwrap_or(0)
     }
 
     /// The static capabilities of the worldline renderer.
@@ -92,39 +175,107 @@ impl WorldlineRenderer {
         self.frame_ms
     }
 
-    /// Render one phrase to mono f32 PCM at [`DEFAULT_SAMPLE_RATE`].
-    ///
-    /// Converts every phoneme into a `SynthRequest` (C# `ResamplerItem` +
-    /// `SynthRequestWrapper` semantics), places them on the phrase
-    /// timeline with the C# `WorldlineRenderer` timing, sets the per-frame
-    /// expression curves and synthesizes.
-    ///
-    /// # Errors
-    ///
-    /// Fails on missing/mismatched `sample_based` data, unreadable wavs,
-    /// oto regions that exceed the wav (the C# `CutOffExceedDuration` /
-    /// `CutOffBeforeOffset` errors), or `.so` load failures.
-    pub fn render_phrase(&self, input: &RenderInput) -> Result<Vec<f32>, Error> {
-        let requests = convert::build_requests(input)?;
-        if requests.is_empty() {
-            // The C++ Synth indexes models_[0]; never call it empty.
-            return Ok(Vec::new());
+    fn load_wav_cached(&self, wav_path: &str) -> Result<Arc<(u32, Vec<f64>)>, Error> {
+        if let Ok(cache) = self.wav_cache.lock() {
+            if let Some(hit) = cache.get(wav_path) {
+                return Ok(Arc::clone(hit));
+            }
         }
+        let wav: WavData = voicebank::read_wav(Path::new(wav_path)).map_err(|source| Error::Wav {
+            path: wav_path.to_string(),
+            source,
+        })?;
+        let mono: Vec<f64> = wav.to_mono().into_iter().map(|s| s as f64).collect();
+        let entry = Arc::new((wav.sample_rate, mono));
+        if let Ok(mut cache) = self.wav_cache.lock() {
+            cache.insert(wav_path.to_string(), Arc::clone(&entry));
+        }
+        Ok(entry)
+    }
+
+    fn load_frq_cached(&self, wav_path: &str) -> Option<Arc<Vec<u8>>> {
+        if let Ok(cache) = self.frq_cache.lock() {
+            if let Some(hit) = cache.get(wav_path) {
+                return hit.clone();
+            }
+        }
+        let path = Path::new(wav_path);
+        let entry = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|stem| {
+                let frq_path = path.with_file_name(format!("{stem}_wav.frq"));
+                let data = std::fs::read(&frq_path).ok()?;
+                if data.is_empty() {
+                    None
+                } else {
+                    Some(Arc::new(data))
+                }
+            });
+        if let Ok(mut cache) = self.frq_cache.lock() {
+            cache.insert(wav_path.to_string(), entry.clone());
+        }
+        entry
+    }
+
+    fn build_phrase_synth(
+        &self,
+        input: &RenderInput,
+    ) -> Result<Option<PreparedPhraseBuild>, Error> {
+        let stage_start = Instant::now();
+        let requests = convert::build_requests(input)?;
+        let request_build = stage_start.elapsed();
+        if requests.is_empty() {
+            return Ok(None);
+        }
+        let stage_start = Instant::now();
         let curves = convert::sample_phrase_curves(input, self.frame_ms);
-        // Fresh PhraseSynth per phrase: the C++ object has no reset and
-        // accumulates requests (same as the C# per-render allocation).
+        let curve_build = stage_start.elapsed();
+        // Fresh PhraseSynth per phrase: the C++ object accumulates requests.
+        let stage_start = Instant::now();
         let synth = PhraseSynth::open(&self.so_path)?;
-        let mut wavs: HashMap<String, (u32, Vec<f64>)> = HashMap::new();
-        // Frq bytes must outlive the AddRequest calls (the FFI struct only
-        // carries a pointer; PhraseSynthAddRequest copies the struct, and
-        // the FrqEstimator copies the f0 data during AddRequest).
-        let mut frqs: HashMap<String, Vec<u8>> = HashMap::new();
+        synth.set_prepared_cache(self.prepared_cache.as_ref());
+        let synth_open = stage_start.elapsed();
+
+        let mut phrase_wavs: HashMap<String, Arc<(u32, Vec<f64>)>> = HashMap::new();
+        let mut phrase_frqs: HashMap<String, Option<Arc<Vec<u8>>>> = HashMap::new();
+        let mut wav_load = Duration::ZERO;
+        let mut validation_time = Duration::ZERO;
+        let mut frq_load = Duration::ZERO;
+        let mut request_queue = Duration::ZERO;
         for request in &requests {
-            let (sample_rate, samples) = load_wav(&mut wavs, request)?;
+            let stage_start = Instant::now();
+            let wav_arc = if let Some(hit) = phrase_wavs.get(&request.wav_path) {
+                Arc::clone(hit)
+            } else {
+                let loaded = self.load_wav_cached(&request.wav_path)?;
+                phrase_wavs.insert(request.wav_path.clone(), Arc::clone(&loaded));
+                loaded
+            };
+            wav_load += stage_start.elapsed();
+
+            let stage_start = Instant::now();
+            let (sample_rate, samples) = &*wav_arc;
             convert::validate_request(request, *sample_rate, samples.len())?;
-            let frq = load_frq(&mut frqs, request);
-            let synth_request =
-                to_synth_request(request, *sample_rate, samples, frq.map(|v| v.as_slice()));
+            validation_time += stage_start.elapsed();
+
+            let stage_start = Instant::now();
+            let frq_arc = if let Some(hit) = phrase_frqs.get(&request.wav_path) {
+                hit.clone()
+            } else {
+                let loaded = self.load_frq_cached(&request.wav_path);
+                phrase_frqs.insert(request.wav_path.clone(), loaded.clone());
+                loaded
+            };
+            frq_load += stage_start.elapsed();
+
+            let synth_request = to_synth_request(
+                request,
+                *sample_rate,
+                samples,
+                frq_arc.as_deref().map(|v| v.as_slice()),
+            );
+            let stage_start = Instant::now();
             synth.add_request(
                 &synth_request,
                 request.pos_ms,
@@ -133,7 +284,9 @@ impl WorldlineRenderer {
                 request.fade_in_ms,
                 request.fade_out_ms,
             );
+            request_queue += stage_start.elapsed();
         }
+        let stage_start = Instant::now();
         synth.set_curves(
             &curves.f0,
             Some(&curves.gender),
@@ -141,46 +294,122 @@ impl WorldlineRenderer {
             Some(&curves.breathiness),
             Some(&curves.voicing),
         );
-        Ok(synth.synth())
+        let set_curves = stage_start.elapsed();
+        let unique_frqs = phrase_frqs.values().filter(|v| v.is_some()).count();
+        Ok(Some(PreparedPhraseBuild {
+            synth,
+            request_count: requests.len(),
+            unique_wavs: phrase_wavs.len(),
+            unique_frqs,
+            request_build,
+            curve_build,
+            synth_open,
+            wav_load,
+            validation_time,
+            frq_load,
+            request_queue,
+            set_curves,
+        }))
     }
-}
 
-/// Load (and cache per phrase) the wav of `request` as mono f64 samples,
-/// like C# `SynthRequestWrapper` (`Wave.GetSamples(...).ToMono(1, 0)`).
-fn load_wav<'a>(
-    wavs: &'a mut HashMap<String, (u32, Vec<f64>)>,
-    request: &PhonemeRequest,
-) -> Result<&'a (u32, Vec<f64>), Error> {
-    if !wavs.contains_key(&request.wav_path) {
-        let wav: WavData =
-            voicebank::read_wav(Path::new(&request.wav_path)).map_err(|source| Error::Wav {
-                path: request.wav_path.clone(),
-                source,
-            })?;
-        let mono: Vec<f64> = wav.to_mono().into_iter().map(|s| s as f64).collect();
-        wavs.insert(request.wav_path.clone(), (wav.sample_rate, mono));
-    }
-    Ok(wavs.get(&request.wav_path).expect("just inserted"))
-}
-
-/// Load the OpenUtau .frq file next to `request`'s wav (`{stem}_wav.frq`),
-/// if present. The C++ FrqEstimator uses its per-frame f0 instead of the
-/// noisy pyin estimate — plosive bursts (unvoiced, f0≈0 from pyin) keep
-/// their real f0 from the frq and stop being rendered as silence.
-fn load_frq<'a>(
-    frqs: &'a mut HashMap<String, Vec<u8>>,
-    request: &PhonemeRequest,
-) -> Option<&'a Vec<u8>> {
-    let wav_path = Path::new(&request.wav_path);
-    let stem = wav_path.file_stem()?.to_str()?;
-    let frq_path = wav_path.with_file_name(format!("{stem}_wav.frq"));
-    if !frqs.contains_key(&request.wav_path) {
-        let data = std::fs::read(&frq_path).unwrap_or_default();
-        if !data.is_empty() {
-            frqs.insert(request.wav_path.clone(), data);
+    /// Render one phrase to mono f32 PCM at [`DEFAULT_SAMPLE_RATE`].
+    ///
+    /// Converts every phoneme into a `SynthRequest` (C# `ResamplerItem` +
+    /// `SynthRequestWrapper` semantics), places them on the phrase
+    /// timeline with the C# `WorldlineRenderer` timing, sets the per-frame
+    /// expression curves and synthesizes.
+    pub fn render_phrase(&self, input: &RenderInput) -> Result<Vec<f32>, Error> {
+        let call_start = Instant::now();
+        let profile = std::env::var_os("WORLDLINE_PROFILE_PREP").is_some();
+        let Some(built) = self.build_phrase_synth(input)? else {
+            return Ok(Vec::new());
+        };
+        let stage_start = Instant::now();
+        let output = built.synth.synth();
+        let synth_call = stage_start.elapsed();
+        if profile {
+            eprintln!(
+                "RENDERER_PROFILE mode=offline requests={} unique_wavs={} unique_frqs={} build_requests_ms={:.3} curve_grid_ms={:.3} open_ms={:.3} wav_lookup_decode_ms={:.3} validation_ms={:.3} frq_lookup_ms={:.3} queue_copy_ms={:.3} set_curves_ms={:.3} synth_call_ms={:.3} total_ms={:.3}",
+                built.request_count, built.unique_wavs, built.unique_frqs,
+                built.request_build.as_secs_f64() * 1000.0,
+                built.curve_build.as_secs_f64() * 1000.0,
+                built.synth_open.as_secs_f64() * 1000.0,
+                built.wav_load.as_secs_f64() * 1000.0,
+                built.validation_time.as_secs_f64() * 1000.0,
+                built.frq_load.as_secs_f64() * 1000.0,
+                built.request_queue.as_secs_f64() * 1000.0,
+                built.set_curves.as_secs_f64() * 1000.0,
+                synth_call.as_secs_f64() * 1000.0,
+                call_start.elapsed().as_secs_f64() * 1000.0,
+            );
         }
+        Ok(output)
     }
-    frqs.get(&request.wav_path)
+
+    /// Render a phrase and synchronously deliver finalized PCM blocks from
+    /// the incremental WORLD pipeline. The legacy `render_phrase` remains the
+    /// offline baseline and its output is bit-for-bit identical.
+    pub fn render_phrase_stream<F>(
+        &self,
+        input: &RenderInput,
+        block_samples: usize,
+        callback: F,
+    ) -> Result<usize, Error>
+    where
+        F: FnMut(&[f32]) -> Result<(), String>,
+    {
+        let (total, _stats) =
+            self.render_phrase_stream_with_stats(input, block_samples, callback)?;
+        Ok(total)
+    }
+
+    /// Render a phrase via the incremental WORLD pipeline and return detailed
+    /// streaming latency, concurrency, and peak memory metrics.
+    pub fn render_phrase_stream_with_stats<F>(
+        &self,
+        input: &RenderInput,
+        block_samples: usize,
+        mut callback: F,
+    ) -> Result<(usize, WorldlineStreamStats), Error>
+    where
+        F: FnMut(&[f32]) -> Result<(), String>,
+    {
+        let call_start = Instant::now();
+        let profile = std::env::var_os("WORLDLINE_PROFILE_PREP").is_some();
+        let Some(built) = self.build_phrase_synth(input)? else {
+            return Ok((0, WorldlineStreamStats::default()));
+        };
+        let first_callback = std::cell::Cell::new(None::<Duration>);
+        let stage_start = Instant::now();
+        let (total, stats) = built
+            .synth
+            .synth_stream_with_stats(block_samples, |samples| {
+                if first_callback.get().is_none() {
+                    first_callback.set(Some(stage_start.elapsed()));
+                }
+                callback(samples)
+            })
+            .map_err(Error::StreamCallback)?;
+        let synth_call = stage_start.elapsed();
+        if profile {
+            eprintln!(
+                "RENDERER_PROFILE mode=stream requests={} unique_wavs={} unique_frqs={} build_requests_ms={:.3} curve_grid_ms={:.3} open_ms={:.3} wav_lookup_decode_ms={:.3} validation_ms={:.3} frq_lookup_ms={:.3} queue_copy_ms={:.3} set_curves_ms={:.3} stream_to_first_callback_ms={:.3} stream_call_ms={:.3} total_ms={:.3}",
+                built.request_count, built.unique_wavs, built.unique_frqs,
+                built.request_build.as_secs_f64() * 1000.0,
+                built.curve_build.as_secs_f64() * 1000.0,
+                built.synth_open.as_secs_f64() * 1000.0,
+                built.wav_load.as_secs_f64() * 1000.0,
+                built.validation_time.as_secs_f64() * 1000.0,
+                built.frq_load.as_secs_f64() * 1000.0,
+                built.request_queue.as_secs_f64() * 1000.0,
+                built.set_curves.as_secs_f64() * 1000.0,
+                first_callback.get().unwrap_or(synth_call).as_secs_f64() * 1000.0,
+                synth_call.as_secs_f64() * 1000.0,
+                call_start.elapsed().as_secs_f64() * 1000.0,
+            );
+        }
+        Ok((total, stats))
+    }
 }
 
 /// Fill the FFI `SynthRequest` from a converted request. `samples` stays
@@ -196,7 +425,10 @@ fn to_synth_request(
     let (frq_length, frq_ptr) = match frq {
         // `c_char` is i8 on Linux but u8 on Android — cast through it so
         // the FFI struct type-checks on every target.
-        Some(f) => (f.len() as i32, f.as_ptr() as *const std::os::raw::c_char as *mut std::os::raw::c_char),
+        Some(f) => (
+            f.len() as i32,
+            f.as_ptr() as *const std::os::raw::c_char as *mut std::os::raw::c_char,
+        ),
         None => (0, std::ptr::null_mut()),
     };
     SynthRequest {

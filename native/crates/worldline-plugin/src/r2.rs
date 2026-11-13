@@ -103,7 +103,15 @@ pub fn analyze_segment(
     // VOL × 100 (0..200). convert.rs now sends the raw VOL (the ×0.44
     // v1 calibration was removed when r1 switched to the C++ PhraseSynth
     // volume semantics), so no undo factor is needed here.
-    let gain = request.volume * 0.01 * auto_gain(samples_trimmed, f0_trimmed, wav_max, 86.0, config.f0_floor as f64);
+    let gain = request.volume
+        * 0.01
+        * auto_gain(
+            samples_trimmed,
+            f0_trimmed,
+            wav_max,
+            86.0,
+            config.f0_floor as f64,
+        );
     let samples_gained: Vec<f32> = samples_trimmed.iter().map(|s| s * gain as f32).collect();
 
     // --- WORLD analysis with F0 in (C# WorldAnalysisF0In) ---
@@ -159,14 +167,16 @@ pub fn analyze_segment(
         let idx = pos.floor() as usize;
         let frac = pos - idx as f64;
         if idx + 1 < f0_trimmed.len() {
-            f0_dst.push(
-                f0_trimmed[idx] * (1.0 - frac) + f0_trimmed[idx + 1] * frac,
-            );
+            f0_dst.push(f0_trimmed[idx] * (1.0 - frac) + f0_trimmed[idx + 1] * frac);
             for k in 0..sp_size {
-                sp_dst.push(sp_env_src[idx * sp_size + k] * (1.0 - frac)
-                    + sp_env_src[(idx + 1) * sp_size + k] * frac);
-                ap_dst.push(ap_src[idx * sp_size + k] * (1.0 - frac)
-                    + ap_src[(idx + 1) * sp_size + k] * frac);
+                sp_dst.push(
+                    sp_env_src[idx * sp_size + k] * (1.0 - frac)
+                        + sp_env_src[(idx + 1) * sp_size + k] * frac,
+                );
+                ap_dst.push(
+                    ap_src[idx * sp_size + k] * (1.0 - frac)
+                        + ap_src[(idx + 1) * sp_size + k] * frac,
+                );
             }
         } else {
             let idx = idx.min(f0_trimmed.len() - 1);
@@ -256,8 +266,7 @@ pub fn synth_features(segments: &[Segment], fft_size: i32) -> Features {
                 sp_out[j * sp_size + k] += seg.sp_env[seg_idx][k] * weight;
                 let wa = if dirty[j] == 0 { 0.0 } else { 1.0 - weight };
                 let wb = if dirty[j] == 0 { 1.0 } else { weight };
-                ap_out[j * sp_size + k] =
-                    ap_out[j * sp_size + k] * wa + seg.ap[seg_idx][k] * wb;
+                ap_out[j * sp_size + k] = ap_out[j * sp_size + k] * wa + seg.ap[seg_idx][k] * wb;
             }
             dirty[j] = 1;
         }
@@ -317,7 +326,12 @@ fn load_frq(wav_path: &str) -> (bool, Option<FrqData>) {
 /// the source frames whose f0 > f0_floor. Writes into `out` (the DIO
 /// grid, pre-zeroed — unvoiced regions stay 0 exactly like the C# loop
 /// leaving the buffer at 0).
-fn resample_frq_into(frq: &FrqData, config: &worldline_sys::AnalysisConfig, f0_floor: f64, out: &mut [f64]) {
+fn resample_frq_into(
+    frq: &FrqData,
+    config: &worldline_sys::AnalysisConfig,
+    f0_floor: f64,
+    out: &mut [f64],
+) {
     let ratio = config.hop_size as f64 / frq.hop_size as f64;
     for i in 0..out.len() {
         let i_f = i as f64;

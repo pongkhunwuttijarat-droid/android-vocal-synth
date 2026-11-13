@@ -51,6 +51,28 @@ use std::path::Path;
 /// `None` (NULL) disables logging.
 pub type LogCallback = Option<unsafe extern "C" fn(log: *const c_char)>;
 
+/// Synchronous PCM callback exported by the mid-render POC API.
+pub type PcmStreamCallback =
+    Option<unsafe extern "C" fn(samples: *const f32, length: i32, user_data: *mut c_void) -> i32>;
+
+/// Per-stream execution and memory metrics reported by `PhraseSynthSynthStreamWithStats`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WorldlineStreamStats {
+    pub first_block_ms: f64,
+    pub total_ms: f64,
+    pub prep_wait_ms: f64,
+    pub backpressure_wait_ms: f64,
+    pub prep_workers: i32,
+    pub synth_workers: i32,
+    pub peak_buffered_models: i32,
+    pub peak_timeline_frames: i32,
+    pub total_frames: i32,
+    pub output_samples: i32,
+    pub cache_hits: i32,
+    pub cache_misses: i32,
+}
+
 /// `struct SynthRequest` from `synth_request.h`.
 ///
 /// Layout verified by the `synth_request_layout` unit test:
@@ -283,6 +305,41 @@ extern "C" {
         y: *mut *mut f32,
         log_callback: LogCallback,
     ) -> i32;
+
+    /// Synthesize and synchronously report finalized PCM blocks while the
+    /// WORLD pulse loop is still running. Returns the total sample count.
+    pub fn PhraseSynthSynthStream(
+        phrase_synth: *mut c_void,
+        callback: PcmStreamCallback,
+        user_data: *mut c_void,
+        block_samples: i32,
+        log_callback: LogCallback,
+    ) -> i32;
+
+    /// Create a thread-safe bounded LRU prepared-model cache.
+    pub fn PreparedCacheNew(max_entries: i32) -> *mut c_void;
+
+    /// Destroy a prepared-model cache.
+    pub fn PreparedCacheDelete(cache: *mut c_void);
+
+    /// Clear all cached prepared models.
+    pub fn PreparedCacheClear(cache: *mut c_void);
+
+    /// Return current entry count in the prepared-model cache.
+    pub fn PreparedCacheSize(cache: *const c_void) -> i32;
+
+    /// Attach a prepared-model cache to `phrase_synth` (cache must outlive synthesis).
+    pub fn PhraseSynthSetPreparedCache(phrase_synth: *mut c_void, cache: *mut c_void);
+
+    /// Streamed synthesis with full pipeline/cache/memory metrics.
+    pub fn PhraseSynthSynthStreamWithStats(
+        phrase_synth: *mut c_void,
+        callback: PcmStreamCallback,
+        user_data: *mut c_void,
+        block_samples: i32,
+        stats_out: *mut WorldlineStreamStats,
+        log_callback: LogCallback,
+    ) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -328,15 +385,139 @@ impl From<libloading::Error> for Error {
 /// the wrapper) and the raw C++ handle, which is released via
 /// `PhraseSynthDelete` on drop. `PhraseSynth` is `!Send + !Sync`: the
 /// underlying C++ object must be used from one thread at a time.
+/// Safe thread-safe handle to a bounded LRU C++ `worldline::PreparedCache`.
+///
+/// Shared across sequential/concurrent [`PhraseSynth`] instances on a
+/// renderer so unchanged phonemes hit already-prepared spectral/aperiodicity
+/// models on edits or seeks.
+pub struct PreparedCache {
+    #[allow(dead_code)]
+    lib: Library,
+    handle: *mut c_void,
+    delete: Symbol<'static, unsafe extern "C" fn(*mut c_void)>,
+    clear: Symbol<'static, unsafe extern "C" fn(*mut c_void)>,
+    size: Symbol<'static, unsafe extern "C" fn(*const c_void) -> i32>,
+}
+
+impl PreparedCache {
+    /// Open `path` and create a bounded LRU cache (`max_entries <= 0` uses default 512).
+    pub fn open(path: impl AsRef<Path>, max_entries: i32) -> Result<Self, Error> {
+        // SAFETY: dlopen + dlsym of trusted shared library path.
+        let lib = unsafe { Library::new(path.as_ref()) }?;
+        unsafe fn sym<T>(
+            lib: &Library,
+            name: &[u8],
+        ) -> Result<Symbol<'static, T>, libloading::Error> {
+            let s = lib.get::<T>(name)?;
+            Ok(std::mem::transmute::<Symbol<'_, T>, Symbol<'static, T>>(s))
+        }
+        unsafe {
+            let new = sym::<unsafe extern "C" fn(i32) -> *mut c_void>(&lib, b"PreparedCacheNew")?;
+            let delete = sym::<unsafe extern "C" fn(*mut c_void)>(&lib, b"PreparedCacheDelete")?;
+            let clear = sym::<unsafe extern "C" fn(*mut c_void)>(&lib, b"PreparedCacheClear")?;
+            let size =
+                sym::<unsafe extern "C" fn(*const c_void) -> i32>(&lib, b"PreparedCacheSize")?;
+            let handle = new(max_entries);
+            if handle.is_null() {
+                return Err(Error::NullHandle);
+            }
+            Ok(PreparedCache {
+                lib,
+                handle,
+                delete,
+                clear,
+                size,
+            })
+        }
+    }
+
+    pub fn raw_handle(&self) -> *mut c_void {
+        self.handle
+    }
+
+    pub fn clear(&self) {
+        // SAFETY: C++ PreparedCache::Clear is mutex-protected.
+        unsafe { (self.clear)(self.handle) };
+    }
+
+    pub fn len(&self) -> usize {
+        // SAFETY: C++ PreparedCache::Size is mutex-protected.
+        unsafe { (self.size)(self.handle).max(0) as usize }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl Drop for PreparedCache {
+    fn drop(&mut self) {
+        // SAFETY: handle was allocated by PreparedCacheNew and is freed once here.
+        unsafe { (self.delete)(self.handle) };
+    }
+}
+
+// SAFETY: C++ `worldline::PreparedCache` guards all reads/writes with `std::mutex`.
+unsafe impl Send for PreparedCache {}
+unsafe impl Sync for PreparedCache {}
+
 pub struct PhraseSynth {
     /// Kept alive for the lifetime of the wrapper (dlclose on drop).
     #[allow(dead_code)]
     lib: Library,
     handle: *mut c_void,
     delete: Symbol<'static, unsafe extern "C" fn(*mut c_void)>,
-    add_request: Symbol<'static, unsafe extern "C" fn(*mut c_void, *const SynthRequest, f64, f64, f64, f64, f64, LogCallback)>,
-    set_curves: Symbol<'static, unsafe extern "C" fn(*mut c_void, *mut f64, *mut f64, *mut f64, *mut f64, *mut f64, i32, LogCallback)>,
+    add_request: Symbol<
+        'static,
+        unsafe extern "C" fn(
+            *mut c_void,
+            *const SynthRequest,
+            f64,
+            f64,
+            f64,
+            f64,
+            f64,
+            LogCallback,
+        ),
+    >,
+    set_curves: Symbol<
+        'static,
+        unsafe extern "C" fn(
+            *mut c_void,
+            *mut f64,
+            *mut f64,
+            *mut f64,
+            *mut f64,
+            *mut f64,
+            i32,
+            LogCallback,
+        ),
+    >,
     synth: Symbol<'static, unsafe extern "C" fn(*mut c_void, *mut *mut f32, LogCallback) -> i32>,
+    synth_stream: Symbol<
+        'static,
+        unsafe extern "C" fn(
+            *mut c_void,
+            PcmStreamCallback,
+            *mut c_void,
+            i32,
+            LogCallback,
+        ) -> i32,
+    >,
+    set_prepared_cache: Option<Symbol<'static, unsafe extern "C" fn(*mut c_void, *mut c_void)>>,
+    synth_stream_with_stats: Option<
+        Symbol<
+            'static,
+            unsafe extern "C" fn(
+                *mut c_void,
+                PcmStreamCallback,
+                *mut c_void,
+                i32,
+                *mut WorldlineStreamStats,
+                LogCallback,
+            ) -> i32,
+        >,
+    >,
 }
 
 impl PhraseSynth {
@@ -373,14 +554,59 @@ impl PhraseSynth {
             let new = sym::<unsafe extern "C" fn() -> *mut c_void>(&lib, b"PhraseSynthNew")?;
             let delete = sym::<unsafe extern "C" fn(*mut c_void)>(&lib, b"PhraseSynthDelete")?;
             let add_request = sym::<
-                unsafe extern "C" fn(*mut c_void, *const SynthRequest, f64, f64, f64, f64, f64, LogCallback),
+                unsafe extern "C" fn(
+                    *mut c_void,
+                    *const SynthRequest,
+                    f64,
+                    f64,
+                    f64,
+                    f64,
+                    f64,
+                    LogCallback,
+                ),
             >(&lib, b"PhraseSynthAddRequest")?;
             let set_curves = sym::<
-                unsafe extern "C" fn(*mut c_void, *mut f64, *mut f64, *mut f64, *mut f64, *mut f64, i32, LogCallback),
+                unsafe extern "C" fn(
+                    *mut c_void,
+                    *mut f64,
+                    *mut f64,
+                    *mut f64,
+                    *mut f64,
+                    *mut f64,
+                    i32,
+                    LogCallback,
+                ),
             >(&lib, b"PhraseSynthSetCurves")?;
-            let synth = sym::<
-                unsafe extern "C" fn(*mut c_void, *mut *mut f32, LogCallback) -> i32,
-            >(&lib, b"PhraseSynthSynth")?;
+            let synth = sym::<unsafe extern "C" fn(*mut c_void, *mut *mut f32, LogCallback) -> i32>(
+                &lib,
+                b"PhraseSynthSynth",
+            )?;
+            let synth_stream = sym::<
+                unsafe extern "C" fn(
+                    *mut c_void,
+                    PcmStreamCallback,
+                    *mut c_void,
+                    i32,
+                    LogCallback,
+                ) -> i32,
+            >(&lib, b"PhraseSynthSynthStream")?;
+            let set_prepared_cache =
+                sym::<unsafe extern "C" fn(*mut c_void, *mut c_void)>(
+                    &lib,
+                    b"PhraseSynthSetPreparedCache",
+                )
+                .ok();
+            let synth_stream_with_stats = sym::<
+                unsafe extern "C" fn(
+                    *mut c_void,
+                    PcmStreamCallback,
+                    *mut c_void,
+                    i32,
+                    *mut WorldlineStreamStats,
+                    LogCallback,
+                ) -> i32,
+            >(&lib, b"PhraseSynthSynthStreamWithStats")
+            .ok();
 
             let handle = new();
             if handle.is_null() {
@@ -393,6 +619,9 @@ impl PhraseSynth {
                 add_request,
                 set_curves,
                 synth,
+                synth_stream,
+                set_prepared_cache,
+                synth_stream_with_stats,
             })
         }
     }
@@ -400,6 +629,15 @@ impl PhraseSynth {
     /// The raw C++ `PhraseSynth*` handle.
     pub fn raw_handle(&self) -> *mut c_void {
         self.handle
+    }
+
+    /// Attach or detach a shared [`PreparedCache`] for subsequent synthesis on this handle.
+    pub fn set_prepared_cache(&self, cache: Option<&PreparedCache>) {
+        if let Some(ref setter) = self.set_prepared_cache {
+            let cache_ptr = cache.map(|c| c.raw_handle()).unwrap_or(std::ptr::null_mut());
+            // SAFETY: cache_ptr is either null or owned by `cache` while synthesis runs.
+            unsafe { setter(self.handle, cache_ptr) };
+        }
     }
 
     /// Add one request (note) to the phrase. `request` is copied by the
@@ -509,6 +747,114 @@ impl PhraseSynth {
         out
     }
 
+    /// Render while synchronously delivering contiguous, finalized PCM
+    /// blocks. Returning `Err(...)` from `callback` triggers cooperative
+    /// cancellation on the C++ side so workers stop and join cleanly.
+    pub fn synth_stream<F>(
+        &self,
+        block_samples: usize,
+        callback: F,
+    ) -> Result<usize, String>
+    where
+        F: FnMut(&[f32]) -> Result<(), String>,
+    {
+        self.synth_stream_inner(block_samples, None, callback)
+    }
+
+    /// Render while synchronously delivering contiguous, finalized PCM
+    /// blocks and returning C++ pipeline/cache/memory metrics.
+    pub fn synth_stream_with_stats<F>(
+        &self,
+        block_samples: usize,
+        callback: F,
+    ) -> Result<(usize, WorldlineStreamStats), String>
+    where
+        F: FnMut(&[f32]) -> Result<(), String>,
+    {
+        let mut stats = WorldlineStreamStats::default();
+        let total = self.synth_stream_inner(block_samples, Some(&mut stats), callback)?;
+        Ok((total, stats))
+    }
+
+    fn synth_stream_inner<F>(
+        &self,
+        block_samples: usize,
+        stats_out: Option<&mut WorldlineStreamStats>,
+        mut callback: F,
+    ) -> Result<usize, String>
+    where
+        F: FnMut(&[f32]) -> Result<(), String>,
+    {
+        struct Context<'a> {
+            callback: &'a mut dyn FnMut(&[f32]) -> Result<(), String>,
+            error: Option<String>,
+        }
+        unsafe extern "C" fn trampoline(
+            samples: *const f32,
+            length: i32,
+            user_data: *mut c_void,
+        ) -> i32 {
+            if samples.is_null() || length <= 0 || user_data.is_null() {
+                return 0;
+            }
+            let context = &mut *(user_data as *mut Context<'_>);
+            if context.error.is_some() {
+                return 0;
+            }
+            let slice = std::slice::from_raw_parts(samples, length as usize);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                (context.callback)(slice)
+            }));
+            match result {
+                Ok(Ok(())) => 1,
+                Ok(Err(error)) => {
+                    context.error = Some(error);
+                    0
+                }
+                Err(_) => {
+                    context.error = Some("PCM stream callback panicked".to_string());
+                    0
+                }
+            }
+        }
+
+        if block_samples == 0 || block_samples > i32::MAX as usize {
+            return Err("PCM stream block size must fit a positive i32".to_string());
+        }
+        let mut context = Context {
+            callback: &mut callback,
+            error: None,
+        };
+        let len = match (stats_out, &self.synth_stream_with_stats) {
+            (Some(stats), Some(with_stats)) => unsafe {
+                with_stats(
+                    self.handle,
+                    Some(trampoline),
+                    &mut context as *mut Context<'_> as *mut c_void,
+                    block_samples as i32,
+                    stats as *mut WorldlineStreamStats,
+                    None,
+                )
+            },
+            _ => unsafe {
+                (self.synth_stream)(
+                    self.handle,
+                    Some(trampoline),
+                    &mut context as *mut Context<'_> as *mut c_void,
+                    block_samples as i32,
+                    None,
+                )
+            },
+        };
+        if let Some(error) = context.error {
+            return Err(error);
+        }
+        if len < 0 {
+            return Err(format!("native PhraseSynth stream failed: {len}"));
+        }
+        Ok(len as usize)
+    }
+
     /// Free a buffer allocated by the library (`new float[]`).
     ///
     /// Safe to call on pointers returned via `PhraseSynthSynth`/`Resample`
@@ -606,6 +952,24 @@ mod tests {
         assert_eq!(offset_of!(AnalysisConfig, frame_ms), 16);
     }
 
+    #[test]
+    fn worldline_stream_stats_layout() {
+        assert_eq!(size_of::<WorldlineStreamStats>(), 64);
+        assert_eq!(align_of::<WorldlineStreamStats>(), 8);
+        assert_eq!(offset_of!(WorldlineStreamStats, first_block_ms), 0);
+        assert_eq!(offset_of!(WorldlineStreamStats, total_ms), 8);
+        assert_eq!(offset_of!(WorldlineStreamStats, prep_wait_ms), 16);
+        assert_eq!(offset_of!(WorldlineStreamStats, backpressure_wait_ms), 24);
+        assert_eq!(offset_of!(WorldlineStreamStats, prep_workers), 32);
+        assert_eq!(offset_of!(WorldlineStreamStats, synth_workers), 36);
+        assert_eq!(offset_of!(WorldlineStreamStats, peak_buffered_models), 40);
+        assert_eq!(offset_of!(WorldlineStreamStats, peak_timeline_frames), 44);
+        assert_eq!(offset_of!(WorldlineStreamStats, total_frames), 48);
+        assert_eq!(offset_of!(WorldlineStreamStats, output_samples), 52);
+        assert_eq!(offset_of!(WorldlineStreamStats, cache_hits), 56);
+        assert_eq!(offset_of!(WorldlineStreamStats, cache_misses), 60);
+    }
+
     /// Defaults mirror the C++ default member initializers.
     #[test]
     fn synth_request_defaults() {
@@ -630,12 +994,39 @@ mod tests {
 pub struct Analysis {
     _lib: libloading::Library,
     f0: Symbol<'static, unsafe extern "C" fn(*mut f32, i32, i32, f64, i32, *mut *mut f64) -> i32>,
-    analysis_f0_in:
-        Symbol<'static, unsafe extern "C" fn(*const AnalysisConfig, *mut f32, i32, *mut f64, i32, *mut f64, *mut f64)>,
-    init_config:
-        Symbol<'static, unsafe extern "C" fn(*mut AnalysisConfig, i32, i32, i32)>,
-    world_synthesis:
-        Symbol<'static, unsafe extern "C" fn(*mut f64, i32, *mut f64, u8, i32, *mut f64, u8, i32, f64, i32, *mut *mut f64, *mut f64, *mut f64, *mut f64, *mut f64) -> i32>,
+    analysis_f0_in: Symbol<
+        'static,
+        unsafe extern "C" fn(
+            *const AnalysisConfig,
+            *mut f32,
+            i32,
+            *mut f64,
+            i32,
+            *mut f64,
+            *mut f64,
+        ),
+    >,
+    init_config: Symbol<'static, unsafe extern "C" fn(*mut AnalysisConfig, i32, i32, i32)>,
+    world_synthesis: Symbol<
+        'static,
+        unsafe extern "C" fn(
+            *mut f64,
+            i32,
+            *mut f64,
+            u8,
+            i32,
+            *mut f64,
+            u8,
+            i32,
+            f64,
+            i32,
+            *mut *mut f64,
+            *mut f64,
+            *mut f64,
+            *mut f64,
+            *mut f64,
+        ) -> i32,
+    >,
 }
 
 impl Analysis {
@@ -660,14 +1051,43 @@ impl Analysis {
         }
         // SAFETY: dlsym lookups; failure yields Err (no UB).
         unsafe {
-            let f0 = sym::<unsafe extern "C" fn(*mut f32, i32, i32, f64, i32, *mut *mut f64) -> i32>(&lib, b"F0")?;
-            let analysis_f0_in = sym::<unsafe extern "C" fn(*const AnalysisConfig, *mut f32, i32, *mut f64, i32, *mut f64, *mut f64)>(&lib, b"WorldAnalysisF0In")?;
-            let init_config =
-                sym::<unsafe extern "C" fn(*mut AnalysisConfig, i32, i32, i32)>(&lib, b"InitAnalysisConfig")?;
-            let world_synthesis = sym::<unsafe extern "C" fn(
-                *mut f64, i32, *mut f64, u8, i32, *mut f64, u8, i32, f64, i32,
-                *mut *mut f64, *mut f64, *mut f64, *mut f64, *mut f64,
-            ) -> i32>(&lib, b"WorldSynthesis")?;
+            let f0 = sym::<unsafe extern "C" fn(*mut f32, i32, i32, f64, i32, *mut *mut f64) -> i32>(
+                &lib, b"F0",
+            )?;
+            let analysis_f0_in = sym::<
+                unsafe extern "C" fn(
+                    *const AnalysisConfig,
+                    *mut f32,
+                    i32,
+                    *mut f64,
+                    i32,
+                    *mut f64,
+                    *mut f64,
+                ),
+            >(&lib, b"WorldAnalysisF0In")?;
+            let init_config = sym::<unsafe extern "C" fn(*mut AnalysisConfig, i32, i32, i32)>(
+                &lib,
+                b"InitAnalysisConfig",
+            )?;
+            let world_synthesis = sym::<
+                unsafe extern "C" fn(
+                    *mut f64,
+                    i32,
+                    *mut f64,
+                    u8,
+                    i32,
+                    *mut f64,
+                    u8,
+                    i32,
+                    f64,
+                    i32,
+                    *mut *mut f64,
+                    *mut f64,
+                    *mut f64,
+                    *mut f64,
+                    *mut f64,
+                ) -> i32,
+            >(&lib, b"WorldSynthesis")?;
             Ok(Analysis {
                 _lib: lib,
                 f0,
@@ -786,4 +1206,3 @@ extern "C" {
 pub fn libc_free(ptr: *mut c_void) {
     unsafe { free(ptr) };
 }
-

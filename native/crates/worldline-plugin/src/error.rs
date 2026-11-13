@@ -35,4 +35,7 @@ pub enum Error {
     /// The input region spans no 10 ms frame (`CutOffBeforeOffsetError`).
     #[error("oto error for phoneme {phoneme}: cutoff before offset")]
     CutoffBeforeOffset { phoneme: String },
+    /// A downstream consumer rejected a streamed PCM block.
+    #[error("PCM stream callback failed: {0}")]
+    StreamCallback(String),
 }

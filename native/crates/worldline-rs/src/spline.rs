@@ -57,11 +57,23 @@ impl NaturalSpline {
             // Thomas algorithm.
             let mut cp = vec![0.0; m];
             let mut dp = vec![0.0; m];
-            cp[0] = if diag[0].abs() > 0.0 { upper[0] / diag[0] } else { 0.0 };
-            dp[0] = if diag[0].abs() > 0.0 { rhs[0] / diag[0] } else { 0.0 };
+            cp[0] = if diag[0].abs() > 0.0 {
+                upper[0] / diag[0]
+            } else {
+                0.0
+            };
+            dp[0] = if diag[0].abs() > 0.0 {
+                rhs[0] / diag[0]
+            } else {
+                0.0
+            };
             for k in 1..m {
                 let denom = diag[k] - lower[k] * cp[k - 1];
-                cp[k] = if denom.abs() > 0.0 { upper[k] / denom } else { 0.0 };
+                cp[k] = if denom.abs() > 0.0 {
+                    upper[k] / denom
+                } else {
+                    0.0
+                };
                 dp[k] = if denom.abs() > 0.0 {
                     (rhs[k] - lower[k] * dp[k - 1]) / denom
                 } else {

@@ -9,6 +9,7 @@
 //! negotiates capabilities before filling the input.
 
 use std::path::Path;
+use std::sync::Mutex;
 
 use domain::capabilities::EngineCapabilities;
 use domain::UProject;
@@ -130,7 +131,8 @@ impl WorldlineEngine {
 
     /// Reset the cancellation flag (call before starting a new render).
     pub fn clear_cancel(&mut self) {
-        self.cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.cancel
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -197,6 +199,9 @@ impl pipeline::PhraseRenderer for WorldlineR2Engine {
         // "worldline-r2" — distinct from the r1 WORLD engine so the
         // neural path never reuses WORLD-rendered chunks.
         0x726c32_0000_0002
+    }
+    fn curve_frame_ms(&self) -> f64 {
+        11.6
     }
     fn parallel_safe(&self) -> bool {
         true
@@ -294,8 +299,7 @@ impl Engine for WorldlineEngine {
     }
 
     fn set_cache_dir(&mut self, dir: &Path, max_bytes: usize) -> Result<(), String> {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("cache dir {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(dir).map_err(|e| format!("cache dir {}: {e}", dir.display()))?;
         self.cache = Some(RenderCache::new_in_dir(dir, max_bytes));
         Ok(())
     }
@@ -311,6 +315,7 @@ impl Engine for WorldlineEngine {
 pub struct WorldlineRsEngine {
     frame_ms: f64,
     verbose: bool,
+    prepared_cache: Mutex<worldline_rs::PreparedModelCache>,
 }
 
 impl WorldlineRsEngine {
@@ -319,7 +324,35 @@ impl WorldlineRsEngine {
         Ok(WorldlineRsEngine {
             frame_ms: worldline_plugin::DEFAULT_FRAME_MS,
             verbose,
+            prepared_cache: Mutex::new(worldline_rs::PreparedModelCache::new(64 * 1024 * 1024)),
         })
+    }
+
+    pub fn clear_caches(&self) {
+        if let Ok(mut guard) = self.prepared_cache.lock() {
+            *guard = worldline_rs::PreparedModelCache::new(64 * 1024 * 1024);
+        }
+    }
+
+    pub fn prepared_cache_len(&self) -> usize {
+        self.prepared_cache.lock().map(|g| g.len()).unwrap_or(0)
+    }
+
+    pub fn render_phrase_stream_with_stats(
+        &self,
+        input: &feed::render_input::RenderInput,
+        block_samples: usize,
+        callback: impl FnMut(&[f32]) -> Result<(), String>,
+    ) -> Result<(usize, worldline_rs::StreamStatsRs), String> {
+        worldline_rs::render_phrase_stream_with_source_and_cache(
+            input,
+            self.frame_ms(),
+            worldline_rs::model_frame_ms(),
+            &worldline_rs::FileSource,
+            Some(&self.prepared_cache),
+            block_samples,
+            callback,
+        )
     }
 
     /// Frame size the Rust phrase path uses (v2 default, overridable by
@@ -344,11 +377,30 @@ impl WorldlineRsEngine {
 
 impl pipeline::PhraseRenderer for WorldlineRsEngine {
     fn render_phrase(&self, input: &feed::render_input::RenderInput) -> Result<Vec<f32>, String> {
-        worldline_rs::render_phrase(input, self.frame_ms())
+        worldline_rs::render_phrase_with_source_and_shared_cache(
+            input,
+            self.curve_frame_ms(),
+            worldline_rs::model_frame_ms(),
+            &worldline_rs::FileSource,
+            Some(&self.prepared_cache),
+        )
+    }
+
+    fn render_phrase_stream(
+        &self,
+        input: &feed::render_input::RenderInput,
+        block_samples: usize,
+        callback: &mut dyn FnMut(&[f32]) -> Result<(), String>,
+    ) -> Result<usize, String> {
+        self.render_phrase_stream_with_stats(input, block_samples, callback)
+            .map(|(samples, _)| samples)
     }
     fn cache_salt(&self) -> u64 {
         // "worldline-r-rs" — never share chunk caches with the .so r1 path.
-        0x726c31_7273_0004
+        0x726c31_7273_0004 ^ self.frame_ms().to_bits()
+    }
+    fn curve_frame_ms(&self) -> f64 {
+        self.frame_ms()
     }
     // Pure Rust, no shared C++ randn state: verified deterministic under
     // concurrent chunk renders (same class as the .so r1 path).
@@ -510,6 +562,9 @@ impl pipeline::PhraseRenderer for WorldlineClassicEngine {
         unsafe { worldline_plugin::libc_free(y as *mut std::ffi::c_void) };
         Ok(out)
     }
+    fn curve_frame_ms(&self) -> f64 {
+        11.6
+    }
 
     fn cache_salt(&self) -> u64 {
         // "worldline-classic" — never reuse r1/r2 chunk caches.
@@ -618,7 +673,8 @@ impl pipeline::PhraseRenderer for DsEngine {
         // before building the tensors.
         let mut patched = input.clone();
         patched.phrase.leading_ms = diffsinger::utils::HEAD_FRAMES as f64 * frame_ms;
-        patched.phrase.leading_ticks = (patched.phrase.leading_ms / (60000.0 / (120.0 * 480.0))) as i32;
+        patched.phrase.leading_ticks =
+            (patched.phrase.leading_ms / (60000.0 / (120.0 * 480.0))) as i32;
         let input = &patched;
         let frame_ms = frame_ms;
 
@@ -684,6 +740,9 @@ impl pipeline::PhraseRenderer for DsEngine {
             }
         }
         self.model.render(&ds_input)
+    }
+    fn curve_frame_ms(&self) -> f64 {
+        self.model.config.frame_ms()
     }
     fn parallel_safe(&self) -> bool {
         true

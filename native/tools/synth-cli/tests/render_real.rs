@@ -64,7 +64,9 @@ fn diffsinger_fake_model_renders_e2e() {
     let model_dir = repo_root().join("test/golden/diffsinger-fake");
     let mut engine = DsEngine::open(&model_dir, false).expect("open fake ds model");
 
-    let report = engine.render_project(&project, &voicebank, 0).expect("render project");
+    let report = engine
+        .render_project(&project, &voicebank, 0)
+        .expect("render project");
     assert!(
         report.skipped.is_empty(),
         "nothing may be skipped: {:?}",
@@ -232,7 +234,10 @@ fn demo_song_with_mock_bank_partially_resolves_and_is_reported() {
 fn phonemizer_kind_from_track_name() {
     let mut track = domain::UTrack::new("Track1");
     // Default is now the Universal (IPA-first) phonemizer.
-    assert_eq!(PhonemizerKind::from_track(&track), PhonemizerKind::Universal);
+    assert_eq!(
+        PhonemizerKind::from_track(&track),
+        PhonemizerKind::Universal
+    );
     track.phonemizer = Some("OpenUtau Japanese VCV Phonemizer".into());
     assert_eq!(PhonemizerKind::from_track(&track), PhonemizerKind::Japanese);
     track.phonemizer = Some("EnglishVCCVPhonemizer".into());
@@ -240,10 +245,16 @@ fn phonemizer_kind_from_track_name() {
     // English CVVC path's verbatim fallback skips whole phrases on
     // unknown words ("shi" -> no alias -> song renders only its first
     // phrase); Universal letter-splits + NearestPhoneme-maps them.
-    assert_eq!(PhonemizerKind::from_track(&track), PhonemizerKind::Universal);
+    assert_eq!(
+        PhonemizerKind::from_track(&track),
+        PhonemizerKind::Universal
+    );
     // An unrecognized name falls through to Universal (was English).
     track.phonemizer = Some("Custom Renderer".into());
-    assert_eq!(PhonemizerKind::from_track(&track), PhonemizerKind::Universal);
+    assert_eq!(
+        PhonemizerKind::from_track(&track),
+        PhonemizerKind::Universal
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -307,8 +318,8 @@ fn compare_engines(project: &Path, label: &str) -> (Vec<f32>, Vec<f32>) {
     let project = pipeline::load_project(project).expect("load project");
     let voicebank = pipeline::load_voicebank(&teto_voicebank_path()).expect("load teto bank");
 
-    let mut so_engine = synth_cli::engine::WorldlineEngine::open(so_path(), false)
-        .expect("open r1 (.so) engine");
+    let mut so_engine =
+        synth_cli::engine::WorldlineEngine::open(so_path(), false).expect("open r1 (.so) engine");
     let mut rs_engine = WorldlineRsEngine::open(false).expect("open r1-rs engine");
 
     let so_report = so_engine
@@ -318,8 +329,16 @@ fn compare_engines(project: &Path, label: &str) -> (Vec<f32>, Vec<f32>) {
         .render_project(&project, &voicebank, 0)
         .expect("render with r1-rs");
 
-    assert!(so_report.skipped.is_empty(), "so skipped: {:?}", so_report.skipped);
-    assert!(rs_report.skipped.is_empty(), "rs skipped: {:?}", rs_report.skipped);
+    assert!(
+        so_report.skipped.is_empty(),
+        "so skipped: {:?}",
+        so_report.skipped
+    );
+    assert!(
+        rs_report.skipped.is_empty(),
+        "rs skipped: {:?}",
+        rs_report.skipped
+    );
     assert_engines_match(label, &so_report.samples, &rs_report.samples);
     (so_report.samples, rs_report.samples)
 }
@@ -337,9 +356,11 @@ fn rust_kernel_matches_so_on_demo_song() {
 #[test]
 #[ignore = "requires libworldline.so; run with WORLDLINE_SO=... cargo test -p synth-cli --test render_real -- --ignored --nocapture"]
 fn rust_kernel_matches_so_on_scale_demo() {
-    compare_engines(&repo_root().join("test/golden/scale-demo-app.ustx"), "scale-demo r1 vs r1-rs");
+    compare_engines(
+        &repo_root().join("test/golden/scale-demo-app.ustx"),
+        "scale-demo r1 vs r1-rs",
+    );
 }
-
 
 // ---------------------------------------------------------------------------
 // Classic resampler (`Resample`) parity
@@ -430,14 +451,9 @@ fn rust_classic_resampler_matches_so() {
             _ => None,
         })
         .expect("voice part");
-    let phrases = pipeline::build_phrase_inputs(
-        &project,
-        track,
-        part,
-        &voicebank,
-        PhonemizerKind::Universal,
-    )
-    .expect("build phrases");
+    let phrases =
+        pipeline::build_phrase_inputs(&project, track, part, &voicebank, PhonemizerKind::Universal)
+            .expect("build phrases");
     let requests = worldline_plugin::build_requests(&phrases[0].input).expect("build requests");
     assert_eq!(requests.len(), 7, "demo song phoneme count");
 
@@ -479,7 +495,6 @@ fn rust_classic_resampler_matches_so() {
     );
 }
 
-
 // ---------------------------------------------------------------------------
 // pYIN F0 parity (the no-`.frq` fallback)
 // ---------------------------------------------------------------------------
@@ -506,7 +521,11 @@ fn rust_pyin_matches_libpyin_through_the_so() {
 
     let analysis = worldline_sys::Analysis::open(so_path()).expect("open analysis");
     let so_f0 = analysis.f0(&mono, fs, frame_ms, 2);
-    let raw = worldline_rs::pyin::analyze(&worldline_rs::pyin::PyinConfig::new(nhop), &mono64, f64::from(fs));
+    let raw = worldline_rs::pyin::analyze(
+        &worldline_rs::pyin::PyinConfig::new(nhop),
+        &mono64,
+        f64::from(fs),
+    );
     // `PyinEstimator::Estimate` drops the first raw frame.
     let rust_f0 = &raw[1..];
 

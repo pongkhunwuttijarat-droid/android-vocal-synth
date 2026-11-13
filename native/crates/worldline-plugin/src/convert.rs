@@ -15,8 +15,7 @@
 //!   `ResamplerItem` computes `(int)(phone.velocity * 100)` from the
 //!   normalized value, which nets out to the raw value.
 //! * `tone` = note tone + `shft` (the feed keeps them separate).
-//! * `tempo` is the BPM (C# `phone.adjustedTempo`); `RenderInput` carries
-//!   no tempo field, so the default 120 bpm is used.
+//! * `tempo` is the BPM (C# `phone.adjustedTempo`), carried per phoneme.
 //! * Flags: the oto entry's flags string (when present, e.g. `"g5P90"`)
 //!   overrides the C# defaults (`g` 0, `O` 0, `P` 86, `Mt` 0, `Mb` 0,
 //!   `Mv` 100); without a flags string the sampled `genc`/`tenc`/`brec`/
@@ -28,7 +27,6 @@
 //!   (the C++ model is trimmed to `offset + required_length` frames and
 //!   `model_i = left_extra + skip + i - p0` must stay inside it).
 
-use domain::{MOD, VEL, VOL};
 use feed::cents_to_freq;
 use feed::render_input::{Curves, OtoEntry, RenderInput, RenderPhoneme};
 
@@ -88,31 +86,26 @@ pub fn ms_per_interval(input: &RenderInput) -> f64 {
 // Grid sampling (C# `SampleCurve` / `ResamplerItem` pitch sampling)
 // ---------------------------------------------------------------------------
 
-/// A linear stand-in for the project time axis over the feed's 5-tick
-/// sampling grid. `RenderInput` carries no `TimeAxis`, so ms positions are
-/// mapped to grid indices with the constant [`ms_per_interval`].
+/// Absolute project-time view over the sampled 5-tick curve arrays.
+///
+/// The array origin is explicit in `RenderInput`; a chunk's local phrase
+/// origin must never reset this grid's phase.
 #[derive(Debug, Clone, Copy)]
-pub struct Grid {
-    /// Project-absolute ms of the first grid sample
-    /// (first phoneme `position_ms - leading_ms`).
-    pub start_ms: f64,
-    /// ms between two grid samples (5 ticks).
-    pub ms_per_interval: f64,
+pub struct Grid<'a> {
+    input: &'a RenderInput,
 }
 
-impl Grid {
-    /// Build the grid for `input` (uses [`ms_per_interval`]).
-    pub fn new(input: &RenderInput) -> Self {
-        Grid {
-            start_ms: input.phrase.position_ms - input.phrase.leading_ms,
-            ms_per_interval: ms_per_interval(input),
-        }
+impl<'a> Grid<'a> {
+    pub fn new(input: &'a RenderInput) -> Self {
+        Grid { input }
     }
 
     /// Fractional grid index at `ms` (C# `SampleCurve` index before
     /// truncation; may be negative or past the end).
     pub fn index_at(&self, ms: f64) -> f64 {
-        (ms - self.start_ms) / self.ms_per_interval
+        (time_axis_ms_to_tick_position(self.input, ms)
+            - f64::from(self.input.curve_grid_start_tick))
+            / 5.0
     }
 
     /// Integer grid index at `ms`, clamped at 0 (C# `SampleCurve`:
@@ -400,7 +393,7 @@ pub fn build_requests(input: &RenderInput) -> Result<Vec<PhonemeRequest>, Error>
         });
     }
     let grid = Grid::new(input);
-    let phrase_origin = input.phrase.position_ms - input.phrase.leading_ms;
+    let phrase_origin = input.render_origin_ms;
     Ok(input
         .phonemes
         .iter()
@@ -417,16 +410,19 @@ fn build_request(
     phoneme: &RenderPhoneme,
     oto: &OtoEntry,
 ) -> PhonemeRequest {
-    let con_vel = expression_value(input, grid, VEL, phoneme.position_ms, 100.0) as f64;
+    // ResamplerItem stores these normalized UPhoneme expressions back as
+    // truncated integer percentages before constructing SynthRequest.
+    let resampler_percent = |value: f32| ((value * 0.01_f32) * 100.0_f32) as i32;
+    let con_vel = resampler_percent(phoneme.consonant_velocity) as f64;
     // Volume: the C++ PhraseSynth AutoGain applies `gain = volume*0.01`
     // (effects.cpp) — C# sends item.volume = (int)(phone.volume*100) =
     // VOL (0..200, default 100), so gain = VOL*0.01. NO ×0.44
     // calibration here: that was tuned for the C# v2 feature path
     // (SynthSegment), and feeding it into PhraseSynth scaled r1 2.27×
     // quieter than the reference (ratio 2.0-2.3 on the scale demo).
-    let volume = expression_value(input, grid, VOL, phoneme.position_ms, 100.0) as f64;
-    let modulation = expression_value(input, grid, MOD, phoneme.position_ms, 0.0) as f64;
-    let tempo = DEFAULT_TEMPO_BPM;
+    let volume = resampler_percent(phoneme.volume) as f64;
+    let modulation = resampler_percent(phoneme.modulation) as f64;
+    let tempo = phoneme.adjusted_tempo;
     let stretch_ratio = 2f64.powf(1.0 - con_vel / 100.0);
 
     // WorldlineRenderer.cs timing.
@@ -439,31 +435,18 @@ fn build_request(
     // formula yields 0 when leading == preutter (the common case), which
     // keeps the burst intact.
     let skip_ms = oto.preutter * stretch_ratio - phoneme.leading_ms;
-    // DIAGNOSTIC (Sprint 2.3.4): C# lengthMs = envelope[4].X - envelope[0].X;
-    // env WORLD_LENGTH_ENV=1 switches to that (default = duration_ms).
-    //
-    // FIXED (phoneme-transition gaps): the request spans
-    // [position - leading, position + duration] in phrase time — the wav
-    // starts `leading` before the phoneme and must END at the phoneme's
-    // end. C# `lengthMs = phone.EndMs - phone.PosMs` = duration + leading.
-    // Using bare `duration` ended the wav `leading` ms early, opening a
-    // gap before the next phoneme (heard as clicks / broken transitions).
-    let length_ms = if std::env::var_os("WORLD_LENGTH_ENV").is_some() {
-        let span = oto
-            .envelope
-            .first()
-            .map(|p0| envelope_end(oto, phoneme.duration_ms) - p0.x_ms as f64)
-            .unwrap_or(phoneme.duration_ms);
-        span
-    } else {
-        phoneme.duration_ms + phoneme.leading_ms
-    };
+    // C# `WorldlineRenderer.Render`: envelope[4].X - envelope[0].X.
+    let length_ms = oto
+        .envelope
+        .first()
+        .map(|p0| envelope_end(oto, phoneme.duration_ms) - p0.x_ms as f64)
+        .unwrap_or(phoneme.duration_ms + phoneme.leading_ms);
     let (fade_in_ms, fade_out_ms) = envelope_fades(oto, 5.0, 5.0);
 
     // ResamplerItem.cs request fields.
     let required = required_length(length_ms + skip_ms, oto.consonant);
     let flags = resolve_flags(input, grid, oto, phoneme.position_ms);
-    let pitch_bend = pitch_bend(input, grid, phoneme, oto, tempo, stretch_ratio);
+    let pitch_bend = pitch_bend(input, phoneme, oto, tempo, stretch_ratio);
 
     PhonemeRequest {
         phoneme: phoneme.phoneme.clone(),
@@ -493,31 +476,141 @@ fn build_request(
 }
 
 /// `ResamplerItem` pitch-bend sampling: `pitchCount` samples starting
-/// `pitchLeadingMs = preutter × stretchRatio` before the phoneme, lerped
+/// `pitchLeadingMs = oto.Preutter × stretchRatio` before the phoneme, lerped
 /// in the 5-tick grid, expressed in cents relative to the phoneme tone.
 fn pitch_bend(
     input: &RenderInput,
-    grid: &Grid,
     phoneme: &RenderPhoneme,
     oto: &OtoEntry,
     tempo: f64,
     stretch_ratio: f64,
 ) -> Vec<i32> {
-    let pitch_leading_ms = phoneme.leading_ms * stretch_ratio;
+    // OpenUtau derives this from the original OTO preutter. `leading_ms`
+    // has already been velocity-scaled and may also contain user deltas.
+    let pitch_leading_ms = oto.preutter * stretch_ratio;
     let end_ms = envelope_end(oto, phoneme.duration_ms);
     let pitch_count_ms = end_ms + pitch_leading_ms;
     let pitch_count = (tempo_ms_to_tick(tempo, pitch_count_ms) / 5.0)
         .ceil()
         .max(0.0) as usize;
-    let pitch_interval_ms = grid.ms_per_interval;
+    let pitch_interval_ms = ms_per_tick_at(tempo) * 5.0;
     let tone_cents = (phoneme.tone + phoneme.tone_shift) as f64 * 100.0;
+    let phrase_pitch_start_tick = input.curve_grid_start_tick;
+    let pitch_grid = if input.pitches_cents_f32.is_empty() {
+        input
+            .pitches_cents
+            .iter()
+            .map(|&value| value as f32)
+            .collect::<Vec<_>>()
+    } else {
+        input.pitches_cents_f32.clone()
+    };
     let mut bends = Vec::with_capacity(pitch_count);
     for i in 0..pitch_count {
         let sample_pos_ms = phoneme.position_ms - pitch_leading_ms + pitch_interval_ms * i as f64;
-        let lerped = grid.sample_cents_lerped(&input.pitches_cents, sample_pos_ms) as f64;
-        bends.push((lerped - tone_cents).round() as i32);
+        let sample_pos_tick = time_axis_ms_to_tick_floor(input, sample_pos_ms);
+        let sample_interval_ms = time_axis_tick_to_ms(input, sample_pos_tick + 5)
+            - time_axis_tick_to_ms(input, sample_pos_tick);
+        let sample_index = ((sample_pos_tick - phrase_pitch_start_tick) as f64 / 5.0)
+            .clamp(0.0, pitch_grid.len().saturating_sub(1) as f64);
+        let sample_start = sample_index.floor() as usize;
+        let sample_end = sample_index.ceil() as usize;
+        let diff_pitch_ms = sample_pos_ms
+            - time_axis_tick_to_ms(input, phrase_pitch_start_tick + sample_start as i32 * 5);
+        let sample_alpha = if sample_interval_ms > 0.0 {
+            diff_pitch_ms / sample_interval_ms
+        } else {
+            0.0
+        };
+        let a = pitch_grid.get(sample_start).copied().unwrap_or(0.0) as f64;
+        let b = pitch_grid.get(sample_end).copied().unwrap_or(a as f32) as f64;
+        let lerped = a + (b - a) * sample_alpha;
+        bends.push(round_ties_even(lerped - tone_cents) as i32);
     }
     bends
+}
+
+/// OpenUtau `TimeAxis.MsPosToNonExactTickPos` followed by `Math.Floor`.
+fn time_axis_ms_to_tick_floor(input: &RenderInput, ms: f64) -> i32 {
+    let Some(segment) = input
+        .phrase
+        .tempo_map
+        .iter()
+        .rev()
+        .find(|segment| segment.ms_pos <= ms)
+        .or_else(|| input.phrase.tempo_map.first())
+    else {
+        let bpm =
+            parse_tempo_hint(input.phrase.time_axis_hint.as_deref()).unwrap_or(DEFAULT_TEMPO_BPM);
+        return (ms * bpm / 125.0).floor() as i32;
+    };
+    (segment.tick_pos as f64 + (ms - segment.ms_pos) * segment.bpm / 125.0).floor() as i32
+}
+
+/// Exact (fractional) project tick at an absolute millisecond position.
+fn time_axis_ms_to_tick_position(input: &RenderInput, ms: f64) -> f64 {
+    let Some(segment) = input
+        .phrase
+        .tempo_map
+        .iter()
+        .rev()
+        .find(|segment| segment.ms_pos <= ms)
+        .or_else(|| input.phrase.tempo_map.first())
+    else {
+        let bpm =
+            parse_tempo_hint(input.phrase.time_axis_hint.as_deref()).unwrap_or(DEFAULT_TEMPO_BPM);
+        return ms * bpm / 125.0;
+    };
+    segment.tick_pos as f64 + (ms - segment.ms_pos) * segment.bpm / 125.0
+}
+
+/// OpenUtau `TimeAxis.MsPosToTickPos` with .NET midpoint-to-even rounding.
+fn time_axis_ms_to_tick_round(input: &RenderInput, ms: f64) -> i32 {
+    let Some(segment) = input
+        .phrase
+        .tempo_map
+        .iter()
+        .rev()
+        .find(|segment| segment.ms_pos <= ms)
+        .or_else(|| input.phrase.tempo_map.first())
+    else {
+        let bpm =
+            parse_tempo_hint(input.phrase.time_axis_hint.as_deref()).unwrap_or(DEFAULT_TEMPO_BPM);
+        return round_ties_even(ms * bpm / 125.0) as i32;
+    };
+    round_ties_even(segment.tick_pos as f64 + (ms - segment.ms_pos) * segment.bpm / 125.0) as i32
+}
+
+/// OpenUtau `TimeAxis.TickPosToMsPos`.
+fn time_axis_tick_to_ms(input: &RenderInput, tick: i32) -> f64 {
+    let Some(segment) = input
+        .phrase
+        .tempo_map
+        .iter()
+        .rev()
+        .find(|segment| segment.tick_pos <= tick)
+        .or_else(|| input.phrase.tempo_map.first())
+    else {
+        let bpm =
+            parse_tempo_hint(input.phrase.time_axis_hint.as_deref()).unwrap_or(DEFAULT_TEMPO_BPM);
+        return tick as f64 * 125.0 / bpm;
+    };
+    segment.ms_pos + (tick - segment.tick_pos) as f64 * 125.0 / segment.bpm
+}
+
+/// .NET `Math.Round(double)` midpoint-to-even behavior.
+fn round_ties_even(value: f64) -> f64 {
+    let lower = value.floor();
+    let fraction = value - lower;
+    if fraction < 0.5 {
+        lower
+    } else if fraction > 0.5 {
+        lower + 1.0
+    } else if (lower as i64) % 2 == 0 {
+        lower
+    } else {
+        lower + 1.0
+    }
 }
 
 /// `MusicMath.TempoMsToTick` at 480 ticks/beat: `ms × bpm / 125`.
@@ -550,9 +643,14 @@ pub struct PhraseCurves {
 /// truncation-indexed into the 5-tick grid, expression defaults outside
 /// the grid).
 pub fn sample_phrase_curves(input: &RenderInput, frame_ms: f64) -> PhraseCurves {
-    let estimated_ms = input.phrase.duration_ms + input.phrase.leading_ms;
+    let estimated_ms =
+        (input.phrase.position_ms + input.phrase.duration_ms) - input.render_origin_ms;
     let frames = ((estimated_ms / frame_ms).ceil() as usize).max(1);
-    let grid = Grid::new(input);
+    // OpenUtau indexes phrase curves by rounded absolute tick position,
+    // subtracts the phrase's integer pitch-grid start tick, then truncates
+    // to the preceding 5-tick sample. Direct millisecond indexing can select
+    // a different pitch sample around each grid boundary.
+    let pitch_start_tick = input.curve_grid_start_tick;
     let mut curves = PhraseCurves {
         f0: vec![0.0; frames],
         gender: vec![0.5; frames],
@@ -561,21 +659,29 @@ pub fn sample_phrase_curves(input: &RenderInput, frame_ms: f64) -> PhraseCurves 
         voicing: vec![1.0; frames],
     };
     for f in 0..frames {
-        let ms = input.phrase.position_ms - input.phrase.leading_ms + f as f64 * frame_ms;
-        if let Some(cents) = grid.sample_cents(&input.pitches_cents, ms) {
+        let ms = input.render_origin_ms + f as f64 * frame_ms;
+        let ticks = time_axis_ms_to_tick_round(input, ms) - pitch_start_tick;
+        let index = (ticks / 5).max(0) as usize;
+        let pitch_grid = if input.pitches_cents_f32.is_empty() {
+            None
+        } else {
+            input.pitches_cents_f32.get(index).copied()
+        }
+        .or_else(|| input.pitches_cents.get(index).map(|&c| c as f32));
+        if let Some(cents) = pitch_grid {
             curves.f0[f] = cents_to_freq(cents as f64);
         }
-        if let Some(x) = grid.sample(&input.curves.gender, ms) {
-            curves.gender[f] = 0.5 + 0.005 * x as f64;
+        if let Some(x) = input.curves.gender.get(index) {
+            curves.gender[f] = 0.5 + 0.005 * *x as f64;
         }
-        if let Some(x) = grid.sample(&input.curves.tension, ms) {
-            curves.tension[f] = 0.5 + 0.005 * x as f64;
+        if let Some(x) = input.curves.tension.get(index) {
+            curves.tension[f] = 0.5 + 0.005 * *x as f64;
         }
-        if let Some(x) = grid.sample(&input.curves.breathiness, ms) {
-            curves.breathiness[f] = 0.5 + 0.005 * x as f64;
+        if let Some(x) = input.curves.breathiness.get(index) {
+            curves.breathiness[f] = 0.5 + 0.005 * *x as f64;
         }
-        if let Some(x) = grid.sample(&input.curves.voicing, ms) {
-            curves.voicing[f] = 0.01 * x as f64;
+        if let Some(x) = input.curves.voicing.get(index) {
+            curves.voicing[f] = 0.01 * *x as f64;
         }
     }
     curves
@@ -625,9 +731,7 @@ pub fn extra_curve<'a>(curves: &'a Curves, abbr: &str) -> Option<&'a [f32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use feed::render_input::{
-        Curves, EnvelopePoint, NamedCurve, PhraseInfo, RenderInput, SampleBased,
-    };
+    use feed::render_input::{Curves, EnvelopePoint, PhraseInfo, RenderInput, SampleBased};
 
     fn oto_entry() -> OtoEntry {
         OtoEntry {
@@ -652,6 +756,10 @@ mod tests {
             leading_ms: 250.0,
             overlap_ms: 83.333,
             tone: 60,
+            adjusted_tempo: 120.0,
+            consonant_velocity: 100.0,
+            volume: 100.0,
+            modulation: 0.0,
             tone_shift: 0,
             index: 0,
             parent_note: 0,
@@ -666,11 +774,15 @@ mod tests {
                 duration_ms: 300.0,
                 leading_ms: 250.0,
                 leading_ticks: 240,
+                tempo_map: vec![],
                 time_axis_hint: Some("120bpm 4/4".into()),
             },
             notes: Vec::new(),
             phonemes,
             pitches_cents: vec![6000; n],
+            pitches_cents_f32: vec![6000.0; n],
+            curve_grid_start_tick: 240,
+            render_origin_ms: 250.0,
             curves: Curves {
                 dynamics: vec![1.0; n],
                 gender: vec![0.0; n],
@@ -730,26 +842,25 @@ mod tests {
     fn expressions_and_tone_shift() {
         let mut ph = phoneme();
         ph.tone_shift = 2;
-        let mut i = input(vec![ph], vec![oto_entry()]);
-        i.curves.extra = vec![
-            NamedCurve {
-                abbr: "vel".into(),
-                values: vec![150.0; 110],
-            },
-            NamedCurve {
-                abbr: "vol".into(),
-                values: vec![80.0; 110],
-            },
-            NamedCurve {
-                abbr: "mod".into(),
-                values: vec![30.0; 110],
-            },
-        ];
+        ph.consonant_velocity = 150.0;
+        ph.volume = 80.0;
+        ph.modulation = 30.0;
+        let i = input(vec![ph], vec![oto_entry()]);
         let r = &build_requests(&i).unwrap()[0];
         assert_eq!(r.tone, 62);
         assert_eq!(r.con_vel, 150.0);
-        assert!((r.volume - 80.0).abs() < 1e-9); // VOL 80 → raw
-        assert_eq!(r.modulation, 30.0);
+        assert_eq!(r.volume, 79.0); // C# float multiply + integer truncation
+        assert_eq!(r.modulation, 29.0); // C# float multiply + integer truncation
+    }
+
+    #[test]
+    fn request_uses_phoneme_adjusted_tempo() {
+        let mut ph = phoneme();
+        ph.adjusted_tempo = 240.0;
+        let i = input(vec![ph], vec![oto_entry()]);
+        let request = build_requests(&i).unwrap().remove(0);
+        assert_eq!(request.tempo, 240.0);
+        assert_eq!(request.pitch_bend.len(), 212);
     }
 
     #[test]
@@ -826,8 +937,9 @@ mod tests {
     fn pitch_bend_relative_to_tone_and_monotonic() {
         let mut i = input(vec![phoneme()], vec![oto_entry()]);
         i.pitches_cents = (0..110).map(|k| 6000 + k * 100 / 109).collect();
+        i.pitches_cents_f32 = i.pitches_cents.iter().map(|&value| value as f32).collect();
         let r = &build_requests(&i).unwrap()[0];
-        // First bend sits exactly on the grid start (position - leading).
+        // At VEL 100, OTO preutter and leading are equal.
         assert_eq!(r.pitch_bend[0], 0);
         // The grid keeps rising past the phoneme end: the last bend is
         // near the +100 ct grid tail.
@@ -837,14 +949,50 @@ mod tests {
     }
 
     #[test]
+    fn pitch_bend_uses_floor_tick_then_lerps_float_grid() {
+        let mut i = input(vec![phoneme()], vec![oto_entry()]);
+        i.phonemes[0].adjusted_tempo = 121.0;
+        i.pitches_cents_f32 = (0..110)
+            .map(|index| 6000.0 + index as f32 * 100.0)
+            .collect();
+        i.pitches_cents = i
+            .pitches_cents_f32
+            .iter()
+            .map(|&value| value as i32)
+            .collect();
+
+        let request = &build_requests(&i).unwrap()[0];
+        // At the second resampler sample OpenUtau's 120 BPM project axis
+        // floors the sample position to tick 244. Its sample index is 4/5,
+        // while the separate tick-to-ms alpha is ≈0.992; this oddity is part
+        // of ResamplerItem's contract. The project tempo differs from the
+        // phone's adjusted 121 BPM resampler interval.
+        assert_eq!(request.pitch_bend[0], 0);
+        assert_eq!(request.pitch_bend[1], 99);
+    }
+
+    #[test]
+    fn phrase_f0_curve_uses_rounded_project_ticks_and_float_pitch() {
+        let mut i = input(vec![phoneme()], vec![oto_entry()]);
+        i.pitches_cents_f32 = (0..110)
+            .map(|index| 6000.0 + index as f32 * 100.0)
+            .collect();
+        let curves = sample_phrase_curves(&i, 10.0);
+        // 10 ms at 120 BPM is 9.6 ticks; OpenUtau rounds that to 10,
+        // selecting pitch-grid index 2 (rather than millisecond index 1).
+        let d4 = 440.0 * 2f64.powf((62.0 - 69.0) / 12.0);
+        assert!((curves.f0[1] - d4).abs() < 1e-9);
+    }
+
+    #[test]
     fn grid_truncation_lerp_and_bounds() {
-        let grid = Grid {
-            start_ms: 0.0,
-            ms_per_interval: 10.0,
-        };
+        let mut render_input = input(vec![phoneme()], vec![oto_entry()]);
+        render_input.curve_grid_start_tick = 0;
+        render_input.render_origin_ms = 0.0;
+        let grid = Grid::new(&render_input);
         let values = [0.0f32, 100.0, 200.0];
         assert_eq!(grid.sample(&values, 5.0), Some(0.0)); // C# truncation
-        assert_eq!(grid.sample_lerped(&values, 5.0), 50.0); // lerp
+        assert!((grid.sample_lerped(&values, 5.0) - 96.0).abs() < 1e-5); // tick-based lerp
         assert_eq!(grid.sample(&values, 30.0), None); // past end → default
         assert_eq!(grid.sample_lerped(&values, 25.0), 200.0); // clamped
         assert_eq!(grid.sample_lerped(&values, -5.0), 0.0); // clamped before start
@@ -892,6 +1040,11 @@ mod tests {
     fn phrase_curves_fall_back_outside_grid() {
         let mut i = input(vec![phoneme()], vec![oto_entry()]);
         i.pitches_cents = vec![6000; 20]; // grid ends ≈ 354 ms
+        i.pitches_cents_f32 = vec![6000.0; 20];
+        i.curves.gender.truncate(20);
+        i.curves.tension.truncate(20);
+        i.curves.breathiness.truncate(20);
+        i.curves.voicing.truncate(20);
         let c = sample_phrase_curves(&i, 10.0);
         let c4 = 440.0 * 2f64.powf((60.0 - 69.0) / 12.0);
         assert_eq!(c.f0[0], c4);
@@ -920,6 +1073,7 @@ mod tests {
         let mut i = input(vec![phoneme()], vec![oto_entry()]);
         i.phrase.duration_ms = 0.0;
         i.phrase.leading_ms = 0.0;
+        i.render_origin_ms = i.phrase.position_ms;
         let c = sample_phrase_curves(&i, 11.6);
         assert_eq!(c.f0.len(), 1);
     }
@@ -937,7 +1091,7 @@ mod tests {
         let r = &build_requests(&input(vec![phoneme()], vec![oto])).unwrap()[0];
         assert_eq!(r.fade_in_ms, 50.0); // env[1] - env[0]
         assert_eq!(r.fade_out_ms, 35.0); // env[4] - env[3]
-        assert_eq!(r.length_ms, 550.0); // duration + leading (no transition gaps)
+        assert_eq!(r.length_ms, 550.0); // p4.x - p0.x
     }
 
     #[test]

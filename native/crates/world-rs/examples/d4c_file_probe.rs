@@ -1,2 +1,42 @@
 use std::path::Path;
-fn main(){let path=std::env::args().nth(1).unwrap();let w=voicebank::read_wav(Path::new(&path)).unwrap();let frq=voicebank::read_frq(&voicebank::frq_path_for_wav(Path::new(&path))).unwrap();let fs=w.sample_rate;let hop=512usize;let n=(1000.0*w.samples.len() as f64/fs as f64/(hop as f64*1000.0/fs as f64)) as usize+1;let f:Vec<f64>=(0..n).map(|i|{let lo=((i as f64*hop as f64/frq.hop_size as f64).floor()as usize).min(frq.f0.len());let hi=(((i as f64+1.0)*hop as f64/frq.hop_size as f64).ceil()as usize).min(frq.f0.len());let(v,c)=frq.f0[lo..hi].iter().filter(|&&x|x>40.0).fold((0.,0.),|(s,c),x|(s+*x,c+1.));if c>0.{v/c}else{0.}}).collect();eprintln!("frames={} f0={:?}",n,&f[..n.min(10)]);let t:Vec<f64>=(0..n).map(|i|i as f64*hop as f64/fs as f64).collect();let a=world_rs::d4c::analyze(&w.to_mono(),fs,&t,&f,2048,Default::default(),&()).unwrap();for i in 0..n{let r=&a[i*1025..(i+1)*1025];println!("{:.9} {:.9} {:.9} {:.9}",r[0],r[100],r[500],r.iter().sum::<f64>()/1025.);}}
+fn main() {
+    let path = std::env::args().nth(1).unwrap();
+    let w = voicebank::read_wav(Path::new(&path)).unwrap();
+    let frq = voicebank::read_frq(&voicebank::frq_path_for_wav(Path::new(&path))).unwrap();
+    let fs = w.sample_rate;
+    let hop = 512usize;
+    let n = (1000.0 * w.samples.len() as f64 / fs as f64 / (hop as f64 * 1000.0 / fs as f64))
+        as usize
+        + 1;
+    let f: Vec<f64> = (0..n)
+        .map(|i| {
+            let lo =
+                ((i as f64 * hop as f64 / frq.hop_size as f64).floor() as usize).min(frq.f0.len());
+            let hi = (((i as f64 + 1.0) * hop as f64 / frq.hop_size as f64).ceil() as usize)
+                .min(frq.f0.len());
+            let (v, c) = frq.f0[lo..hi]
+                .iter()
+                .filter(|&&x| x > 40.0)
+                .fold((0., 0.), |(s, c), x| (s + *x, c + 1.));
+            if c > 0. {
+                v / c
+            } else {
+                0.
+            }
+        })
+        .collect();
+    eprintln!("frames={} f0={:?}", n, &f[..n.min(10)]);
+    let t: Vec<f64> = (0..n).map(|i| i as f64 * hop as f64 / fs as f64).collect();
+    let a =
+        world_rs::d4c::analyze(&w.to_mono(), fs, &t, &f, 2048, Default::default(), &()).unwrap();
+    for i in 0..n {
+        let r = &a[i * 1025..(i + 1) * 1025];
+        println!(
+            "{:.9} {:.9} {:.9} {:.9}",
+            r[0],
+            r[100],
+            r[500],
+            r.iter().sum::<f64>() / 1025.
+        );
+    }
+}

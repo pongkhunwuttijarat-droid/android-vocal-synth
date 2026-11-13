@@ -13,7 +13,10 @@ phrase = { path = "../../crates/phrase" }
 runtime = { path = "../../crates/runtime", features = ["feed-integration"] }
 wavwriter = { path = "../../crates/wavwriter" }
 storage = { path = "../../crates/storage" }
+media = { path = "../../crates/media" }
 serde_yaml = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 worldline-rs = { path = "../../crates/worldline-rs" }
 mixer-fx = { path = "../../crates/mixer-fx", default-features = false }
 

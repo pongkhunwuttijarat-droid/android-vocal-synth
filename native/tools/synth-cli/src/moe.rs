@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use domain::capabilities::EngineCapabilities;
 use domain::UProject;
 use feed::render_input::RenderInput;
-use moe_train::baseline::{EMBED_SLOTS, WINDOW, HALF};
+use moe_train::baseline::{EMBED_SLOTS, HALF, WINDOW};
 use moe_train::phoneme_groups::group_of;
 use moe_train::render::{run_vocoder_once, LoadedMoe};
 use voicebank::Voicebank;
@@ -144,18 +144,18 @@ pub(crate) fn build_frame_features(
             let di = k as i64 - HALF as i64;
             let pi = pidx.map(|i| i as i64 + di).unwrap_or(-1);
             let ctx_id = if pi < 0 || pi >= input.phonemes.len() as i64 {
-            pad
+                pad
             } else {
-            let ph = &input.phonemes[pi as usize];
-            match vocab.get(&ph.phoneme).copied() {
-                Some(id) => id.min(EMBED_SLOTS - 1) as i64,
-                None => {
-                    if !missing_symbols.contains(&ph.phoneme) {
-                        missing_symbols.push(ph.phoneme.clone());
+                let ph = &input.phonemes[pi as usize];
+                match vocab.get(&ph.phoneme).copied() {
+                    Some(id) => id.min(EMBED_SLOTS - 1) as i64,
+                    None => {
+                        if !missing_symbols.contains(&ph.phoneme) {
+                            missing_symbols.push(ph.phoneme.clone());
+                        }
+                        pad
                     }
-                    pad
                 }
-            }
             };
             ids.push(ctx_id);
         }
@@ -197,7 +197,9 @@ fn locate_phoneme_index(input: &RenderInput, ms: f64) -> Option<usize> {
 }
 
 /// Load `{prefix}-phonemes.txt` (one symbol per line, index = id).
-pub(crate) fn load_vocab_sidecar(prefix: &Path) -> Result<std::collections::HashMap<String, usize>, String> {
+pub(crate) fn load_vocab_sidecar(
+    prefix: &Path,
+) -> Result<std::collections::HashMap<String, usize>, String> {
     let path = format!("{}-phonemes.txt", prefix.to_string_lossy());
     let text = std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))?;
     let mut map = std::collections::HashMap::new();
@@ -229,10 +231,8 @@ impl pipeline::PhraseRenderer for MoeEngine {
             TensorData::new(ff.ids, vec![n, WINDOW]),
             &self.device,
         );
-        let feats = Tensor::<MoeBackend, 2>::from_data(
-            TensorData::new(ff.feats, vec![n, 2]),
-            &self.device,
-        );
+        let feats =
+            Tensor::<MoeBackend, 2>::from_data(TensorData::new(ff.feats, vec![n, 2]), &self.device);
         // General expert on all frames.
         let general_mel = self.moe.general.forward(ids.clone(), feats.clone());
         // Routed group experts: one forward per frame whose group has an
@@ -268,6 +268,9 @@ impl pipeline::PhraseRenderer for MoeEngine {
             })
             .collect();
         run_vocoder_once(&self.vocoder.to_string_lossy(), &mel2, &ff.f0_hz)
+    }
+    fn curve_frame_ms(&self) -> f64 {
+        11.61
     }
 
     fn cache_salt(&self) -> u64 {

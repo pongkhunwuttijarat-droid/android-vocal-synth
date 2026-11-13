@@ -10,11 +10,18 @@ fn main() {
         let z = freq[k];
         let c = (coefficient * k as f64).cos();
         let s = (1.0 - c * c).max(0.0).sqrt();
-        freq[k] = Complex { re: z.re * c + z.im * s, im: z.im * c - z.re * s };
+        freq[k] = Complex {
+            re: z.re * c + z.im * s,
+            im: z.im * c - z.re * s,
+        };
     }
-    for k in 1..n / 2 { freq[n - k] = freq[k].conj(); }
+    for k in 1..n / 2 {
+        freq[n - k] = freq[k].conj();
+    }
     let mut planner = FftPlanner::<f64>::new();
     planner.plan_fft_inverse(n).process(&mut freq);
     freq.rotate_left(n / 2);
-    for z in freq.iter().take(8) { println!("{:.17}", z.re / n as f64); }
+    for z in freq.iter().take(8) {
+        println!("{:.17}", z.re / n as f64);
+    }
 }

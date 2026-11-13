@@ -75,8 +75,7 @@ impl ResamplerRs {
         let start_ms = self.request.offset;
         let length_ms = get_in_total_ms(&self.model, &self.request);
         let start_frame = (start_ms / frame_ms) as i64;
-        let length_frame =
-            ((start_ms + length_ms).ceil() / frame_ms) as i64 - start_frame;
+        let length_frame = ((start_ms + length_ms).ceil() / frame_ms) as i64 - start_frame;
         if start_frame < 0 || length_frame <= 0 {
             return Err(format!(
                 "invalid input region for {} (start {start_frame}, length {length_frame})",
@@ -89,7 +88,10 @@ impl ResamplerRs {
 
         self.model.trim(start_frame as usize, length_frame as usize);
         if self.model.f0().is_empty() {
-            return Err(format!("trimmed model is empty for {}", self.request.phoneme));
+            return Err(format!(
+                "trimmed model is empty for {}",
+                self.request.phoneme
+            ));
         }
         shift_time_mapping(&mut mapping, -left_trimmed);
 
@@ -109,7 +111,10 @@ impl ResamplerRs {
         // --- trim the padding back off ------------------------------------
         let mut samples: Vec<f64> = self.model.samples().to_vec();
         let left_extra_samples = self.model.ms_to_samples(left_extra).max(0) as usize;
-        let length_samples = self.model.ms_to_samples(self.request.required_length).max(0) as usize;
+        let length_samples = self
+            .model
+            .ms_to_samples(self.request.required_length)
+            .max(0) as usize;
         let start = left_extra_samples.min(samples.len());
         samples = samples[start..].to_vec();
         if samples.len() > length_samples {
@@ -135,7 +140,11 @@ impl ResamplerRs {
     fn apply_pitch(&mut self) {
         let step_ms = 60000.0 / self.request.tempo.max(1e-9) / 480.0 * 5.0;
         let bend_len = self.request.pitch_bend.len();
-        let left_pitch = if bend_len > 0 { f64::from(self.request.pitch_bend[0]) } else { 0.0 };
+        let left_pitch = if bend_len > 0 {
+            f64::from(self.request.pitch_bend[0])
+        } else {
+            0.0
+        };
         let right_pitch = if bend_len > 0 {
             f64::from(self.request.pitch_bend[bend_len - 1])
         } else {

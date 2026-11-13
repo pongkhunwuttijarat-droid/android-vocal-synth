@@ -143,8 +143,7 @@ mod tests {
         // The host/phonemizer layer queries engines through the
         // domain trait — NOT through this concrete type.
         use domain::capabilities::EngineCapabilities as _;
-        let c: &dyn domain::capabilities::EngineCapabilities =
-            WorldlineCapabilities::get();
+        let c: &dyn domain::capabilities::EngineCapabilities = WorldlineCapabilities::get();
         assert_eq!(c.id(), "worldline");
         assert!(c.needs_oto());
         assert!(!c.needs_frq());

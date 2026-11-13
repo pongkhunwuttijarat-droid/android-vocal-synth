@@ -33,7 +33,8 @@ fn main() {
         if i == 0 {
             maxdiff = maxdiff.max((gt[i] - packed[0]).abs()); // DC = sum(x)
         } else {
-            let mag = (packed[2*i]*packed[2*i] + packed[2*i+1]*packed[2*i+1]).sqrt();
+            let mag =
+                (packed[2 * i] * packed[2 * i] + packed[2 * i + 1] * packed[2 * i + 1]).sqrt();
             maxdiff = maxdiff.max((gt[i] - mag).abs());
         }
     }
@@ -50,10 +51,12 @@ fn main() {
     // Show worst bins
     let mut worst = Vec::new();
     for i in 0..gt.len() {
-        let ours = if i == 0 { packed[0] } else {
-            (packed[2*i]*packed[2*i] + packed[2*i+1]*packed[2*i+1]).sqrt()
+        let ours = if i == 0 {
+            packed[0]
+        } else {
+            (packed[2 * i] * packed[2 * i] + packed[2 * i + 1] * packed[2 * i + 1]).sqrt()
         };
-        if (gt[i]-ours).abs() > maxdiff * 0.1 || i == 0 {
+        if (gt[i] - ours).abs() > maxdiff * 0.1 || i == 0 {
             worst.push((i, gt[i], ours));
         }
     }

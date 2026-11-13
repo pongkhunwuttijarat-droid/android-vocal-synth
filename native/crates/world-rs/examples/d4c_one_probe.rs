@@ -1,2 +1,15 @@
-use std::{fs::File,io::Read};
-fn main(){let p=std::env::args().nth(1).unwrap();let f0:f64=std::env::args().nth(2).unwrap().parse().unwrap();let pos:f64=std::env::args().nth(3).unwrap().parse().unwrap();let mut b=Vec::new();File::open(p).unwrap().read_to_end(&mut b).unwrap();let x=b.chunks_exact(4).map(|v|f32::from_le_bytes(v.try_into().unwrap())).collect::<Vec<_>>();let a=world_rs::d4c::analyze(&x,44100,&[pos],&[f0],2048,Default::default(),&()).unwrap();println!("{} {} {}",a[100],a[500],a.iter().sum::<f64>()/1025.0);}
+use std::{fs::File, io::Read};
+fn main() {
+    let p = std::env::args().nth(1).unwrap();
+    let f0: f64 = std::env::args().nth(2).unwrap().parse().unwrap();
+    let pos: f64 = std::env::args().nth(3).unwrap().parse().unwrap();
+    let mut b = Vec::new();
+    File::open(p).unwrap().read_to_end(&mut b).unwrap();
+    let x = b
+        .chunks_exact(4)
+        .map(|v| f32::from_le_bytes(v.try_into().unwrap()))
+        .collect::<Vec<_>>();
+    let a =
+        world_rs::d4c::analyze(&x, 44100, &[pos], &[f0], 2048, Default::default(), &()).unwrap();
+    println!("{} {} {}", a[100], a[500], a.iter().sum::<f64>() / 1025.0);
+}

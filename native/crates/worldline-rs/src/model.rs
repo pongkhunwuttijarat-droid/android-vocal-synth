@@ -126,8 +126,9 @@ impl Model {
         let option = CheapTrickOption::new(self.fs as u32);
         self.fft_size = option.fft_size;
         let samples: Vec<f32> = self.samples.iter().map(|s| *s as f32).collect();
-        let sp = world_rs::cheaptrick::analyze(&samples, self.fs as u32, &self.ts, &self.f0, option)
-            .map_err(|e| format!("cheaptrick: {e:?}"))?;
+        let sp =
+            world_rs::cheaptrick::analyze(&samples, self.fs as u32, &self.ts, &self.f0, option)
+                .map_err(|e| format!("cheaptrick: {e:?}"))?;
         self.sp = sp;
         Ok(())
     }
@@ -229,11 +230,7 @@ impl Model {
         if self.f0.is_empty() {
             return 0.0;
         }
-        let voiced = self
-            .f0
-            .iter()
-            .filter(|f| **f > FLOOR_F0_STONE_MASK)
-            .count();
+        let voiced = self.f0.iter().filter(|f| **f > FLOOR_F0_STONE_MASK).count();
         voiced as f64 / self.f0.len() as f64
     }
 
@@ -256,11 +253,14 @@ impl Model {
             self.samples = Vec::new();
             return Ok(());
         }
-        let y_len = (f64::from(self.fs) * (frames as f64 - 1.0) * self.frame_ms / 1000.0) as usize + 1;
+        let y_len =
+            (f64::from(self.fs) * (frames as f64 - 1.0) * self.frame_ms / 1000.0) as usize + 1;
         let mut features = WorldFeatures::try_new(frames, bins).map_err(|e| format!("{e:?}"))?;
         features.f0.copy_from_slice(&self.f0);
         features.spectral.copy_from_slice(&self.sp[..frames * bins]);
-        features.aperiodicity.copy_from_slice(&self.ap[..frames * bins]);
+        features
+            .aperiodicity
+            .copy_from_slice(&self.ap[..frames * bins]);
         // Per-bin tension (the C++ `tension` array), flattened frame-major.
         let mut tension_bins = Vec::with_capacity(frames * bins);
         for frame in 0..frames {

@@ -38,7 +38,12 @@ impl F0Estimator {
 
 /// `FrqEstimator::Estimate`: a DIO-sized grid where each frame averages the
 /// `.frq` values above the voiced floor (0 when the window has none).
-fn estimate_frq(frq: &FrqData, sample_count: usize, fs: i32, frame_ms: f64) -> (Vec<f64>, Vec<f64>) {
+fn estimate_frq(
+    frq: &FrqData,
+    sample_count: usize,
+    fs: i32,
+    frame_ms: f64,
+) -> (Vec<f64>, Vec<f64>) {
     // GetSamplesForDIO: floor(1000 * length / fs / frame_period) + 1
     let f0_len = if sample_count == 0 {
         0
@@ -48,7 +53,11 @@ fn estimate_frq(frq: &FrqData, sample_count: usize, fs: i32, frame_ms: f64) -> (
     let mut f0 = vec![0.0f64; f0_len];
     let mut ts = vec![0.0f64; f0_len];
     let hop_size = f64::from(fs) * frame_ms / 1000.0;
-    let frq_hop = if frq.hop_size > 0 { f64::from(frq.hop_size) } else { 1.0 };
+    let frq_hop = if frq.hop_size > 0 {
+        f64::from(frq.hop_size)
+    } else {
+        1.0
+    };
     let ratio = hop_size / frq_hop;
     for i in 0..f0_len {
         let low = (ratio * i as f64).floor().max(0.0) as usize;

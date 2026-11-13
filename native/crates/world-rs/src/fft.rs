@@ -96,9 +96,7 @@ fn plan(len: usize, direction: u8) -> Arc<dyn Fft<f64>> {
                         planner.inverse(len)
                     }
                 });
-                cache
-                    .borrow_mut()
-                    .insert((len, direction), created.clone());
+                cache.borrow_mut().insert((len, direction), created.clone());
                 created
             }
         }
@@ -136,7 +134,10 @@ impl std::fmt::Display for FftError {
             Self::LengthIsZero => write!(f, "FFT length must be non-zero"),
             Self::LengthIsNotEven(n) => write!(f, "real FFT length must be even, got {n}"),
             Self::LengthMismatch { expected, actual } => {
-                write!(f, "FFT buffer length mismatch: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "FFT buffer length mismatch: expected {expected}, got {actual}"
+                )
             }
         }
     }
@@ -164,7 +165,9 @@ impl RealFft {
         let mut planner = Planner::new();
         let forward = planner.forward(len);
         let inverse = planner.inverse(len);
-        let scratch_len = forward.get_inplace_scratch_len().max(inverse.get_inplace_scratch_len());
+        let scratch_len = forward
+            .get_inplace_scratch_len()
+            .max(inverse.get_inplace_scratch_len());
         Ok(Self {
             len,
             forward,
@@ -181,15 +184,22 @@ impl RealFft {
     /// Forward transform using unnormalised WORLD-compatible packed storage.
     pub fn forward_packed(&mut self, input: &[f64], packed: &mut [f64]) -> Result<(), FftError> {
         if input.len() != self.len {
-            return Err(FftError::LengthMismatch { expected: self.len, actual: input.len() });
+            return Err(FftError::LengthMismatch {
+                expected: self.len,
+                actual: input.len(),
+            });
         }
         if packed.len() != self.len {
-            return Err(FftError::LengthMismatch { expected: self.len, actual: packed.len() });
+            return Err(FftError::LengthMismatch {
+                expected: self.len,
+                actual: packed.len(),
+            });
         }
         for (slot, &re) in self.buffer.iter_mut().zip(input) {
             *slot = Complex { re, im: 0.0 };
         }
-        self.forward.process_with_scratch(&mut self.buffer, &mut self.scratch);
+        self.forward
+            .process_with_scratch(&mut self.buffer, &mut self.scratch);
         packed[0] = self.buffer[0].re;
         packed[1] = self.buffer[self.len / 2].re;
         for k in 1..self.len / 2 {
@@ -202,19 +212,35 @@ impl RealFft {
     /// Inverse transform from the packed representation. Divides by `len`.
     pub fn inverse_packed(&mut self, packed: &[f64], output: &mut [f64]) -> Result<(), FftError> {
         if packed.len() != self.len {
-            return Err(FftError::LengthMismatch { expected: self.len, actual: packed.len() });
+            return Err(FftError::LengthMismatch {
+                expected: self.len,
+                actual: packed.len(),
+            });
         }
         if output.len() != self.len {
-            return Err(FftError::LengthMismatch { expected: self.len, actual: output.len() });
+            return Err(FftError::LengthMismatch {
+                expected: self.len,
+                actual: output.len(),
+            });
         }
-        self.buffer[0] = Complex { re: packed[0], im: 0.0 };
-        self.buffer[self.len / 2] = Complex { re: packed[1], im: 0.0 };
+        self.buffer[0] = Complex {
+            re: packed[0],
+            im: 0.0,
+        };
+        self.buffer[self.len / 2] = Complex {
+            re: packed[1],
+            im: 0.0,
+        };
         for k in 1..self.len / 2 {
-            let value = Complex { re: packed[2 * k], im: packed[2 * k + 1] };
+            let value = Complex {
+                re: packed[2 * k],
+                im: packed[2 * k + 1],
+            };
             self.buffer[k] = value;
             self.buffer[self.len - k] = value.conj();
         }
-        self.inverse.process_with_scratch(&mut self.buffer, &mut self.scratch);
+        self.inverse
+            .process_with_scratch(&mut self.buffer, &mut self.scratch);
         for (dst, value) in output.iter_mut().zip(self.buffer.iter()) {
             *dst = value.re / self.len as f64;
         }
@@ -227,7 +253,10 @@ impl RealFft {
 pub fn positive_magnitudes(input: &[f64], output: &mut [f64]) -> Result<(), FftError> {
     let n = input.len();
     if output.len() != n {
-        return Err(FftError::LengthMismatch { expected: n, actual: output.len() });
+        return Err(FftError::LengthMismatch {
+            expected: n,
+            actual: output.len(),
+        });
     }
     let mut fft = RealFft::new(n)?;
     let mut packed = vec![0.0; n];
@@ -235,7 +264,9 @@ pub fn positive_magnitudes(input: &[f64], output: &mut [f64]) -> Result<(), FftE
     output.fill(0.0);
     output[0] = packed[0];
     for k in 1..n / 2 {
-        output[k] = (packed[2 * k].mul_add(packed[2 * k], packed[2 * k + 1] * packed[2 * k + 1])).sqrt() / 2.0;
+        output[k] = (packed[2 * k].mul_add(packed[2 * k], packed[2 * k + 1] * packed[2 * k + 1]))
+            .sqrt()
+            / 2.0;
     }
     Ok(())
 }
@@ -265,11 +296,16 @@ mod tests {
     #[test]
     fn leakage_is_preserved_and_not_hidden_by_bin_only_tests() {
         let n = 128;
-        let input: Vec<f64> = (0..n).map(|i| (2.0 * std::f64::consts::PI * 7.25 * i as f64 / n as f64).sin()).collect();
+        let input: Vec<f64> = (0..n)
+            .map(|i| (2.0 * std::f64::consts::PI * 7.25 * i as f64 / n as f64).sin())
+            .collect();
         let mut fft = RealFft::new(n).unwrap();
         let mut packed = vec![0.0; n];
         fft.forward_packed(&input, &mut packed).unwrap();
-        let leakage: f64 = (1..n / 2).filter(|&k| k != 7).map(|k| packed[2 * k].abs() + packed[2 * k + 1].abs()).sum();
+        let leakage: f64 = (1..n / 2)
+            .filter(|&k| k != 7)
+            .map(|k| packed[2 * k].abs() + packed[2 * k + 1].abs())
+            .sum();
         assert!(leakage > 1e-3);
     }
 }

@@ -84,18 +84,11 @@ impl R2Engine {
         }
         let mut segments: Vec<Segment> = Vec::with_capacity(requests.len());
         for request in &requests {
-            let samples = load_wav(&request.wav_path).ok_or_else(|| {
-                R2Error::Analysis(format!("cannot read {}", request.wav_path))
-            })?;
-            let seg = r2::analyze_segment(
-                &self.analysis,
-                request,
-                &samples,
-                fs,
-                hop_size,
-                fft_size,
-            )
-            .map_err(R2Error::Analysis)?;
+            let samples = load_wav(&request.wav_path)
+                .ok_or_else(|| R2Error::Analysis(format!("cannot read {}", request.wav_path)))?;
+            let seg =
+                r2::analyze_segment(&self.analysis, request, &samples, fs, hop_size, fft_size)
+                    .map_err(R2Error::Analysis)?;
             segments.push(seg);
         }
         let features: Features = r2::synth_features(&segments, fft_size);
@@ -118,11 +111,7 @@ impl R2Engine {
         }
 
         if std::env::var_os("WORLD_DUMP_F0").is_some() {
-            let f0s: Vec<String> = features
-                .f0
-                .iter()
-                .map(|f| format!("{:.1}", f))
-                .collect();
+            let f0s: Vec<String> = features.f0.iter().map(|f| format!("{:.1}", f)).collect();
             eprintln!("[r2-f0] {}", f0s.join(","));
         }
 
@@ -178,9 +167,8 @@ impl R2Engine {
         }
 
         // --- 4. pc-nsf-hifigan: mel + f0 → audio ---
-        let mut audio =
-            run_vocoder(&self.models.vocoder_path, &mel, &features_padded.f0)
-                .map_err(R2Error::Onnx)?;
+        let mut audio = run_vocoder(&self.models.vocoder_path, &mel, &features_padded.f0)
+            .map_err(R2Error::Onnx)?;
 
         // --- 5. Trim the pad, then ease in/out like the reference ---
         let hop = hop_size as usize;
@@ -260,20 +248,18 @@ fn run_mel(mel_path: &Path, features: &Features) -> Result<Vec<f32>, String> {
     let f0_f: Vec<f32> = features.f0.iter().map(|&v| v as f32).collect();
     let sp_f: Vec<f32> = features.sp_env.iter().map(|&v| v as f32).collect();
     let ap_f: Vec<f32> = features.ap.iter().map(|&v| v as f32).collect();
-    let sp_arr = ndarray::Array3::from_shape_vec((1, n, sp), sp_f)
-        .map_err(|e| format!("sp shape: {e}"))?;
-    let f0_arr = ndarray::Array2::from_shape_vec((1, n), f0_f)
-        .map_err(|e| format!("f0 shape: {e}"))?;
-    let ap_arr = ndarray::Array3::from_shape_vec((1, n, sp), ap_f)
-        .map_err(|e| format!("ap shape: {e}"))?;
+    let sp_arr =
+        ndarray::Array3::from_shape_vec((1, n, sp), sp_f).map_err(|e| format!("sp shape: {e}"))?;
+    let f0_arr =
+        ndarray::Array2::from_shape_vec((1, n), f0_f).map_err(|e| format!("f0 shape: {e}"))?;
+    let ap_arr =
+        ndarray::Array3::from_shape_vec((1, n, sp), ap_f).map_err(|e| format!("ap shape: {e}"))?;
     let inputs = ort::inputs![
         ort::value::Value::from_array(f0_arr).map_err(|e| format!("f0 tensor: {e}"))?,
         ort::value::Value::from_array(sp_arr).map_err(|e| format!("sp tensor: {e}"))?,
         ort::value::Value::from_array(ap_arr).map_err(|e| format!("ap tensor: {e}"))?,
     ];
-    let out = session
-        .run(inputs)
-        .map_err(|e| format!("mel run: {e}"))?;
+    let out = session.run(inputs).map_err(|e| format!("mel run: {e}"))?;
     // Output "mel": [1, N, 128].
     let (_, mel_slice) = out[0]
         .try_extract_tensor::<f32>()
@@ -284,7 +270,10 @@ fn run_mel(mel_path: &Path, features: &Features) -> Result<Vec<f32>, String> {
 /// pc-nsf-hifigan: mel [1,N,128] + f0 [1,N] → audio [1, N*hop].
 fn run_vocoder(vocoder_path: &Path, mel: &[f32], f0: &[f64]) -> Result<Vec<f32>, String> {
     if !vocoder_path.is_file() {
-        return Err(format!("vocoder model not found: {}", vocoder_path.display()));
+        return Err(format!(
+            "vocoder model not found: {}",
+            vocoder_path.display()
+        ));
     }
     let n_mel = mel.len() / 128;
     let mut session = ort::session::Session::builder()
@@ -294,8 +283,8 @@ fn run_vocoder(vocoder_path: &Path, mel: &[f32], f0: &[f64]) -> Result<Vec<f32>,
     let f0_f: Vec<f32> = f0.iter().map(|&v| v as f32).collect();
     let mel_arr = ndarray::Array3::from_shape_vec((1, n_mel, 128), mel_f)
         .map_err(|e| format!("mel shape: {e}"))?;
-    let f0_arr = ndarray::Array2::from_shape_vec((1, n_mel), f0_f)
-        .map_err(|e| format!("f0 shape: {e}"))?;
+    let f0_arr =
+        ndarray::Array2::from_shape_vec((1, n_mel), f0_f).map_err(|e| format!("f0 shape: {e}"))?;
     let inputs = ort::inputs![
         ort::value::Value::from_array(mel_arr).map_err(|e| format!("mel tensor: {e}"))?,
         ort::value::Value::from_array(f0_arr).map_err(|e| format!("f0 tensor: {e}"))?,

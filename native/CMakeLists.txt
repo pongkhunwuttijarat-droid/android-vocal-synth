@@ -13,6 +13,7 @@
 
 cmake_minimum_required(VERSION 3.16)
 project(worldline_native LANGUAGES C CXX)
+find_package(Threads REQUIRED)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -162,5 +163,6 @@ target_link_libraries(worldline
     spline
     npy
     m
+    Threads::Threads
 )
 set_target_properties(worldline PROPERTIES OUTPUT_NAME worldline)

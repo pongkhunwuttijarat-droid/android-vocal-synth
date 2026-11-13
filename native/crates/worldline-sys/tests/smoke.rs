@@ -40,19 +40,112 @@ fn check_symbols(path: &std::path::Path) {
             n += 1;
         }};
     }
-    sym!("F0", unsafe extern "C" fn(*mut f32, i32, i32, f64, i32, *mut *mut f64) -> i32);
-    sym!("DecodeMgc", unsafe extern "C" fn(i32, *mut f64, i32, i32, i32, *mut *mut f64) -> i32);
-    sym!("DecodeBap", unsafe extern "C" fn(i32, *mut f64, i32, i32, *mut *mut f64) -> i32);
-    sym!("InitAnalysisConfig", unsafe extern "C" fn(*mut worldline_sys::AnalysisConfig, i32, i32, i32));
-    sym!("WorldAnalysis", unsafe extern "C" fn(*const worldline_sys::AnalysisConfig, *mut f32, i32, *mut *mut f64, *mut *mut f64, *mut *mut f64, *mut i32));
-    sym!("WorldAnalysisF0In", unsafe extern "C" fn(*const worldline_sys::AnalysisConfig, *mut f32, i32, *mut f64, i32, *mut f64, *mut f64));
-    sym!("WorldSynthesis", unsafe extern "C" fn(*mut f64, i32, *mut f64, u8, i32, *mut f64, u8, i32, f64, i32, *mut *mut f64, *mut f64, *mut f64, *mut f64, *mut f64) -> i32);
-    sym!("Resample", unsafe extern "C" fn(*const worldline_sys::SynthRequest, *mut *mut f32) -> i32);
-    sym!("PhraseSynthNew", unsafe extern "C" fn() -> *mut std::ffi::c_void);
-    sym!("PhraseSynthDelete", unsafe extern "C" fn(*mut std::ffi::c_void));
-    sym!("PhraseSynthAddRequest", unsafe extern "C" fn(*mut std::ffi::c_void, *const worldline_sys::SynthRequest, f64, f64, f64, f64, f64, worldline_sys::LogCallback));
-    sym!("PhraseSynthSetCurves", unsafe extern "C" fn(*mut std::ffi::c_void, *mut f64, *mut f64, *mut f64, *mut f64, *mut f64, i32, worldline_sys::LogCallback));
-    sym!("PhraseSynthSynth", unsafe extern "C" fn(*mut std::ffi::c_void, *mut *mut f32, worldline_sys::LogCallback) -> i32);
+    sym!(
+        "F0",
+        unsafe extern "C" fn(*mut f32, i32, i32, f64, i32, *mut *mut f64) -> i32
+    );
+    sym!(
+        "DecodeMgc",
+        unsafe extern "C" fn(i32, *mut f64, i32, i32, i32, *mut *mut f64) -> i32
+    );
+    sym!(
+        "DecodeBap",
+        unsafe extern "C" fn(i32, *mut f64, i32, i32, *mut *mut f64) -> i32
+    );
+    sym!(
+        "InitAnalysisConfig",
+        unsafe extern "C" fn(*mut worldline_sys::AnalysisConfig, i32, i32, i32)
+    );
+    sym!(
+        "WorldAnalysis",
+        unsafe extern "C" fn(
+            *const worldline_sys::AnalysisConfig,
+            *mut f32,
+            i32,
+            *mut *mut f64,
+            *mut *mut f64,
+            *mut *mut f64,
+            *mut i32,
+        )
+    );
+    sym!(
+        "WorldAnalysisF0In",
+        unsafe extern "C" fn(
+            *const worldline_sys::AnalysisConfig,
+            *mut f32,
+            i32,
+            *mut f64,
+            i32,
+            *mut f64,
+            *mut f64,
+        )
+    );
+    sym!(
+        "WorldSynthesis",
+        unsafe extern "C" fn(
+            *mut f64,
+            i32,
+            *mut f64,
+            u8,
+            i32,
+            *mut f64,
+            u8,
+            i32,
+            f64,
+            i32,
+            *mut *mut f64,
+            *mut f64,
+            *mut f64,
+            *mut f64,
+            *mut f64,
+        ) -> i32
+    );
+    sym!(
+        "Resample",
+        unsafe extern "C" fn(*const worldline_sys::SynthRequest, *mut *mut f32) -> i32
+    );
+    sym!(
+        "PhraseSynthNew",
+        unsafe extern "C" fn() -> *mut std::ffi::c_void
+    );
+    sym!(
+        "PhraseSynthDelete",
+        unsafe extern "C" fn(*mut std::ffi::c_void)
+    );
+    sym!(
+        "PhraseSynthAddRequest",
+        unsafe extern "C" fn(
+            *mut std::ffi::c_void,
+            *const worldline_sys::SynthRequest,
+            f64,
+            f64,
+            f64,
+            f64,
+            f64,
+            worldline_sys::LogCallback,
+        )
+    );
+    sym!(
+        "PhraseSynthSetCurves",
+        unsafe extern "C" fn(
+            *mut std::ffi::c_void,
+            *mut f64,
+            *mut f64,
+            *mut f64,
+            *mut f64,
+            *mut f64,
+            i32,
+            worldline_sys::LogCallback,
+        )
+    );
+    sym!(
+        "PhraseSynthSynth",
+        unsafe extern "C" fn(
+            *mut std::ffi::c_void,
+            *mut *mut f32,
+            worldline_sys::LogCallback,
+        ) -> i32
+    );
     println!("  {n}/13 bound symbols resolved");
 }
 
@@ -66,7 +159,10 @@ fn smoke_phrase_synth_lifecycle() {
 
     let ps = worldline_sys::PhraseSynth::open(&path).expect("open + PhraseSynthNew");
     assert!(!ps.raw_handle().is_null(), "PhraseSynthNew returned NULL");
-    println!("OK: PhraseSynthNew -> handle {:p} (non-null)", ps.raw_handle());
+    println!(
+        "OK: PhraseSynthNew -> handle {:p} (non-null)",
+        ps.raw_handle()
+    );
 
     drop(ps);
     println!("OK: PhraseSynthDelete (clean drop, no crash)");

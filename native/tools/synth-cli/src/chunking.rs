@@ -34,14 +34,17 @@ pub struct Chunk {
     pub end_ms: f64,
 }
 
-
 /// Hash the `window` slice of `values`, clamped to the array.
 ///
 /// Clamping matters: a chunk's time window can extend past the array the
 /// builder produced, and a naive `values[lo..hi]` then yields an EMPTY slice —
 /// which would silently make the cache key blind to edits in that curve. For a
 /// non-empty array this always hashes at least one element.
-fn hash_window<T: std::hash::Hash>(h: &mut impl std::hash::Hasher, values: &[T], window: &Range<usize>) {
+fn hash_window<T: std::hash::Hash>(
+    h: &mut impl std::hash::Hasher,
+    values: &[T],
+    window: &Range<usize>,
+) {
     use std::hash::Hash as _;
     (values.len() as u64).hash(h);
     if values.is_empty() {
@@ -89,13 +92,24 @@ impl Chunk {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         engine_salt.hash(&mut h);
+        // The request conversion and phrase-curve tick indexing changed to
+        // match OpenUtau's ResamplerItem/TimeAxis semantics. Existing disk
+        // entries were keyed before those inputs were represented faithfully.
+        3u32.hash(&mut h);
 
-        // Phrase frame: the curve origin is `position_ms - leading_ms` and the
-        // grid step derives from `leading_ticks`/`time_axis_hint`.
+        // Phrase frame and explicit absolute render/curve origins affect
+        // request timing and sampled expression values.
         input.phrase.position_ms.to_bits().hash(&mut h);
         input.phrase.duration_ms.to_bits().hash(&mut h);
         input.phrase.leading_ms.to_bits().hash(&mut h);
         input.phrase.leading_ticks.hash(&mut h);
+        input.curve_grid_start_tick.hash(&mut h);
+        input.render_origin_ms.to_bits().hash(&mut h);
+        for point in &input.phrase.tempo_map {
+            point.tick_pos.hash(&mut h);
+            point.ms_pos.to_bits().hash(&mut h);
+            point.bpm.to_bits().hash(&mut h);
+        }
         input.phrase.time_axis_hint.hash(&mut h);
 
         // Rendered phonemes (own + context): every field that reaches the
@@ -110,6 +124,10 @@ impl Chunk {
             ph.leading_ms.to_bits().hash(&mut h);
             ph.overlap_ms.to_bits().hash(&mut h);
             ph.tone.hash(&mut h);
+            ph.adjusted_tempo.to_bits().hash(&mut h);
+            ph.consonant_velocity.to_bits().hash(&mut h);
+            ph.volume.to_bits().hash(&mut h);
+            ph.modulation.to_bits().hash(&mut h);
             ph.tone_shift.hash(&mut h);
             ph.index.hash(&mut h);
             ph.parent_note.hash(&mut h);
@@ -141,6 +159,7 @@ impl Chunk {
         // Pitch + expression curves over the window this chunk samples.
         let window = self.curve_window(input);
         hash_window(&mut h, &input.pitches_cents, &window);
+        hash_window_f32(&mut h, &input.pitches_cents_f32, &window);
         hash_window_f32(&mut h, &input.curves.dynamics, &window);
         hash_window_f32(&mut h, &input.curves.gender, &window);
         hash_window_f32(&mut h, &input.curves.breathiness, &window);
@@ -157,19 +176,17 @@ impl Chunk {
 
     /// Grid-index window this chunk samples, in the phrase's curve arrays.
     ///
-    /// The arrays are stepped by [`worldline_plugin::ms_per_interval`] from the
-    /// phrase origin (`position_ms - leading_ms`). The window spans the
+    /// The arrays use the explicit absolute 5-tick origin. The window spans the
     /// context range's time extent plus one interval of slack on each side,
     /// because the renderer interpolates between neighbouring grid points.
     pub fn curve_window(&self, input: &RenderInput) -> Range<usize> {
-        let origin_ms = input.phrase.position_ms - input.phrase.leading_ms;
         let first = &input.phonemes[self.ctx_range.start];
         let last = &input.phonemes[self.ctx_range.end - 1];
         let start_ms = first.position_ms - first.leading_ms;
         let end_ms = last.position_ms + last.duration_ms;
-        let interval = worldline_plugin::ms_per_interval(input).max(1e-9);
-        let lo = (((start_ms - origin_ms) / interval).floor() as i64 - 1).max(0) as usize;
-        let hi = ((((end_ms - origin_ms) / interval).ceil() as i64) + 2).max(0) as usize;
+        let grid = worldline_plugin::Grid::new(input);
+        let lo = (grid.index_at(start_ms).floor() as i64 - 1).max(0) as usize;
+        let hi = (grid.index_at(end_ms).ceil() as i64 + 2).max(0) as usize;
         lo..hi.max(lo)
     }
 }
@@ -337,6 +354,10 @@ mod tests {
             leading_ms: 0.0,
             overlap_ms: 0.0,
             tone: 60,
+            adjusted_tempo: 120.0,
+            consonant_velocity: 100.0,
+            volume: 100.0,
+            modulation: 0.0,
             tone_shift: 0,
             index: 0,
             parent_note: parent,
@@ -387,7 +408,11 @@ mod tests {
         let notes = vec![note(0.0, 500.0), note(1000.0, 500.0)];
         let phonemes = vec![ph(0, 0.0, 100.0), ph(1, 1000.0, 100.0)];
         let chunks = plan_chunks(&phonemes, &notes, 100000.0, 0);
-        assert_eq!(chunks.len(), 2, "rest should split into 2 chunks: {chunks:?}");
+        assert_eq!(
+            chunks.len(),
+            2,
+            "rest should split into 2 chunks: {chunks:?}"
+        );
     }
 
     /// Build a minimal RenderInput whose curve/pitch arrays are the only
@@ -404,11 +429,15 @@ mod tests {
                 duration_ms: 2000.0,
                 leading_ms: 100.0,
                 leading_ticks: 480,
+                tempo_map: vec![],
                 time_axis_hint: None,
             },
             notes: vec![note(0.0, 500.0), note(500.0, 500.0)],
             phonemes: vec![ph(0, 0.0, 500.0), ph(1, 500.0, 500.0)],
             pitches_cents: vec![pitch; n],
+            pitches_cents_f32: vec![pitch as f32; n],
+            curve_grid_start_tick: -480,
+            render_origin_ms: -100.0,
             curves: Curves {
                 dynamics: vec![1.0; n],
                 gender: vec![0.0; n],
@@ -452,6 +481,38 @@ mod tests {
         assert_ne!(a, b, "pitch edit did not change the chunk hash");
     }
 
+    #[test]
+    fn hash_changes_for_resampler_pitch_and_controls() {
+        use feed::render_input::TempoMapPoint;
+        let base = input_with_curves(0.0, 6000);
+        let chunk = make_chunk(&base.phonemes, 0, base.phonemes.len(), 0);
+        let base_hash = chunk.hash(&base, 7);
+
+        let mut changed = base.clone();
+        changed.pitches_cents_f32[100] += 0.25;
+        assert_ne!(chunk.hash(&changed, 7), base_hash);
+
+        let mut changed = base.clone();
+        changed.phrase.tempo_map.push(TempoMapPoint {
+            tick_pos: 480,
+            ms_pos: 500.0,
+            bpm: 90.0,
+        });
+        assert_ne!(chunk.hash(&changed, 7), base_hash);
+
+        for update in [0, 1, 2, 3] {
+            let mut changed = base.clone();
+            let phoneme = &mut changed.phonemes[0];
+            match update {
+                0 => phoneme.adjusted_tempo += 1.0,
+                1 => phoneme.consonant_velocity += 1.0,
+                2 => phoneme.volume += 1.0,
+                _ => phoneme.modulation += 1.0,
+            }
+            assert_ne!(chunk.hash(&changed, 7), base_hash);
+        }
+    }
+
     /// The engine salt must still discriminate engines.
     #[test]
     fn hash_changes_with_engine_salt() {
@@ -473,11 +534,7 @@ mod tests {
     #[test]
     fn context_included_in_ctx_range() {
         let notes = vec![note(0.0, 500.0), note(500.0, 500.0), note(1000.0, 500.0)];
-        let phonemes = vec![
-            ph(0, 0.0, 100.0),
-            ph(1, 500.0, 100.0),
-            ph(2, 1000.0, 100.0),
-        ];
+        let phonemes = vec![ph(0, 0.0, 100.0), ph(1, 500.0, 100.0), ph(2, 1000.0, 100.0)];
         let chunks = plan_chunks(&phonemes, &notes, 50.0, 1);
         // Middle chunk (owns note 1) must include note 0 and note 2 as ctx.
         let mid = chunks

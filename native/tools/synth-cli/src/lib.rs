@@ -9,9 +9,10 @@
 //! * `main` — the `render` / `synth-note` commands.
 
 pub mod chunking;
+#[cfg(feature = "r2")]
+pub mod diffusion;
 pub mod engine;
 #[cfg(feature = "r2")]
 pub mod moe;
-#[cfg(feature = "r2")]
-pub mod diffusion;
+pub mod openutau_phonemizer;
 pub mod pipeline;
