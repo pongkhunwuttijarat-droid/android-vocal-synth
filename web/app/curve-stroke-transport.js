@@ -16,9 +16,9 @@ export class CurveStrokeTransportError extends Error {
   }
 }
 
-// Keep transport reduction fail-closed until browser/native shared vectors
-// have verified the JavaScript floating-point decisions against Rust.
-export const CURVE_STROKE_REDUCER_PARITY_VERIFIED = false;
+// Browser/native shared vectors in `curve-stroke-transport.parity.test.mjs`
+// verify JS reduction against committed curves from both Rust targets.
+export const CURVE_STROKE_REDUCER_PARITY_VERIFIED = true;
 
 /** Describe every tolerance-approved chord as an overlapping tick/value pair. */
 export function curveStrokeIntervals(points) {
@@ -51,13 +51,25 @@ export async function prepareSimplifiedCurveStroke({
   if (command?.type !== "curve.apply_stroke" || command.mode !== "replace") {
     throw new CurveStrokeTransportError("Only curve.apply_stroke replace commands can be reduced");
   }
+  if (command.create === true) {
+    if (command.curve_id !== null || typeof command.abbr !== "string" || command.abbr.length === 0) {
+      throw new CurveStrokeTransportError("A new curve stroke needs a null curve_id and descriptor abbr");
+    }
+  } else if (typeof command.curve_id !== "string" || command.curve_id.length === 0) {
+    throw new CurveStrokeTransportError("An existing curve stroke needs a curve_id");
+  }
   if (!CURVE_STROKE_REDUCER_PARITY_VERIFIED) {
     throw new CurveStrokeTransportError("Curve reduction is disabled until client/Rust parity is verified", "unsupported_operation");
   }
   if (!Number.isSafeInteger(gestureRevision) || gestureRevision < 0) {
     throw new CurveStrokeTransportError("gestureRevision must be a non-negative safe integer");
   }
-  const latest = await readLatest(command.part_id, command.curve_id);
+  const latest = await readLatest({
+    partId: command.part_id,
+    curveId: command.curve_id,
+    abbr: command.abbr,
+    create: command.create === true,
+  });
   validateLatest(latest, command, gestureRevision);
   const points = reduceCurveStroke({
     basePoints: latest.points,
@@ -108,16 +120,33 @@ export async function commitSimplifiedCurveStroke({
 }
 
 /** Convenience adapter for the shared in-process WASM Engine API. */
+export function readCurveStrokeContextInWasm(engine, { partId, curveId, abbr, create }) {
+  const canReadExisting = typeof engine?.session_curve_stroke_context_json === "function";
+  const canReadCreate = typeof engine?.session_curve_stroke_context_for_abbr_json === "function";
+  if ((!canReadExisting && !canReadCreate)) {
+    throw new CurveStrokeTransportError("Engine does not expose the Session curve stroke APIs", "unsupported_operation");
+  }
+  if (create) {
+    if (!canReadCreate) {
+      throw new CurveStrokeTransportError("Engine cannot read context for a new curve", "unsupported_operation");
+    }
+    return JSON.parse(engine.session_curve_stroke_context_for_abbr_json(partId, abbr, null));
+  }
+  if (!canReadExisting) {
+    throw new CurveStrokeTransportError("Engine cannot read context for an existing curve", "unsupported_operation");
+  }
+  return JSON.parse(engine.session_curve_stroke_context_json(partId, curveId));
+}
+
 export function commitCurveStrokeInWasm(engine, { command, gestureRevision, maxAttempts = 4 }) {
-  if (typeof engine?.session_curve_stroke_context_json !== "function" ||
-      typeof engine?.session_apply_v2 !== "function") {
+  if (typeof engine?.session_apply_v2 !== "function") {
     throw new CurveStrokeTransportError("Engine does not expose the Session curve stroke APIs", "unsupported_operation");
   }
   return commitSimplifiedCurveStroke({
     command,
     gestureRevision,
     maxAttempts,
-    readLatest: (partId, curveId) => JSON.parse(engine.session_curve_stroke_context_json(partId, curveId)),
+    readLatest: target => readCurveStrokeContextInWasm(engine, target),
     apply: request => JSON.parse(engine.session_apply_v2(JSON.stringify(request))),
   });
 }
@@ -186,7 +215,11 @@ function validateLatest(latest, command, gestureRevision) {
   if (!latest || !Number.isSafeInteger(latest.revision) || latest.revision < gestureRevision) {
     throw new CurveStrokeTransportError("Latest curve read is invalid or older than the gesture base", "revision_conflict");
   }
-  if (latest.part_id !== command.part_id || latest.curve_id !== command.curve_id || latest.abbr !== command.abbr) {
+  if (command.create === true && latest.curve_id !== null) {
+    throw new CurveStrokeTransportError("The descriptor already has a curve in this part", "duplicate_curve_descriptor");
+  }
+  if (latest.part_id !== command.part_id || latest.curve_id !== command.curve_id ||
+      (command.abbr != null && latest.abbr !== command.abbr)) {
     throw new CurveStrokeTransportError("Latest curve identity does not match the stroke target", "revision_conflict");
   }
   if (!latest.descriptor) throw new CurveStrokeTransportError("Latest curve read has no authoritative descriptor context");

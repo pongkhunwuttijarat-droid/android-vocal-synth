@@ -20,9 +20,25 @@ export function frqKeyFor(wavKey) {
   return wavKey.replace(/\.wav$/i, "_wav.frq");
 }
 
+/**
+ * Decode a voicebank text file.
+ *
+ * `oto.ini` and `character.txt` from a Japanese bank are Shift-JIS, the same as
+ * the archive's entry names — see `web/zip.js` for why. Reading them as UTF-8
+ * turned every alias into replacement characters, so no key matched a file that
+ * was really on disk and the bank rendered silence while looking installed.
+ */
+function decodeBankText(bytes) {
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { /* not UTF-8 */ }
+  for (const encoding of ['shift_jis', 'cp932']) {
+    try { return new TextDecoder(encoding).decode(bytes); } catch { /* unsupported */ }
+  }
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
 /** Derive the wav file names listed in an `oto.ini`. */
 export function keysFromOto(otoBytes, otoDir = "") {
-  const text = new TextDecoder().decode(otoBytes);
+  const text = decodeBankText(otoBytes);
   const names = new Set();
   for (const line of text.split(/\r?\n/)) {
     const eq = line.indexOf("=");
@@ -95,6 +111,18 @@ class BaseBank {
     this.otoDir = otoDir;
     this.keys = keysFromOto(bytes, otoDir);
     return this.keys;
+  }
+
+  /**
+   * Every `oto.ini` this bank could use, shallowest first.
+   *
+   * `voice/oto.ini` is a convention, not a rule — OpenUtau reads `oto.ini` from
+   * wherever a bank puts it — so a host that cannot assume the path asks the
+   * bank. The base implementation has no directory listing, so it reports the
+   * conventional path only and lets the caller decide.
+   */
+  async listOtoCandidates() {
+    return [{ otoPath: "voice/oto.ini", otoDir: "voice" }];
   }
 
   /**
@@ -207,19 +235,129 @@ export class OpfsBank extends BaseBank {
     await writable.close();
   }
 
-  /** Import a directory-picker `FileList` into OPFS under this bank's root. */
+  /**
+   * Every `oto.ini` under this root, shallowest first.
+   *
+   * A real bank does not have to keep its samples in `voice/`: OpenUtau banks
+   * routinely use a named folder, and `TETO-English-150401.zip` uses
+   * `重音テト英語音源/`. Assuming `voice/` made such a bank import and then read
+   * zero samples, because the loader asked for a file the bank never had.
+   */
+  async listOtoCandidates() {
+    const found = [];
+    const walk = async (dir, prefix) => {
+      for await (const [name, handle] of dir.entries()) {
+        if (handle.kind === "directory") { await walk(handle, `${prefix}${name}/`); continue; }
+        if (name.toLowerCase() !== "oto.ini") continue;
+        // A 0-byte `oto.ini` is not a usable one: `TETO-OUset240323.zip` ships
+        // an empty one at the bank root beside the real per-colour ones, and
+        // preferring it yields a bank with no aliases at all.
+        let size = 0;
+        try { size = (await handle.getFile()).size; } catch { /* unreadable: skip */ }
+        if (size === 0) continue;
+        found.push({ otoPath: `${prefix}${name}`, otoDir: prefix.replace(/\/$/, "") });
+      }
+    };
+    let dir;
+    try { dir = await navigator.storage.getDirectory(); } catch { return []; }
+    for (const part of this.root.split("/").filter(Boolean)) {
+      try { dir = await dir.getDirectoryHandle(part); } catch { return []; }
+    }
+    await walk(dir, "");
+    found.sort((a, b) => a.otoDir.length - b.otoDir.length);
+    return found;
+  }
+
+  /**
+   * Open all non-empty oto sets in a bank as one in-memory table for hosts
+   * whose engine API accepts one oto.ini. Preserve each set's directory in the
+   * sample path, so aliases can still load their original WAV/FRQ files.
+   */
+  async openAllOtos() {
+    const candidates = await this.listOtoCandidates();
+    const lines = [];
+    const aliases = new Set();
+    const sampleKeys = new Set();
+    for (const candidate of candidates) {
+      const bytes = await this.raw(candidate.otoPath);
+      const text = decodeBankText(new Uint8Array(bytes));
+      for (const line of text.split(/\r?\n/)) {
+        const eq = line.indexOf('=');
+        if (eq <= 0) continue;
+        const wav = line.slice(0, eq).trim().replaceAll('\\', '/');
+        const fields = line.slice(eq + 1);
+        const alias = fields.split(',', 1)[0].trim();
+        if (!wav || !alias || wav.startsWith('/') || wav.split('/').some(part => part === '..' || part === '.')) continue;
+        const key = [candidate.otoDir, wav].filter(Boolean).join('/');
+        aliases.add(alias);
+        sampleKeys.add(key);
+        lines.push(`${key}=${fields}`);
+      }
+    }
+    if (!aliases.size) throw new Error(`Voicebank “${this.root}” has no usable oto aliases`);
+    this.otoBytes = new TextEncoder().encode(lines.join('\n'));
+    this.otoDir = '';
+    this.keys = [...sampleKeys].sort();
+    return { otoSets: candidates.length, aliasCount: aliases.size, sampleCount: sampleKeys.size };
+  }
+
+  /**
+   * Import into OPFS under this bank's root. Accepts either a
+   * directory-picker `FileList` (Chrome / Firefox) or a list of
+   * `{ path, bytes }` entries (tests, zip unpacking).
+   */
   async importFiles(files, { stripTopDir = true } = {}) {
     let count = 0;
     for (const f of files) {
-      let rel = f.webkitRelativePath || f.name;
-      if (stripTopDir) {
-        const slash = rel.indexOf("/");
-        if (slash >= 0) rel = rel.slice(slash + 1);
+      let rel;
+      let bytes;
+      if (f && typeof f.path === "string" && f.bytes) {
+        rel = f.path;
+        bytes = f.bytes;
+      } else {
+        rel = f.webkitRelativePath || f.name;
+        if (stripTopDir) {
+          const slash = rel.indexOf("/");
+          if (slash >= 0) rel = rel.slice(slash + 1);
+        }
+        bytes = new Uint8Array(await f.arrayBuffer());
       }
-      await this.write(rel, new Uint8Array(await f.arrayBuffer()));
+      await this.write(rel, bytes);
       count += 1;
     }
     this.cache = new ByteCache(this.cache.maxBytes);
     return count;
+  }
+
+  /** Top-level OPFS directories that contain at least one usable oto.ini. */
+  static async installedRoots() {
+    if (!(await this.available())) return [];
+    const roots = [];
+    const dir = await navigator.storage.getDirectory();
+    const hasUsableOto = async folder => {
+      for await (const [name, entry] of folder.entries()) {
+        if (entry.kind === "directory") {
+          if (await hasUsableOto(entry)) return true;
+        } else if (name.toLowerCase() === "oto.ini") {
+          try { if ((await entry.getFile()).size > 0) return true; } catch { /* unreadable */ }
+        }
+      }
+      return false;
+    };
+    for await (const [name, handle] of dir.entries()) {
+      if (handle.kind !== "directory") continue;
+      try {
+        if (await hasUsableOto(handle)) roots.push(name);
+      } catch {
+        /* not a readable bank directory */
+      }
+    }
+    return roots.sort();
+  }
+
+  /** Remove an imported bank root (recursive). */
+  static async removeRoot(root) {
+    const dir = await navigator.storage.getDirectory();
+    await dir.removeEntry(String(root), { recursive: true });
   }
 }

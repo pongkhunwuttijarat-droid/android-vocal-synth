@@ -1,0 +1,90 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WASM Session render integration</title>
+<pre id="result">starting</pre>
+<script type="module">
+import init, { Engine } from '../../../web/pkg/engine_wasm.js';
+import { SessionDriver } from '../../../web/app/session-driver.js';
+import { OpfsBank } from '../../../web/samples.js';
+import scaleDemoUstx from '../../../web/fixture/scale-demo.ustx?raw';
+import { WasmSessionRuntime } from '../src/openutau/wasm-session-runtime.js';
+
+const output = document.querySelector('#result');
+const say = value => { output.textContent = value; };
+const must = (condition, message) => { if (!condition) throw new Error(message); };
+function makePcmWav(seconds = 1, rate = 44100) {
+  const frames = seconds * rate;
+  const buffer = new ArrayBuffer(44 + frames * 2);
+  const view = new DataView(buffer);
+  const ascii = (offset, value) => [...value].forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
+  ascii(0, 'RIFF'); view.setUint32(4, 36 + frames * 2, true); ascii(8, 'WAVE');
+  ascii(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true); ascii(36, 'data'); view.setUint32(40, frames * 2, true);
+  for (let index = 0; index < frames; index++) view.setInt16(44 + index * 2, Math.round(Math.sin(index * 2 * Math.PI * 220 / rate) * 9000), true);
+  return new Uint8Array(buffer);
+}
+class MemoryProjectStore {
+  media = new Map();
+  async saveMedia(id, bytes) { this.media.set(id, bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes).slice()); return id; }
+  async loadMedia(id) { const bytes = this.media.get(id); if (!bytes) throw new Error(`missing test media ${id}`); return bytes.slice(); }
+  async list() { return []; }
+}
+
+try {
+  const wasmExports = await init();
+  // Make this browser harness independent of whichever real bank happens to
+  // be installed in the current profile. WasmSessionRuntime then selects the
+  // checked-in dev fixture bank without reading or modifying OPFS.
+  OpfsBank.installedRoots = async () => [];
+  const store = new MemoryProjectStore();
+  const driver = new SessionDriver(new Engine(), store);
+  const runtime = new WasmSessionRuntime(driver, wasmExports);
+  await runtime.importUstx(scaleDemoUstx);
+  await runtime.registerMedia('render-smoke.wav', makePcmWav());
+  await runtime.apply({ type: 'track.create', name: 'Fixture Audio' });
+  const audioTrackId = runtime.state.snapshot.project.tracks.at(-1).id;
+  await runtime.apply({
+    type: 'part.create', track_id: audioTrackId, kind: 'wave', name: 'Fixture wave',
+    position_ticks: 0, duration_ticks: 1920, media_ref: 'asset:render-smoke.wav',
+  });
+
+  const phases = [];
+  runtime.onRenderProgress = event => phases.push(event.phase);
+  const rendered = await runtime.renderMixdown();
+  must(rendered.samples.length > 0, 'render worker returned no PCM');
+  must(rendered.samples.some(sample => Math.abs(sample) > 1e-5), 'voice + wave output was silent');
+  must(rendered.renderJob?.sessionId === driver.sessionId, 'render result lost its Rust session identity');
+  must(rendered.renderJob?.revision === driver.revision, 'render result lost its committed revision');
+  must(rendered.renderJob.assetManifest.some(asset => asset.kind === 'project-media'), 'project media was not pinned');
+  must(rendered.renderJob.assetManifest.some(asset => asset.kind === 'sample-wav'), `voice samples were not pinned: ${JSON.stringify(rendered.renderJob.assetManifest)}`);
+  must(phases.includes('rendering'), 'render progress did not reach the UI adapter');
+  const warmRendered = await runtime.renderMixdown();
+  must(warmRendered.renderJob.assetFingerprint === rendered.renderJob.assetFingerprint, 'warm run changed the pinned render identity');
+
+  runtime.onRenderProgress = event => {
+    if (event.phase === 'rendering') runtime.cancelRenderMixdown(event.jobId);
+  };
+  await runtime.renderMixdown().then(
+    () => { throw new Error('hard cancellation unexpectedly published a render'); },
+    error => must(error.code === 'RENDER_CANCELLED', `unexpected cancellation error ${error.code}`),
+  );
+  must(runtime._renderJob === null, 'cancelled render worker was not cleaned up');
+
+  const note = runtime.state.snapshot.project.tracks[0].parts[0].notes[0];
+  let editAppliedDuringRender = false;
+  runtime.onRenderProgress = event => {
+    if (event.phase !== 'rendering' || editAppliedDuringRender) return;
+    editAppliedDuringRender = true;
+    runtime.apply({ type: 'note.set_tone', note_id: note.id, tone: note.tone + 1 });
+  };
+  await runtime.renderMixdown().then(
+    () => { throw new Error('render published after the project revision changed'); },
+    error => must(error.code === 'STALE_RENDER_RESULT', `unexpected stale result error ${error.code}`),
+  );
+  must(editAppliedDuringRender, 'Session edit was not accepted while the render worker ran');
+  say(`PASS\nworkerRenderFrames=${rendered.renderJob.memory.outputPcmBytes / 8}\nassetCount=${rendered.renderJob.assetManifest.length}\ncoldKnownMemoryHighWater=${rendered.renderJob.memory.knownBytesHighWater}\nwarmKnownMemoryHighWater=${warmRendered.renderJob.memory.knownBytesHighWater}\nprogress=${[...new Set(phases)].join(',')}\ncancel=hard-terminate\neditDuringRender=accepted\nstalePublication=rejected`);
+} catch (error) {
+  say(`FAIL\n${error?.stack || error}`);
+}
+</script>

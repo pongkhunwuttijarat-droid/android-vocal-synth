@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="th">
+<head><meta charset="utf-8"><title>R2 chain บน wasm — mel.onnx → pc-nsf-hifigan</title></head>
+<body>
+<pre id="out" style="font:12px ui-monospace,monospace;white-space:pre-wrap">running…</pre>
+<script type="module">
+// T5: the REAL worldline-R2 neural chain, end to end, inside the browser:
+//
+//   f0 [1,T] + sp_env [1,T,1025] + ap [1,T,1025]
+//        -> models/r2/mel.onnx          -> mel [1,T,128]
+//        -> pc-nsf-hifigan (vocoder)    -> waveform [1,T*512]
+//        -> trim leftPad*512, take frames*512, ease 512 samples both ends
+//
+// This mirrors ref(openutau+openutau mobile)/core/OpenUtau.Core/Classic/WorldlineRenderer.cs:142-228
+// exactly (same padding: paddedLength = ceil((frames + 8 + 4)/16)*16, leftPad = 4 frames).
+// Inputs are deterministic synthetic features with the correct shapes; nothing is mocked.
+import { makeFeatures, paddedLength, trimAndEase, toWav16, stats, fnv1aF32,
+         LEFT_PAD, HOP, SP_SIZE, MEL_BINS } from "./vendor/r2-inputs.mjs";
+import { R2Runtime } from "./app/r2-runtime.js";
+
+const qs = new URLSearchParams(location.search);
+const EP = qs.get("ep") || "wasm";
+const MEL_URL = qs.get("mel") || "/models/r2/mel.onnx";
+const VOC_URL = qs.get("voc") || "/models/r2/pc-nsf-hifigan/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx";
+const F1 = Number(qs.get("frames") || 64);
+const F2 = Number(qs.get("frames2") || 97);
+const EMIT_WAV = qs.get("wav") !== "0";
+
+const out = document.getElementById("out");
+const lines = [];
+const say = (m) => {
+  lines.push(String(m));
+  out.textContent = lines.join("\n");
+  fetch("/__progress", { method: "POST", body: String(m) }).catch(() => {});
+};
+const warns = [];
+for (const k of ["warn", "error"]) {
+  const orig = console[k].bind(console);
+  console[k] = (...a) => { warns.push(k + ": " + a.map(String).join(" ")); orig(...a); };
+}
+// Capture the wasm linear memory ORT creates. Process-tree RSS is dominated by
+// Chromium itself (task-4: ~1 GB for about:blank), so the engine number that
+// actually means something is the wasm memory the runtime allocated.
+const wasmMemories = [];
+try {
+  const OrigMemory = WebAssembly.Memory;
+  function TrackedMemory(desc) { const m = new OrigMemory(desc); wasmMemories.push(m); return m; }
+  TrackedMemory.prototype = OrigMemory.prototype;
+  Object.defineProperty(WebAssembly, "Memory", { value: TrackedMemory, writable: true, configurable: true });
+} catch (e) { warns.push("wasm Memory hook failed: " + e); }
+function wasmMemBytes() {
+  let mx = 0;
+  for (let i = 0; i < wasmMemories.length; i++) { const b = wasmMemories[i].buffer.byteLength; if (b > mx) mx = b; }
+  return mx;
+}
+
+const t0 = performance.now();
+const round = (x) => Math.round(x * 1000) / 1000;
+async function sha256hex(buf) {
+  const d = await crypto.subtle.digest("SHA-256", buf);
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+function b64(u8) {
+  let s = ""; const CH = 0x8000;
+  for (let i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+  return btoa(s);
+}
+const R = { page: "web/r2-test.html", requestedEP: EP, ortVersion: null, ortImportMs: 0, runtimeLoadMs: 0,
+            mel: { url: MEL_URL, bytes: 0, sha256: null, fetchMs: 0, sessionMs: 0, inputs: [], outputs: [] },
+            voc: { url: VOC_URL, bytes: 0, sha256: null, fetchMs: 0, sessionMs: 0, inputs: [], outputs: [] },
+            constants: { SP_SIZE, MEL_BINS, HOP, LEFT_PAD, SR: 44100 },
+            runs: [], wasmMemory: { count: 0, afterMelSessionBytes: 0, afterSessionsBytes: 0, finalBytes: 0 },
+            verdict: "PASS", totalMs: 0, warnings: warns,
+            jsHeapMB: null, jsHeapLimitMB: null, wavB64: null, wavBytes: 0, wavFnv: null, error: null };
+const fail = (m) => { throw new Error("ASSERT: " + m); };
+let runtime = null;
+
+try {
+  // ---- 1. persistent ORT WebGPU/WASM runtime ----------------------------
+  say("step 1/4: initialize R2 runtime · EP " + EP);
+  const tOrt = performance.now();
+  runtime = await R2Runtime.load({
+    ep: EP,
+    melUrl: MEL_URL,
+    vocoderUrl: VOC_URL,
+    onStatus: say,
+  });
+  R.runtimeLoadMs = round(performance.now() - tOrt);
+  R.ortImportMs = round(runtime.info.importMs);
+  R.ortVersion = runtime.info.version;
+  say("  ort-web " + R.ortVersion + " in " + R.ortImportMs + " ms");
+
+  // ---- 2. both real models ----------------------------------------------
+  say("step 2/4: load the two real R2 models");
+  Object.assign(R.mel, runtime.models.mel);
+  R.mel.url = MEL_URL;
+  R.mel.sessionMs = round(R.mel.sessionMs);
+  R.mel.fetchMs = round(R.mel.fetchMs);
+  say(`  mel ${R.mel.bytes} B · session ${R.mel.sessionMs} ms · EP [${R.mel.providers}]`);
+  R.wasmMemory.afterMelSessionBytes = wasmMemBytes();
+  Object.assign(R.voc, runtime.models.vocoder);
+  R.voc.url = VOC_URL;
+  R.voc.sessionMs = round(R.voc.sessionMs);
+  R.voc.fetchMs = round(R.voc.fetchMs);
+  say(`  vocoder ${R.voc.bytes} B · session ${R.voc.sessionMs} ms · EP [${R.voc.providers}]`);
+  R.webgpuDevice = runtime.info.device;
+  if (EP === "webgpu") say("  ORT WebGPU device " + JSON.stringify(R.webgpuDevice));
+  R.wasmMemory.afterSessionsBytes = wasmMemBytes();
+  say("  wasm linear memory after both sessions: " + (R.wasmMemory.afterSessionsBytes / 1048576).toFixed(1) + " MB");
+  for (const n of ["f0", "sp_env", "ap"]) if (!R.mel.inputs.includes(n)) fail("mel.onnx missing input " + n + ": " + R.mel.inputs);
+  for (const n of ["mel", "f0"]) if (!R.voc.inputs.includes(n)) fail("vocoder missing input " + n + ": " + R.voc.inputs);
+
+  // ---- 3. the full chain -------------------------------------------------
+  async function chain(frames, label) {
+    const F = makeFeatures(frames);
+    const T = F.padded;
+    if (T !== paddedLength(frames)) fail("padded length mismatch");
+    const rec = { label, frames, padded: T, rightPad: F.rightPad,
+                  inputFnv: { f0: fnv1aF32(F.f0), sp: fnv1aF32(F.sp), ap: fnv1aF32(F.ap) } };
+    say("step 3/4: " + label + " — frames=" + frames + " padded=" + T + " (leftPad " + LEFT_PAD + ", rightPad " + F.rightPad + ")");
+    say("  input fnv f0=" + rec.inputFnv.f0 + " sp=" + rec.inputFnv.sp + " ap=" + rec.inputFnv.ap);
+
+    // stage A: mel.onnx
+    const tMel = performance.now();
+    const melRes = await runtime.runMel({
+      f0: F.f0,
+      spEnv: F.sp,
+      ap: F.ap,
+      frames: T,
+      bins: SP_SIZE,
+    });
+    rec.melMs = round(performance.now() - tMel);
+    const melDims = melRes.dims;
+    const mel = melRes.data;
+    rec.melDims = melDims;
+    rec.melFnv = fnv1aF32(mel);
+    const ms = stats(mel);
+    rec.melStats = { min: ms.min, max: ms.max, mean: ms.mean, peak: ms.peak, nonFinite: ms.nonFinite };
+    say("  mel.onnx -> dims [" + melDims + "] in " + rec.melMs + " ms · min " + ms.min.toFixed(4) +
+        " max " + ms.max.toFixed(4) + " mean " + ms.mean.toFixed(4) + " fnv " + rec.melFnv);
+    if (melDims.length !== 3 || melDims[0] !== 1 || melDims[1] !== T || melDims[2] !== MEL_BINS) {
+      fail(label + ": mel dims " + JSON.stringify(melDims) + " != [1," + T + "," + MEL_BINS + "]");
+    }
+    if (ms.nonFinite !== 0) fail(label + ": mel has " + ms.nonFinite + " non-finite values");
+
+    // stage B: vocoder (mel + the SAME padded f0)
+    const tVoc = performance.now();
+    const vocRes = await runtime.runVocoder({
+      mel,
+      f0: F.f0,
+      frames: T,
+      bins: MEL_BINS,
+    });
+    rec.vocMs = round(performance.now() - tVoc);
+    const waveDims = vocRes.dims;
+    const wave = vocRes.data;
+    rec.waveDims = waveDims;
+    if (wave.length !== T * HOP) fail(label + ": vocoder gave " + wave.length + " samples, expected " + (T * HOP));
+    const trimmed = trimAndEase(wave, frames, 512);
+    rec.samples = trimmed.length;
+    rec.seconds = trimmed.length / 44100;
+    rec.realtimeX = round(rec.seconds / ((rec.melMs + rec.vocMs) / 1000));
+    rec.chainMs = round(rec.melMs + rec.vocMs);
+    const st = stats(trimmed);
+    rec.peak = st.peak; rec.rms = st.rms; rec.min = st.min; rec.max = st.max;
+    rec.nonFinite = st.nonFinite; rec.distinct = st.distinct; rec.zcrHz = round(st.zcrHz);
+    rec.wavFnv = fnv1aF32(trimmed);
+    rec.easeFirst = trimmed[0];
+    rec.easeLast = trimmed[trimmed.length - 1];
+    say("  vocoder -> " + wave.length + " samples in " + rec.vocMs + " ms · chain " + rec.chainMs +
+        " ms (" + rec.realtimeX + "x realtime)");
+    say("  trimmed " + trimmed.length + " = " + frames + "*" + HOP + " · peak " + rec.peak.toFixed(6) +
+        " rms " + rec.rms.toFixed(6) + " fnv " + rec.wavFnv);
+    if (rec.samples !== frames * HOP) fail(label + ": trimmed " + rec.samples + " != " + frames * HOP);
+    if (st.nonFinite !== 0) fail(label + ": audio has " + st.nonFinite + " non-finite samples");
+    if (!(rec.peak > 0)) fail(label + ": output is all zero");
+    if (st.distinct < 2) fail(label + ": output is a constant");
+    if (rec.easeFirst !== 0) fail(label + ": ease-in did not zero the first sample");
+    return { rec, trimmed };
+  }
+  const a = await chain(F1, "run1");
+  const b = await chain(F2, "run2-otherFrames");
+  R.runs = [a.rec, b.rec];
+
+  // ---- 4. artifact + memory ---------------------------------------------
+  const wav = toWav16(a.trimmed, 44100);
+  R.wavBytes = wav.length; R.wavFnv = fnv1aF32(new Float32Array(wav.buffer.slice(44)));
+  if (EMIT_WAV) R.wavB64 = b64(wav);
+  if (performance.memory) {
+    R.jsHeapMB = round(performance.memory.usedJSHeapSize / 1048576);
+    R.jsHeapLimitMB = round(performance.memory.jsHeapSizeLimit / 1048576);
+  }
+  R.wasmMemory.count = wasmMemories.length;
+  R.wasmMemory.finalBytes = wasmMemBytes();
+  say("step 4/4: wav " + wav.length + " bytes · jsHeap " + R.jsHeapMB + " MB · wasm memory " +
+      (R.wasmMemory.finalBytes / 1048576).toFixed(1) + " MB (" + R.wasmMemory.count + " memories)");
+  R.totalMs = round(performance.now() - t0);
+  R.verdict = "PASS";
+  await runtime.dispose();
+  say("RESULT: PASS R2 chain mel.onnx(" + (R.mel.bytes / 1024).toFixed(1) + "KB) -> pc-nsf-hifigan(" +
+      (R.voc.bytes / 1048576).toFixed(1) + "MB) mel " + a.rec.melMs + "ms voc " + a.rec.vocMs +
+      "ms samples " + a.rec.samples + " peak " + a.rec.peak.toFixed(6));
+  await fetch("/__result", { method: "POST", body: JSON.stringify(R) });
+} catch (e) {
+  await runtime?.dispose().catch(() => {});
+  R.verdict = "FAIL";
+  R.error = String(e && e.stack ? e.stack : e);
+  R.totalMs = round(performance.now() - t0);
+  say("RESULT: FAIL " + R.error);
+  await fetch("/__result", { method: "POST", body: JSON.stringify(R) }).catch(() => {});
+}
+</script>
+</body></html>

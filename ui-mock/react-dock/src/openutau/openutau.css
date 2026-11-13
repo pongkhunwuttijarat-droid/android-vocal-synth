@@ -1,0 +1,310 @@
+/* OpenUtau-style shell for the clone. Every colour is a role token written by
+   `palette.js` as `--ou-<name>` on `<html>`, so this file contains no hex and
+   a theme switch is a token swap. OpenUtau does the same with named XAML
+   resources ({DynamicResource BackgroundBrushSemi}); see palette.js. */
+html,body,#root{width:100%;height:100%;min-width:0;min-height:0;margin:0}
+body,#root{overflow:hidden}
+.ou-app{width:100%;height:100vh;height:100dvh;min-height:0;display:grid;grid-template-rows:26px minmax(0,1fr) 22px;background:var(--ou-surface);color:var(--ou-text);font:13px/1.4 'Segoe UI',Inter,ui-sans-serif,system-ui,sans-serif}
+.ou-menubar{position:relative;z-index:10;display:flex;align-items:center;gap:2px;background:var(--ou-surface-raised);border-bottom:1px solid var(--ou-border);padding:0 6px}
+.ou-menu{border:0;background:transparent;padding:4px 9px;border-radius:4px;font-size:12px;color:var(--ou-text-strong)}
+.ou-menu:hover{background:var(--ou-accent-hover)}
+.ou-menu-grow{flex:1}
+.ou-menu-manager{border:1px solid var(--ou-control-border);background:var(--ou-control-bg);color:var(--ou-control-text);padding:2px 8px}
+.ou-menu-manager:hover{background:var(--ou-control-bg-hover)}
+
+/* File menu and its dialogs. Menus are popup chrome, so they paint over the
+   dock stage with an explicit z-index rather than relying on DOM order. */
+.ou-menu-root{position:relative;display:inline-flex;align-items:center}
+.ou-dropdown{position:absolute;top:22px;left:0;z-index:30;min-width:212px;display:grid;padding:4px;border:1px solid var(--ou-border-strong);border-radius:8px;background:var(--ou-surface-raised);box-shadow:0 14px 40px var(--ou-shadow-text)}
+.ou-dropdown-item{display:flex;align-items:center;justify-content:space-between;gap:16px;border:0;border-radius:5px;background:transparent;padding:5px 8px;font-size:12px;color:var(--ou-text-strong);text-align:left}
+.ou-dropdown-item:hover:not(:disabled){background:var(--ou-accent-hover)}
+.ou-dropdown-item:disabled{opacity:.45}
+.ou-dropdown-hint{font:10px 'Cascadia Mono',Consolas,monospace;color:var(--ou-text-faint)}
+.ou-dropdown-heading{padding:5px 8px 2px;font-size:9px;font-weight:700;letter-spacing:.04em;color:var(--ou-text-faint);text-transform:uppercase}
+.ou-dropdown-sep{height:1px;margin:4px 6px;background:var(--ou-divider)}
+.ou-project-chip{display:inline-flex;align-items:center;gap:5px;margin-left:8px;padding:1px 8px;border:1px solid var(--ou-border);border-radius:999px;background:var(--ou-surface);font-size:11px;color:var(--ou-text-muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ou-dirty-dot{width:6px;height:6px;border-radius:50%;background:var(--ou-accent)}
+.ou-toast{margin-left:10px;padding:1px 8px;border:1px solid var(--ou-border);border-radius:4px;background:var(--ou-surface);font-size:10px;color:var(--ou-text-muted);cursor:pointer}
+.ou-toast.error{border-color:var(--ou-warn-text);color:var(--ou-warn-text)}
+.ou-dialog-backdrop{position:fixed;inset:0;z-index:40;display:grid;place-items:center;background:var(--ou-shadow-text);backdrop-filter:blur(2px)}
+.ou-dialog{border:1px solid var(--ou-border-strong);border-radius:10px;background:var(--ou-surface-raised);box-shadow:0 24px 70px var(--ou-shadow-text);padding:14px;color:var(--ou-text)}
+.ou-dialog-title{margin:0 0 10px;font-size:13px;color:var(--ou-text-strong)}
+.ou-dialog-label{display:grid;gap:5px;font-size:10px;color:var(--ou-text-muted)}
+.ou-dialog-input{height:24px;border:1px solid var(--ou-border-strong);border-radius:5px;background:var(--ou-surface);color:var(--ou-text-strong);font-size:12px;padding:0 7px}
+.ou-dialog-input:focus-visible{outline:2px solid var(--ou-accent);outline-offset:1px}
+.ou-dialog-message{margin:0;font-size:11px;color:var(--ou-text-muted)}
+.ou-dialog-empty{margin:0;font-size:11px;color:var(--ou-text-faint)}
+.ou-dialog-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:12px}
+.ou-button{height:22px;border:1px solid var(--ou-control-border);border-radius:5px;background:var(--ou-control-bg);color:var(--ou-control-text);font-size:11px;padding:0 11px}
+.ou-button:hover:not(:disabled){background:var(--ou-control-bg-hover)}
+.ou-button:disabled{opacity:.45}
+.ou-button-primary{border-color:var(--ou-accent);background:var(--ou-accent);color:var(--ou-surface)}
+.ou-button-primary:hover:not(:disabled){background:var(--ou-accent-hover)}
+.ou-project-list{display:grid;gap:4px;max-height:280px;overflow:auto}
+.ou-project-item{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--ou-border);border-radius:6px;background:var(--ou-surface-alt);padding:6px 9px;font-size:12px;color:var(--ou-text-strong);text-align:left}
+.ou-project-item:hover{border-color:var(--ou-accent);background:var(--ou-accent-hover)}
+.ou-project-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ou-project-tag{font-size:9px;color:var(--ou-text-faint)}
+.ou-import-picker{display:grid;gap:5px;margin-top:12px;font-size:10px;color:var(--ou-text-muted)}
+.ou-import-picker input{max-width:100%;font-size:10px;color:var(--ou-text)}
+.ou-import-selected,.ou-project-draft-note{margin:8px 0 0;font-size:10px;color:var(--ou-text-faint)}
+.ou-import-selected.error{color:var(--ou-warn-text)}
+.ou-singer-list{display:grid;gap:4px;max-height:240px;overflow:auto;margin:8px 0}
+.ou-singer-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--ou-border);border-radius:4px;background:var(--ou-surface-sunken)}
+.ou-singer-name{font-size:12px;color:var(--ou-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ou-singer-tag{padding:1px 6px;border-radius:3px;font-size:10px;color:var(--ou-accent-text);background:var(--ou-accent-soft)}
+.ou-singer-pick{display:none}
+.ou-project-dialog{width:min(500px,calc(100vw - 32px));display:grid;gap:8px}
+.ou-expression-table{display:grid;border:1px solid var(--ou-border);border-radius:6px;overflow:hidden;font-size:10px;color:var(--ou-text-muted)}
+.ou-expression-table>div{display:grid;grid-template-columns:54px minmax(90px,1fr) 65px 85px;gap:8px;padding:6px 8px;border-bottom:1px solid var(--ou-divider)}
+.ou-expression-table>div:last-child{border-bottom:0}
+.ou-expression-table .head{background:var(--ou-surface-alt);font-weight:700;color:var(--ou-text-strong)}
+.ou-tempo-field{max-width:180px}
+
+/* Dock Manager. Hiding a panel is view state, so nothing here is engine state. */
+.ou-manager-backdrop{position:absolute;inset:0;z-index:20;display:grid;place-items:center;padding:16px;background:var(--ou-shadow-text);backdrop-filter:blur(3px)}
+.ou-manager{width:min(560px,100%);max-height:min(82%,720px);overflow:auto;border:1px solid var(--ou-border-strong);border-radius:10px;background:var(--ou-surface-raised);box-shadow:0 24px 70px var(--ou-shadow-text);padding:14px;color:var(--ou-text)}
+.ou-manager header{display:flex;align-items:flex-start;gap:10px;border-bottom:1px solid var(--ou-divider);padding-bottom:10px}
+.ou-manager header div{flex:1}
+.ou-manager h2{margin:0;font-size:14px;color:var(--ou-text-strong)}
+.ou-manager header p{margin:3px 0 0;font-size:10px;color:var(--ou-text-muted)}
+.ou-manager-close{border:1px solid var(--ou-control-border);border-radius:5px;background:var(--ou-control-bg);color:var(--ou-control-text);font-size:10px;padding:3px 9px}
+.ou-manager-close:hover{background:var(--ou-control-bg-hover)}
+.ou-manager-list{display:grid;gap:5px;padding:11px 0}
+.ou-manager-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(70px,96px) auto;align-items:center;gap:9px;padding:7px 8px;border:1px solid var(--ou-border);border-radius:7px;background:var(--ou-surface-alt)}
+.ou-manager-names{min-width:0;display:grid}
+.ou-manager-names strong{font-size:11px;color:var(--ou-text-strong)}
+.ou-manager-names small{font-size:9px;color:var(--ou-text-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ou-manager-where{font-size:9px;color:var(--ou-accent-text)}
+.ou-manager-where.muted{color:var(--ou-text-faint)}
+.ou-manager-foot{margin:2px 0 0;font-size:9px;color:var(--ou-text-faint)}
+.ou-manager-switch{width:38px;height:22px;display:flex;align-items:center;padding:2px;border:1px solid var(--ou-border-strong);border-radius:999px;background:var(--ou-surface-sunken);transition:background .15s,border-color .15s}
+.ou-manager-switch span{width:16px;height:16px;border-radius:50%;background:var(--ou-text-muted);transition:transform .15s,background .15s}
+.ou-manager-switch.on{justify-content:flex-start;border-color:var(--ou-accent);background:var(--ou-accent-soft)}
+.ou-manager-switch.on span{transform:translateX(16px);background:var(--ou-accent)}
+.ou-manager-switch:focus-visible{outline:2px solid var(--ou-accent);outline-offset:2px}
+.ou-chip{border:1px solid var(--ou-border);border-radius:4px;background:var(--ou-surface);padding:1px 7px;font:11px 'Cascadia Mono',Consolas,monospace;color:var(--ou-text-muted);margin-left:4px}
+.ou-dock-stage{position:relative;min-height:0;min-width:0;overflow:hidden;background:var(--ou-surface-alt)}
+.ou-dockview{height:100%;width:100%}
+.ou-history{display:inline-flex;align-items:center;gap:3px;margin:0 6px 0 2px}
+.ou-history button{width:20px;height:18px;border:1px solid var(--ou-control-border);border-radius:4px;background:var(--ou-control-bg);color:var(--ou-text-muted);font-size:11px;padding:0}
+.ou-history button:hover:not(:disabled){background:var(--ou-control-bg-hover);color:var(--ou-text-strong)}
+.ou-history button:disabled{opacity:.45}
+.ou-theme-select{height:18px;border:1px solid var(--ou-control-border);border-radius:4px;background:var(--ou-control-bg);font-size:10px;color:var(--ou-control-text);margin-right:6px}
+.ou-theme-select:hover{background:var(--ou-control-bg-hover)}
+.ou-link-state{border-radius:4px;padding:1px 7px;font-size:10px;font-weight:600;margin-left:6px}
+.ou-link-state.live{background:var(--ou-ok-bg);color:var(--ou-ok-text)}
+.ou-link-state.mock{background:var(--ou-warn-bg);color:var(--ou-warn-text)}
+.ou-backend-switch{display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--ou-text-muted);margin-right:8px}
+.ou-backend-switch select{height:18px;border:1px solid var(--ou-control-border);border-radius:4px;background:var(--ou-control-bg);font-size:10px;color:var(--ou-control-text)}
+.ou-backend-switch select:hover{background:var(--ou-control-bg-hover)}
+.ou-transport-bar{display:inline-flex;align-items:center;gap:4px;margin:0 4px}
+/* Play/stop/restart then the skip cluster, so the boundary between "transport" and
+   "navigation" is visible rather than implied by button order. */
+.ou-transport-group{display:inline-flex;align-items:center;gap:2px;margin:0 4px;padding:0 4px;border-left:1px solid var(--ou-border)}
+.ou-transport{border:1px solid var(--ou-control-border);border-radius:4px;background:var(--ou-control-bg);color:var(--ou-accent);font-size:10px;line-height:1;width:22px;height:18px;padding:0}
+.ou-transport:hover{background:var(--ou-accent-soft);border-color:var(--ou-accent)}
+.ou-transport:active{background:var(--ou-accent);color:var(--ou-surface)}
+.ou-transport[aria-pressed='true']{background:var(--ou-accent);border-color:var(--ou-accent);color:var(--ou-surface)}
+.ou-chip-clock{min-width:74px;text-align:center}
+.ou-status{display:flex;align-items:center;gap:12px;border-top:1px solid var(--ou-border);background:var(--ou-surface-raised);padding:0 8px;font-size:10px;color:var(--ou-text-muted)}
+.ou-status-mock{color:var(--ou-warn-text);font-weight:600}
+.ou-status-live{color:var(--ou-ok-text);font-weight:600}
+.ou-worker-recovery{display:inline-flex;align-items:center;gap:6px;color:var(--ou-warn-text);font-weight:700}
+.ou-worker-recovery button{border:1px solid currentColor;border-radius:4px;background:transparent;color:inherit;font:inherit;padding:2px 6px;cursor:pointer}
+.ou-worker-recovery button:disabled{opacity:.65;cursor:wait}
+/* Output monitor: level bar, device picker, volume. The bar is the fastest way
+   to tell a silent app from a silent speaker, so it is 1:1 with the meter. */
+.ou-output{display:inline-flex;align-items:center;gap:4px}
+.ou-output select{max-width:180px;height:18px;font-size:10px;background:var(--ou-surface);color:inherit;border:1px solid var(--ou-border);border-radius:4px}
+.ou-output input[type=range]{width:64px;height:14px;accent-color:var(--ou-accent)}
+.ou-meter{display:inline-block;width:54px;height:6px;border:1px solid var(--ou-border);border-radius:3px;background:var(--ou-surface-sunken);overflow:hidden}
+.ou-meter-fill{display:block;height:100%;width:0;background:var(--ou-ok-text);transition:width 60ms linear}
+.ou-meter-db{font-variant-numeric:tabular-nums;min-width:34px}
+.ou-watermark{padding:10px 14px;border:1px dashed var(--ou-border);border-radius:8px;color:var(--ou-text-faint);font-size:12px;background:var(--ou-surface-alt)}
+
+/* Arrangement */
+.ou-arrangement{position:relative;height:100%;min-width:0;display:grid;grid-template-columns:var(--arr-header-width,220px) minmax(0,1fr);overflow:hidden;background:var(--ou-surface-alt)}
+.ou-arr-headers{min-width:0;min-height:0;border-right:1px solid var(--ou-border);background:var(--ou-surface-sunken);display:flex;flex-direction:column;overflow-x:hidden;overflow-y:auto;scrollbar-width:none;padding-bottom:16px}
+.ou-arr-headers::-webkit-scrollbar{display:none}
+.ou-arr-header-ruler{height:28px;flex:0 0 28px;border-bottom:1px solid var(--ou-border)}
+.ou-track-card{box-sizing:border-box;height:136px;min-height:136px;flex:0 0 136px;display:grid;grid-template-columns:14px 34px minmax(0,1fr) auto;grid-template-rows:minmax(0,1fr) 16px;gap:2px 6px;align-items:center;border:1px solid var(--ou-track-card-border);border-radius:8px;background:var(--ou-track-card);padding:6px;margin:0 6px;box-shadow:0 1px 2px var(--ou-shadow-soft);cursor:pointer}
+.ou-arr-resizer{position:absolute;z-index:5;left:calc(var(--arr-header-width,220px) - 3px);top:0;bottom:0;width:6px;cursor:col-resize;touch-action:none}
+.ou-arr-resizer::after{content:'';position:absolute;left:2px;top:0;bottom:0;width:2px;background:transparent}
+.ou-arr-resizer:hover::after,.ou-arr-resizer:focus-visible::after{background:var(--ou-accent)}
+.ou-arr-resizer:focus-visible{outline:none}
+.ou-track-card.active{border-color:var(--track-color,var(--ou-accent));box-shadow:0 0 0 1px var(--track-color,var(--ou-accent)),0 0 3px var(--ou-shadow-text)}
+.ou-track-badge{width:14px;height:14px;display:grid;place-items:center;border-radius:3px;background:var(--track-color,var(--ou-accent));color:var(--ou-text-on-accent);font-size:9px;font-weight:700;grid-row:1}
+.ou-track-portrait{width:34px;height:34px;display:grid;place-items:center;border-radius:6px;background:linear-gradient(135deg,var(--track-color,var(--ou-accent)),var(--ou-surface-divider));font-size:15px;font-weight:700;color:var(--ou-text-on-accent);text-shadow:0 1px 2px var(--ou-shadow-text);grid-row:1}
+.ou-track-info{min-width:0;grid-row:1}
+.ou-track-info strong{display:block;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ou-track-info small{display:block;font-size:9px;color:var(--ou-text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ou-track-detail{color:var(--ou-track-muted)!important}
+.ou-track-side{display:flex;flex-direction:column;gap:2px;grid-row:1}
+.ou-side-btn{min-width:18px;height:16px;border:1px solid var(--ou-track-side-btn-border);border-radius:3px;background:var(--ou-track-side-btn);font-size:8px;color:var(--ou-text-muted);padding:0 3px}
+.ou-side-btn:hover{border-color:var(--track-color,var(--ou-accent));color:var(--ou-text-strong)}
+.ou-side-btn.on{background:var(--track-color,var(--ou-accent));border-color:var(--track-color,var(--ou-accent));color:var(--ou-text-on-accent)}
+.ou-track-volume{grid-column:2/5;display:flex;align-items:center;gap:6px}
+.ou-pan-control{display:flex;align-items:center;gap:3px;color:var(--ou-text-faint);font-size:8px;white-space:nowrap}
+.ou-pan-control input{width:54px;height:12px;margin:0;accent-color:var(--ou-accent)}
+.ou-vol-slider{position:relative;flex:1;height:14px;display:flex;align-items:center}
+.ou-vol-slider::before{content:'';position:absolute;left:0;right:0;height:5px;border-radius:3px;background:var(--ou-slider-track)}
+.ou-vol-fill{position:absolute;left:0;width:var(--fill,50%);height:5px;border-radius:3px;background:var(--track-color,var(--ou-accent))}
+.ou-vol-knob{position:absolute;top:2px;width:10px;height:10px;border-radius:50%;background:var(--ou-slider-knob);border:1px solid var(--ou-slider-knob-border);pointer-events:none}
+.ou-vol-slider input[type=range]{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.ou-vol-db{font:10px 'Cascadia Mono',Consolas,monospace;color:var(--ou-text-muted)}
+.ou-vol-badge{width:14px;height:14px;display:grid;place-items:center;border:1px solid var(--ou-track-side-btn-border);border-radius:3px;font-size:8px;color:var(--ou-text-muted)}
+.ou-add-track{border:1px dashed var(--ou-track-side-btn-border);border-radius:8px;background:transparent;color:var(--ou-text-faint);font-size:15px;padding:8px}
+.ou-add-track:hover{border-color:var(--ou-accent);color:var(--ou-accent)}
+/* The timeline scrolls sideways over a canvas pinned to the viewport, so the
+   browser's own scrollbar, trackpad swipe and shift+wheel all work unchanged. */
+.ou-arr-timeline{min-width:0;min-height:0;position:relative;overflow:auto;scrollbar-width:thin}
+.ou-arr-timeline::-webkit-scrollbar{height:10px}
+.ou-arr-timeline::-webkit-scrollbar-thumb{border-radius:5px;background:var(--ou-slider-track)}
+.ou-arr-timeline::-webkit-scrollbar-track{background:var(--ou-surface-sunken)}
+.ou-arr-track{position:relative}
+.ou-arr-canvas{position:sticky;left:0;top:0}
+.ou-arr-input,.ou-roll-input{position:absolute;inset:0;touch-action:none;z-index:1}
+.ou-arr-zoom{position:absolute;right:8px;bottom:8px;z-index:2;display:flex;align-items:center;gap:2px;border:1px solid var(--ou-border);border-radius:6px;background:var(--ou-surface-overlay);padding:2px}
+.ou-arr-zoom button{min-width:20px;height:18px;border:1px solid transparent;border-radius:4px;background:transparent;font-size:11px;color:var(--ou-text-muted)}
+.ou-arr-zoom button:hover{border-color:var(--ou-accent);color:var(--ou-accent-text);background:var(--ou-accent-soft)}
+.ou-arr-zoom .ou-arr-zoom-fit{min-width:32px;font:9px 'Cascadia Mono',Consolas,monospace;color:var(--ou-text-faint)}
+.ou-marquee{position:absolute;background:var(--ou-marquee-fill);border:1px solid var(--ou-marquee-stroke);pointer-events:none}
+.ou-arr-timeline canvas{display:block;touch-action:none}
+
+/* Piano roll */
+.ou-roll{height:100%;display:flex;flex-direction:column;background:var(--ou-roll-bg)}
+.ou-roll-main{flex:1;min-height:0;display:flex}
+.ou-roll{height:100%;min-height:0}
+.ou-tool-rail{width:34px;display:flex;flex-direction:column;gap:3px;padding:5px 3px;border-right:1px solid var(--ou-divider);background:var(--ou-surface-alt)}
+.ou-tool-btn{width:28px;height:28px;border:1px solid transparent;border-radius:5px;background:transparent;font-size:13px;color:var(--ou-text-muted)}
+.ou-tool-btn:hover{background:var(--ou-accent-hover);border-color:var(--ou-track-card-border)}
+.ou-tool-btn.on{background:var(--ou-accent-soft);border-color:var(--ou-accent);color:var(--ou-accent-text)}
+.ou-snap-select{margin-top:auto;width:28px;border:1px solid var(--ou-track-side-btn-border);border-radius:4px;background:var(--ou-control-bg);font-size:9px;color:var(--ou-text-muted);padding:1px}
+.ou-snap-select:hover{background:var(--ou-control-bg-hover)}
+.ou-roll-canvas{flex:1;min-width:0;min-height:0;position:relative;overflow:hidden}
+/* The roll's horizontal scrollbar. The keyboard column is pinned, so the grid's
+   offset cannot be a DOM scroll; this is the visible, draggable half of it. */
+.ou-roll-hbar{position:absolute;left:0;right:0;bottom:0;z-index:3;height:11px;border-top:1px solid var(--ou-divider);background:var(--ou-surface-alt);cursor:pointer;touch-action:none}
+.ou-roll-hbar.idle{cursor:default}
+.ou-roll-thumb{position:absolute;top:2px;height:7px;border-radius:4px;background:var(--ou-slider-track)}
+.ou-roll-hbar:hover .ou-roll-thumb{background:var(--ou-accent)}
+.ou-roll-hbar.idle .ou-roll-thumb{opacity:.4}
+.ou-lanes{height:100%}
+.ou-roll-canvas canvas{display:block;width:100%;height:100%;touch-action:none}
+/* Status floats over the canvas so it never steals dock width. */
+.ou-roll-status{position:absolute;right:8px;top:30px;z-index:2;display:flex;flex-direction:column;gap:2px;align-items:flex-end;border:1px solid var(--ou-divider);border-radius:6px;background:var(--ou-surface-overlay);backdrop-filter:blur(2px);padding:4px 8px;font-size:10px;color:var(--ou-text-muted);pointer-events:none}
+.ou-roll-status strong{font-size:11px;color:var(--ou-text-strong)}
+.ou-label-toggle{width:28px;height:22px;margin-top:3px;border:1px solid var(--ou-track-side-btn-border);border-radius:4px;background:var(--ou-control-bg);font-size:12px;color:var(--ou-text-muted)}
+.ou-label-toggle:hover{background:var(--ou-control-bg-hover)}
+.ou-label-toggle.phoneme{border-color:var(--ou-accent);color:var(--ou-accent-text);background:var(--ou-accent-soft)}
+.ou-roll-edit{color:var(--ou-accent-text);font-weight:600}
+.ou-wave-toggle{pointer-events:auto;margin-top:3px;border:1px solid var(--ou-border);border-radius:4px;background:var(--ou-surface-overlay);font-size:10px;color:var(--ou-text-muted);padding:1px 6px}
+.ou-wave-toggle.on{border-color:var(--ou-accent);color:var(--ou-accent-text);background:var(--ou-accent-soft)}
+/* Pitch-curve options. Sits over the grid's top-left corner: the roll status
+   box is pointer-events:none so it can sit over the canvas, so this is its own
+   element with its own hit testing. */
+.ou-pitch-bar{position:absolute;left:96px;top:30px;z-index:2;display:flex;align-items:center;gap:4px;border:1px solid var(--ou-divider);border-radius:6px;background:var(--ou-surface-overlay);backdrop-filter:blur(2px);padding:3px 6px;font-size:10px;color:var(--ou-text-muted)}
+.ou-pitch-label{color:var(--ou-text-strong);font-weight:600;margin-right:2px}
+.ou-pitch-shape{min-width:22px;padding:1px 4px;border:1px solid var(--ou-border);border-radius:4px;background:var(--ou-control-bg);font-size:10px;color:var(--ou-text-muted)}
+.ou-pitch-shape:hover{background:var(--ou-control-bg-hover)}
+.ou-pitch-shape.on{border-color:var(--ou-accent);color:var(--ou-accent-text);background:var(--ou-accent-soft)}
+.ou-pitch-snap{display:flex;align-items:center;gap:2px;margin-left:4px}
+.ou-pitch-snap input{margin:0}
+.ou-pitch-clear{padding:1px 6px;border:1px solid var(--ou-border);border-radius:4px;background:var(--ou-control-bg);font-size:10px;color:var(--ou-text-muted)}
+.ou-pitch-clear:hover:not(:disabled){background:var(--ou-control-bg-hover)}
+.ou-pitch-clear:disabled{opacity:.4;cursor:default}
+
+/* Waveform overlay: OpenUtau's bottom strip, but draggable and resizable. */
+.ou-wave-overlay{box-sizing:border-box;position:absolute;left:0;right:0;z-index:1;pointer-events:none;border:1px solid var(--ou-wave-border);border-radius:4px;background:var(--ou-wave-bg);box-shadow:0 1px 4px var(--ou-shadow);overflow:hidden}
+.ou-wave-overlay canvas{display:block;width:100%;height:100%}
+.ou-wave-handle{position:absolute;left:0;right:0;top:0;height:9px;cursor:grab;pointer-events:auto;background:var(--ou-wave-handle);border-bottom:1px solid var(--ou-wave-handle-line)}
+.ou-wave-handle:active{cursor:grabbing}
+.ou-wave-grip{position:absolute;left:50%;top:3px;width:26px;height:3px;margin-left:-13px;border-radius:2px;background:var(--ou-wave-grip)}
+.ou-wave-close{position:absolute;right:3px;top:1px;width:16px;height:16px;pointer-events:auto;border:0;border-radius:3px;background:var(--ou-surface-overlay);color:var(--ou-wave-text);font-size:12px;line-height:1}
+.ou-wave-close:hover{background:var(--ou-accent-soft);color:var(--ou-accent-text)}
+.ou-wave-status{position:absolute;left:6px;top:12px;max-width:calc(100% - 60px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;pointer-events:none;font-size:10px;color:var(--ou-wave-text)}
+.ou-wave-bank{position:absolute;right:22px;top:12px;max-width:50%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;pointer-events:none;font-size:10px;color:var(--ou-wave-text);opacity:.75}
+.ou-wave-resize{position:absolute;left:0;right:0;bottom:0;height:7px;cursor:ns-resize;pointer-events:auto}
+
+/* Expression editor: one tab per expression, one curve at a time. */
+.ou-lanes{border-top:1px solid var(--ou-border);background:var(--ou-surface);display:flex;flex-direction:column;overflow:hidden}
+.ou-lanes-head{display:flex;align-items:baseline;gap:8px;padding:5px 10px;border-bottom:1px solid var(--ou-divider);background:var(--ou-surface-raised);font-size:11px;color:var(--ou-text-strong)}
+.ou-lanes-hint{margin-left:auto;font-size:10px;color:var(--ou-text-faint)}
+.ou-exp-tabs{display:flex;gap:2px;padding:3px 4px 0;border-bottom:1px solid var(--ou-divider);background:var(--ou-surface-alt);overflow-x:auto}
+.ou-exp-tab{display:flex;align-items:center;gap:5px;border:1px solid transparent;border-bottom:0;border-radius:5px 5px 0 0;background:transparent;padding:4px 8px;font-size:10px;color:var(--ou-exp-tab-text);white-space:nowrap}
+.ou-exp-tab:hover{background:var(--ou-control-bg)}
+.ou-exp-tab.on{border-color:var(--ou-border);background:var(--ou-control-bg);color:var(--ou-exp-tab-active-text);font-weight:600}
+.ou-exp-tab.off{opacity:.5}
+.ou-exp-tab-abbr{font-weight:700;color:var(--lane-color)}
+.ou-exp-tab-check{font-size:9px;color:var(--lane-color)}
+/* The lane scrolls sideways over a canvas pinned to the viewport, the same way
+   the arrangement timeline does. */
+.ou-exp-body{flex:1;min-height:0;position:relative;background:var(--ou-surface-raised);overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}
+.ou-exp-body::-webkit-scrollbar{height:10px}
+.ou-exp-body::-webkit-scrollbar-thumb{border-radius:5px;background:var(--ou-slider-track)}
+.ou-exp-body::-webkit-scrollbar-track{background:var(--ou-surface-sunken)}
+.ou-exp-track{position:relative}
+.ou-exp-canvas{position:sticky;left:0;top:0;touch-action:none}
+.ou-exp-canvas canvas{display:block;width:100%;height:100%}
+.ou-exp-readout{position:absolute;padding:1px 5px;border:1px solid var(--ou-divider);border-radius:4px;background:var(--ou-exp-readout-bg);font-size:10px;color:var(--ou-exp-readout-text);pointer-events:none}
+.ou-exp-foot{display:flex;align-items:center;gap:10px;padding:3px 10px;border-top:1px solid var(--ou-divider);background:var(--ou-surface-alt);font-size:10px}
+.ou-exp-note{margin-left:auto;color:var(--ou-text-faint)}
+.ou-lane-mode{font-size:10px;color:var(--ou-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ou-exp-clear{border:1px solid var(--ou-track-side-btn-border);border-radius:4px;background:var(--ou-track-side-btn);font-size:10px;color:var(--ou-text-muted);padding:1px 6px}
+.ou-exp-clear:hover:not(:disabled){background:var(--ou-accent-soft);color:var(--ou-accent-text);border-color:var(--ou-accent)}
+.ou-exp-clear:disabled{opacity:.45}
+
+/* Note Properties */
+.ou-properties{height:100%;overflow:auto;background:var(--ou-surface-alt);padding:0 0 14px}
+.ou-prop-title{padding:9px 12px;border-bottom:1px solid var(--ou-border);font-size:12px;font-weight:600;color:var(--ou-text-strong);background:var(--ou-surface-raised)}
+.ou-prop-section{border-bottom:1px solid var(--ou-divider)}
+.ou-prop-header{width:100%;display:flex;align-items:center;justify-content:space-between;border:0;background:transparent;padding:8px 12px;font-size:12px;font-weight:600;color:var(--ou-text-strong)}
+.ou-prop-header:hover{background:var(--ou-accent-hover)}
+.ou-caret{color:var(--ou-text-faint);font-size:10px}
+.ou-prop-body{display:grid;gap:7px;padding:4px 12px 10px}
+.ou-prop-body.disabled{opacity:.6}
+.ou-prop-row{display:grid;grid-template-columns:88px minmax(0,1fr);align-items:center;gap:7px;font-size:11px;color:var(--ou-text-muted)}
+.ou-prop-row input[type=text],.ou-prop-row input[type=number],.ou-prop-row input:not([type]),.ou-prop-row select{width:100%;height:24px;border:1px solid var(--ou-track-side-btn-border);border-radius:4px;background:var(--ou-control-bg);padding:0 6px;font-size:11px;color:var(--ou-text)}
+.ou-prop-row input:hover:not(:disabled),.ou-prop-row select:hover:not(:disabled){background:var(--ou-control-bg-hover)}
+.ou-prop-row input:disabled{background:var(--ou-surface-sunken)}
+.ou-prop-slider{display:flex;align-items:center;gap:6px}
+.ou-prop-slider input[type=number]{width:52px!important;flex:none}
+.ou-prop-slider input[type=range]{flex:1;accent-color:var(--ou-accent)}
+.ou-prop-slider .ou-prop-tone{font:10px 'Cascadia Mono',Consolas,monospace;color:var(--ou-roll-key-name);min-width:26px}
+.ou-prop-buttons{display:flex;gap:4px;align-items:center}
+.ou-prop-buttons select{flex:1}
+.ou-prop-buttons button{border:1px solid var(--ou-track-side-btn-border);border-radius:4px;background:var(--ou-track-side-btn);font-size:10px;color:var(--ou-text-muted);padding:2px 6px}
+.ou-prop-buttons button:hover:not(:disabled){background:var(--ou-accent-hover)}
+.ou-prop-buttons button:disabled{opacity:.5}
+
+/* Dockview chrome follows the tokens too, so the gaps between panels are not a
+   white frame. `themeLight` puts its class on a `.dv-shell` that WRAPS
+   `.ou-dock-stage`, so the theme class is an ancestor of ours and a descendant
+   rule off `.ou-dockview` can never reach it. The tokens therefore go on the
+   shell itself, one class deeper than Dockview's own `.dockview-theme-*` rule so
+   they win without `!important`. The tab text colours have no token upstream. */
+.ou-app .dv-shell.dockview-theme-light,.ou-app .dv-shell.dockview-theme-dark{color-scheme:inherit;--dv-group-view-background-color:var(--ou-surface-alt);--dv-tabs-and-actions-container-background-color:var(--ou-surface-raised);--dv-activegroup-visiblepanel-tab-background-color:var(--ou-surface-raised);--dv-inactivegroup-visiblepanel-tab-background-color:var(--ou-surface-sunken);--dv-activegroup-hiddenpanel-tab-background-color:var(--ou-surface-sunken);--dv-inactivegroup-hiddenpanel-tab-background-color:var(--ou-surface-sunken);--dv-tab-divider-color:var(--ou-divider);--dv-activegroup-visiblepanel-tab-color:var(--ou-text-strong);--dv-activegroup-hiddenpanel-tab-color:var(--ou-text-muted);--dv-inactivegroup-visiblepanel-tab-color:var(--ou-text-muted);--dv-inactivegroup-hiddenpanel-tab-color:var(--ou-text-faint);--dv-separator-border:var(--ou-border);--dv-paneview-header-border-color:var(--ou-divider);--dv-paneview-active-outline-color:var(--ou-accent);--dv-drag-over-background-color:var(--ou-accent-hover);--dv-drag-over-border-color:var(--ou-accent);--dv-tabs-container-scrollbar-color:var(--ou-text-faint);--dv-active-sash-color:var(--ou-accent);--dv-sash-color:var(--ou-border);--dv-scrollbar-background-color:var(--ou-surface-sunken);--dv-floating-titlebar-background-color:var(--ou-surface-raised);--dv-floating-border:1px solid var(--ou-border);--dv-edge-dock-indicator-color:var(--ou-accent);--dv-icon-hover-background-color:var(--ou-accent-hover)}
+/* Tab and header strips paint their token directly; the empty space beside the
+   tabs is a transparent void container and only shows the stage behind it. */
+.ou-dockview .dv-void-container,.ou-dockview .dv-sash-container,.ou-dockview .dv-tabs-container,.ou-dockview .dv-groupview>.dv-tabs-and-actions-container{background:var(--ou-surface-raised)}
+.ou-dockview .dv-groupview,.ou-dockview .dv-split-view-container{background:var(--ou-surface-alt)}
+.ou-dockview .dv-void-container.dv-void-container--drop-target{background:var(--ou-accent-hover)}
+.ou-dockview .dv-tab{background-color:transparent}
+.ou-dockview .dv-tab.dv-active-tab{background-color:var(--ou-surface-raised)}
+.ou-dockview .dv-tab:hover{background-color:var(--ou-accent-hover)}
+/* The stage behind the panels: Dockview's own root is transparent, so without
+   this the gaps fall through to the page background. */
+.ou-dock-stage{background:var(--ou-surface-alt)}
+/* `color-scheme` follows the tokens so native controls (select, range, scrollbars)
+   stop rendering their light chrome on a dark theme. */
+html[data-ou-theme='dark'],html[data-ou-theme='midnight']{color-scheme:dark}
+html[data-ou-theme='sepia']{color-scheme:light}
+
+/* Per-track singer dropdown. Occupies the slot the singer name used to have,
+   so the track card keeps its shape. Sized to the 9px detail text it replaces,
+   not the 11px track name. */
+.ou-singer-select{display:block;min-width:0}
+.ou-singer-select select{display:block;width:100%;min-width:0;font:inherit;font-size:9px;line-height:1.3;padding:1px 2px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--ou-text-faint);text-overflow:ellipsis}
+.ou-singer-select select:hover{border-color:var(--ou-track-card-border)}
+.ou-singer-select select:focus{outline:none;border-color:var(--track-color,var(--ou-accent));background:var(--ou-surface-sunken);color:var(--ou-text)}

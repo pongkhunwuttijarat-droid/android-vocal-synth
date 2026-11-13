@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Session render adapter check</title>
+<pre id="out">starting</pre>
+<script type="module">
+import init, { Engine } from "./pkg/engine_wasm.js";
+import { HttpBank } from "./samples.js";
+import { RenderPool } from "./pool.js";
+import { captureCommittedRenderSnapshot, isCurrentRenderResult } from "./app/session-render-contract.js";
+
+const out = document.getElementById("out");
+const lines = [];
+const say = (line) => {
+  lines.push(line);
+  out.textContent = lines.join("\n");
+  fetch("/__progress", { method: "POST", body: line }).catch(() => {});
+};
+const waitFor = async (pool, renderId, timeoutMs = 90000) => {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const state = pool.getRender(renderId);
+    if (["done", "cancelled", "failed"].includes(state?.status)) return state;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`render ${renderId} timed out`);
+};
+
+try {
+  await init();
+  const yaml = await (await fetch("./fixture/scale-demo.ustx")).text();
+  const bank = new HttpBank({ baseUrl: "./fixture/bank" });
+  await bank.openOto({ otoPath: "voice/oto.ini", otoDir: "voice" });
+  const engine = new Engine();
+  engine.session_open_yaml(yaml, "");
+  engine.set_voicebank("render-test", "Render Test", "voice", new Uint8Array(bank.otoBytes));
+  const initialRevision = Number(engine.session_revision());
+  const initialSnapshot = captureCommittedRenderSnapshot(engine, initialRevision);
+  const pool = await RenderPool.create({
+    workerCount: 2,
+    bank,
+    otoPath: "voice/oto.ini",
+    otoDir: "voice",
+    projectYaml: initialSnapshot.ustx,
+    track: 0,
+  });
+  pool.setCommittedSnapshot(initialSnapshot);
+
+  const events = [];
+  pool.onRenderEvent((event) => events.push(event));
+  const first = pool.startRender({ expectedRevision: initialRevision });
+  const firstState = await waitFor(pool, first.renderId);
+  if (firstState.status !== "done") throw new Error(`first render ended ${firstState.status}: ${firstState.error?.message}`);
+  if (!events.some((event) => event.type === "progress" && event.renderId === first.renderId &&
+      event.sessionId === initialSnapshot.sessionId && event.revision === initialRevision)) {
+    throw new Error("missing revision-tagged per-chunk progress");
+  }
+
+  // Compare pool mix against the same Rust/WASM sequential reference.
+  engine.plan_project(initialSnapshot.ustx, 0);
+  const sampleKeys = new Set();
+  for (const chunk of pool.plan) {
+    for (const key of engine.chunk_wav_keys(chunk.index).split("\n").filter(Boolean)) sampleKeys.add(key);
+  }
+  const files = await bank.load([...sampleKeys]);
+  for (const file of files) {
+    if (file.frq) engine.add_sample_with_frq(file.key, new Uint8Array(file.wav), new Uint8Array(file.frq));
+    else engine.add_sample(file.key, new Uint8Array(file.wav));
+  }
+  const reference = engine.render_planned_sequential();
+  const pooled = firstState.result.samples;
+  if (reference.length !== pooled.length) throw new Error(`frame mismatch ${reference.length} != ${pooled.length}`);
+  let maxDiff = 0;
+  for (let i = 0; i < pooled.length; i += 97) maxDiff = Math.max(maxDiff, Math.abs(reference[i] - pooled[i]));
+  if (maxDiff > 1e-6) throw new Error(`pool/reference mismatch ${maxDiff}`);
+  say(`render parity: ${pooled.length} frames, sampled max difference ${maxDiff}`);
+
+  // Streaming playback mixes from a chunk boundary instead of waiting for the
+  // whole plan. Every range it hands out must be bit-identical to the same
+  // slice of the full mix, or the seams are audible. Checked through the
+  // public pool API, not the WASM function, so this also covers readyThrough()
+  // and the "not ready yet" contract.
+  for (let i = 0; i < pool.plan.length; i++) {
+    const tail = pool.mixFrom(i);
+    if (!tail) throw new Error(`mixFrom(${i}) returned nothing with a fully cached plan`);
+    // Same placement the Rust mixer uses: sample 0 of a chunk lands at
+    // `position_ms - leading_ms`, and a negative origin is dropped (pre-roll).
+    // Truncation toward zero, not rounding — `ms_to_samples_signed` casts.
+    const originMs = pool.plan[i].position_ms - pool.plan[i].leading_ms;
+    const origin = originMs > 0 ? Math.trunc(originMs * 44.1) : 0;
+    const expected = pooled.subarray(origin);
+    if (tail.length !== expected.length) {
+      throw new Error(`mixFrom(${i}) length ${tail.length} != full-mix tail ${expected.length}`);
+    }
+    let tailMaxDiff = 0;
+    for (let k = 0; k < tail.length; k += 89) tailMaxDiff = Math.max(tailMaxDiff, Math.abs(tail[k] - expected[k]));
+    if (tailMaxDiff > 1e-6) throw new Error(`mixFrom(${i}) differs from the full-mix tail by ${tailMaxDiff}`);
+  }
+  if (pool.readyThrough() !== pool.plan.length - 1) throw new Error("readyThrough did not reach the last chunk on a fully cached plan");
+  say(`streaming ranges: ${pool.plan.length} mixFrom() ranges match the full-mix tail; readyThrough=${pool.readyThrough()}`);
+
+  // The number streaming exists for: how long until the FIRST playable range
+  // exists, versus waiting for the whole plan. Measured on a cold cache so the
+  // render actually costs something.
+  for (const hash of [...pool.cache.keys()]) pool.cache.delete(hash);
+  pool.cacheMeta.clear();
+  const planLen = pool.plan.length;
+  const streamJob = pool.startRender({ expectedRevision: initialRevision });
+  const tStart = performance.now();
+  let firstPlayableMs = null;
+  // Polled rather than event-driven: a progress event can fire before the cache
+  // write lands, and the point of the measurement is when audio is REALLY
+  // playable, not when the pool says it is working.
+  const watch = setInterval(() => {
+    if (firstPlayableMs !== null) return;
+    if (pool.readyThrough() < 0) return;
+    if (!pool.mixFrom(0)) return;
+    firstPlayableMs = performance.now() - tStart;
+  }, 5);
+  const offStream = () => {};
+  const streamState = await waitFor(pool, streamJob.renderId);
+  clearInterval(watch);
+  const totalMs = performance.now() - tStart;
+  if (streamState.status !== "done") throw new Error(`cold stream render ended ${streamState.status}`);
+  if (firstPlayableMs === null) throw new Error("never reached a playable range during the render");
+  say(`streaming latency: first playable audio after ${firstPlayableMs.toFixed(0)} ms · full plan after ${totalMs.toFixed(0)} ms (saved ${(totalMs - firstPlayableMs).toFixed(0)} ms)`);
+
+  const note = JSON.parse(engine.session_snapshot_json()).project.tracks[0].parts[0].notes[0];
+  engine.session_apply_v2(JSON.stringify({
+    expected_revision: initialRevision,
+    command: { type: "note.set_tone", note_id: note.id, tone: note.tone + 1 },
+  }));
+  const editedRevision = Number(engine.session_revision());
+  const editedSnapshot = captureCommittedRenderSnapshot(engine, editedRevision);
+  pool.setCommittedSnapshot(editedSnapshot);
+  let cancelRequested = false;
+  const off = pool.onRenderEvent((event) => {
+    if (!cancelRequested && event.type === "progress" && event.revision === editedRevision) {
+      cancelRequested = true;
+      pool.cancelRender(event.renderId);
+    }
+  });
+  const cancelledJob = pool.startRender({ expectedRevision: editedRevision });
+  const cancelledState = await waitFor(pool, cancelledJob.renderId);
+  off();
+  if (cancelledState.status !== "cancelled") throw new Error(`cancel result was ${cancelledState.status}`);
+  // A cancelled render must publish no audio, but it must not DISCARD audio that
+  // already finished. `pool.render()` writes each chunk to the cache the moment
+  // its worker delivers it, so the chunks that landed before the cancel survive
+  // and the next job reuses them instead of paying for them twice.
+  if (cancelledState.result !== null) throw new Error("cancelled job published audio");
+  const keptAfterCancel = pool.cache.size;
+  say(`active per-job cancellation: passed at chunk boundary · ${keptAfterCancel} chunk(s) kept in cache`);
+
+  const failedWorker = pool.links[0];
+  failedWorker.worker.onerror({ message: "simulated worker crash" });
+  const rerender = pool.startRender({ expectedRevision: editedRevision });
+  const finalState = await waitFor(pool, rerender.renderId);
+  if (finalState.status !== "done") throw new Error(`rerender ended ${finalState.status}: ${finalState.error?.message}`);
+  if (pool.links[0] === failedWorker) throw new Error("failed worker was not replaced before rerender");
+  if (!isCurrentRenderResult(finalState.result, editedSnapshot)) throw new Error("current committed result failed publication guard");
+  if (isCurrentRenderResult(firstState.result, editedSnapshot)) throw new Error("older revision passed publication guard");
+  say(`edit/invalidate/rerender: rendered ${finalState.result.stats.lastRendered} changed chunks; failed worker recovered`);
+  // The point of caching on delivery: after a cancel, the rerender must only
+  // have to render what genuinely changed. Assert that explicitly rather than
+  // trusting the number in the log line.
+  if (finalState.result.stats.lastRendered >= pool.plan.length) {
+    throw new Error(`rerender after cancel re-rendered everything (${finalState.result.stats.lastRendered}/${pool.plan.length}); cancelled audio was thrown away`);
+  }
+  say(`post-cancel rerender reused ${pool.plan.length - finalState.result.stats.lastRendered} cached chunk(s)`);
+
+  pool.terminate();
+  say("RESULT: PASS");
+  fetch("/__result", { method: "POST", body: lines.join("\n") }).catch(() => {});
+} catch (error) {
+  say(`RESULT: FAIL ${error?.stack || error}`);
+  fetch("/__result", { method: "POST", body: lines.join("\n") }).catch(() => {});
+}
+</script>
+</html>

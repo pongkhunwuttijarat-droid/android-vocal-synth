@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>audio output check</title>
+<style>
+  body { font: 13px/1.5 ui-monospace, monospace; background: #101418; color: #d8e0e6; padding: 16px; }
+  button { font: inherit; padding: 4px 10px; margin-right: 6px; }
+  pre { background: #0a0d10; padding: 10px; border: 1px solid #2a3238; white-space: pre-wrap; }
+  .ok { color: #6fdc8c; } .bad { color: #ff8080; }
+</style>
+</head>
+<body>
+<h1>audio output check</h1>
+<p>Loads the real <code>audio-playback.js</code> and asks it to play a 440&#8202;Hz tone for a second through its own master out chain, then reports the measured level. This is the code the transport uses; only the buffer is synthetic.</p>
+<p><button id="go">play the tone</button><span id="verdict">&mdash;</span></p>
+<pre id="out">loading&hellip;</pre>
+<script type="module">
+const out = document.getElementById('out');
+const verdict = document.getElementById('verdict');
+const log = [];
+const say = line => { log.push(line); out.textContent = log.join('\n'); };
+const pass = text => { verdict.textContent = 'PASS'; verdict.className = 'ok'; say('PASS: ' + text); };
+const fail = text => { verdict.textContent = 'FAIL'; verdict.className = 'bad'; say('FAIL: ' + text); };
+
+// One second of a 440 Hz sine at -6 dBFS peak: loud enough to be unmistakable
+// on a meter, quiet enough not to hurt.
+const rate = 44100;
+const tone = new Float32Array(rate);
+for (let i = 0; i < tone.length; i++) tone[i] = Math.sin(2 * Math.PI * 440 * i / rate) * 0.5;
+// A full-scale sine measures -3 dBFS RMS, so half amplitude measures about -9.
+const expectedDb = 20 * Math.log10(0.5 / Math.SQRT2);
+say(`expect about ${expectedDb.toFixed(1)} dBFS RMS from the meter`);
+
+function toneWav(samples, sampleRate) {
+  const bytes = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(bytes);
+  const tag = (offset, value) => [...value].forEach((char, i) => view.setUint8(offset + i, char.charCodeAt(0)));
+  tag(0, 'RIFF'); view.setUint32(4, bytes.byteLength - 8, true); tag(8, 'WAVE');
+  tag(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  tag(36, 'data'); view.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i++) view.setInt16(44 + i * 2, Math.max(-32768, Math.min(32767, samples[i] * 32767)), true);
+  return new Blob([bytes], { type: 'audio/wav' });
+}
+
+// Imported dynamically so a 404 or a syntax error is REPORTED rather than
+// leaving a dead button and a page that says nothing.
+let createAudioPlayer = null;
+try {
+  ({ createAudioPlayer } = await import('../src/openutau/audio-playback.js'));
+} catch (e) {
+  fail(`could not import audio-playback.js: ${e.message}`);
+  say('Serve this page from the app root so the module path resolves.');
+}
+
+if (createAudioPlayer) {
+  const player = createAudioPlayer({
+    getTake: () => ({ samples: tone, sampleRate: rate }),
+    getPool: () => null,
+    getBpm: () => 120,
+  });
+  window.__audioCheckPlayer = player;
+  say('module loaded, the button is live');
+
+  document.getElementById('go').addEventListener('click', async () => {
+    say('click: unlocking the context inside the gesture');
+    if (!player.unlock()) { fail('no Web Audio in this browser'); return; }
+    try {
+      await player.play(0);
+    } catch (e) {
+      fail(`play() threw: ${e.message}`);
+      return;
+    }
+    const before = player.__dbg;
+    say(`play() -> started, player.playing=${player.playing}; visibility=${document.visibilityState}; hidden=${document.hidden}; context=${JSON.stringify(before)}`);
+    const clockBefore = before.ctxTime;
+    // Sample over the tone so one unlucky frame cannot decide the result.
+    let best = -100;
+    let sawNull = false;
+    const t0 = performance.now();
+    while (performance.now() - t0 < 900) {
+      await new Promise(r => setTimeout(r, 40));
+      const db = player.levelDb();
+      if (db === null) sawNull = true;
+      else if (db > best) best = db;
+    }
+    say(`meter peak ${best.toFixed(1)} dBFS over 900ms (null readings: ${sawNull})`);
+    const after = player.__dbg;
+    say(`clock after 900ms: ${JSON.stringify(after)}; tick=${player.tickNow()}; delta=${(after.ctxTime - clockBefore).toFixed(3)}s`);
+    const outputs = await Promise.race([
+      player.listOutputs(),
+      new Promise(resolve => setTimeout(() => resolve('timed out'), 1000)),
+    ]);
+    say(`outputs offered: ${JSON.stringify(outputs)}`);
+    player.pause();
+    if (best === -100) {
+      fail(`AudioContext state is ${after.ctxState}, but its clock stayed at ${after.ctxTime.toFixed(3)}s and its meter stayed at -100 dBFS; no output samples were observed`);
+    } else if (Math.abs(best - expectedDb) > 4) {
+      fail(`meter says ${best.toFixed(1)} dBFS, but this sine should read about ${expectedDb.toFixed(1)} dBFS`);
+    } else {
+      pass(`meter reads ${best.toFixed(1)} dBFS, as expected — samples ARE being produced. If the room is still quiet, the fault is the device, not the app.`);
+    }
+    const media = new Audio(URL.createObjectURL(toneWav(tone, rate)));
+    media.volume = 1;
+    media.style.position = 'fixed';
+    media.style.left = '-10000px';
+    document.body.append(media);
+    try {
+      await media.play();
+      const mediaStart = media.currentTime;
+      await new Promise(r => setTimeout(r, 600));
+      say(`HTMLAudio clock: ${mediaStart.toFixed(3)}s → ${media.currentTime.toFixed(3)}s; state=${media.readyState}; paused=${media.paused}`);
+      media.pause();
+    } catch (error) {
+      say(`HTMLAudio play failed: ${error.message}`);
+    } finally {
+      media.remove();
+      URL.revokeObjectURL(media.src);
+    }
+  });
+}
+</script>
+</body>
+</html>

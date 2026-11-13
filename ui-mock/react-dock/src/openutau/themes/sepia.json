@@ -1,0 +1,31 @@
+{
+  "label": "Sepia",
+  "tokens": {
+    "surface": "#f4efe7",
+    "surfaceAlt": "#f8f4ec",
+    "surfaceSunken": "#eee7dc",
+    "surfaceRaised": "#fbf7f0",
+    "surfaceOverlay": "#fbf7f0dd",
+    "border": "#ddd2c0",
+    "borderStrong": "#d4c7b1",
+    "divider": "#e6dccb",
+
+    "text": "#3b3128",
+    "textStrong": "#4a3f33",
+    "textMuted": "#7d7164",
+    "textFaint": "#9c9083",
+
+    "controlBg": "#f0e9de",
+    "controlBgHover": "#e8dfd1",
+    "controlBorder": "#d4c7b1",
+    "controlText": "#4a3f33",
+
+    "accent": "#c2703f",
+    "accentHover": "#f6e6d8",
+    "accentText": "#a25730",
+    "accentSoft": "#f6e6d8",
+    "accent2": "#7f9a6a",
+    "accent2Text": "#5f7a4c",
+    "accent3": "#b8933f"
+  }
+}

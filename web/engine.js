@@ -1,4 +1,4 @@
-// Lilt web engine adapter — loads the wasm render engine and bridges OPFS.
+// Rusted UTAU web engine adapter — loads the wasm render engine and bridges OPFS.
 //
 // The Rust side (`crates/engine-wasm`) owns all synthesis; this file only
 // moves bytes: voicebank files out of OPFS, project text out of a file, and

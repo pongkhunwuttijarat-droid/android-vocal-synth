@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="th">
+<head><meta charset="utf-8"><title>real files — wasm engine</title></head>
+<body>
+<pre id="out" style="font:12px ui-monospace,monospace;white-space:pre-wrap">running…</pre>
+<script type="module">
+// Render a REAL .ustx with the REAL voicebank through the wasm engine in the
+// browser — no server-side synth, no .so.
+//
+// Two paths are rendered and compared sample by sample:
+//   1. main thread  — Engine.render_planned_sequential()
+//   2. RenderPool   — Web Workers, per-chunk sample loading + chunk cache
+//
+// The pool's WAV is POSTed to the runner, which compares it byte-for-byte with
+// `synth-cli render --engine r1-rs` (same pipeline + worldline-rs kernel).
+//
+//   ?project=/test/golden/sakura-test.ustx&bank=/test/golden/teto-english/library&workers=4
+import init, { Engine } from "./pkg/engine_wasm.js";
+import { HttpBank } from "./samples.js";
+import { RenderPool } from "./pool.js";
+
+const qs = new URLSearchParams(location.search);
+const PROJECT = qs.get("project") || "/test/golden/sakura-test.ustx";
+const BANK = qs.get("bank") || "/test/golden/teto-english/library";
+const WORKERS = Number(qs.get("workers") || 4);
+const ALLOW_SKIPPED = qs.get("allowSkipped") === "1";
+const SKIP_SEQ = qs.get("skipSeq") === "1";
+const OTO_DIR = "voice";
+
+const out = document.getElementById("out");
+const lines = [];
+const say = (m) => {
+  lines.push(String(m));
+  out.textContent = lines.join("\n");
+  fetch("/__progress", { method: "POST", body: String(m) }).catch(() => {});
+};
+
+/** FNV-1a 32-bit — the runner hashes the native WAV with the same function. */
+function fnv1a(bytes, from = 0) {
+  let h = 0x811c9dc5;
+  for (let i = from; i < bytes.length; i++) {
+    h ^= bytes[i];
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h >>> 0;
+}
+const t0 = performance.now();
+
+try {
+  await init();
+
+  const yaml = await (await fetch(PROJECT)).text();
+  const bank = new HttpBank({ baseUrl: BANK });
+  const keys = await bank.openOto({ otoPath: `${OTO_DIR}/oto.ini`, otoDir: OTO_DIR });
+  say(`project ${PROJECT} · bank ${BANK}`);
+  say(`bank: ${keys.length} wav keys · oto.ini ${bank.otoBytes.byteLength} bytes`);
+
+  // ---- 1. main-thread reference (same kernel the workers use) ------------
+  const engine = new Engine();
+  // wasm-bindgen's `&[u8]` needs a VIEW: a raw ArrayBuffer is silently read as
+  // an empty slice ("file too short" from the wav parser), so wrap every buffer.
+  engine.set_voicebank("teto", "Teto", OTO_DIR, new Uint8Array(bank.otoBytes));
+  const aliases = engine.alias_count();
+  say(`fft=${engine.fft_backend()} · alias table: ${aliases}`);
+
+  const chunks = engine.plan_project(yaml, 0);
+  const meta = JSON.parse(engine.chunk_meta_json());
+  const skipped = engine.plan_skipped().split("\n").filter(Boolean);
+  const perChunkKeys = [];
+  const needed = new Set();
+  for (let i = 0; i < chunks; i++) {
+    const k = engine.chunk_wav_keys(i).split("\n").filter(Boolean);
+    perChunkKeys.push(k.length);
+    for (const key of k) needed.add(key);
+  }
+  say(`plan: ${chunks} chunks · samples ต่อ chunk [${perChunkKeys.join(", ")}] · ต้องโหลด ${needed.size} จาก ${keys.length} wav`);
+  if (skipped.length && !ALLOW_SKIPPED) {
+    throw new Error(`plan ข้าม ${skipped.length} phrase: ${skipped.join("; ")}`);
+  }
+  if (skipped.length) say(`คำเตือน: ข้าม ${skipped.length} phrase (allowSkipped=1)`);
+
+  // The main-thread reference is optional: on a long song it doubles the run
+  // time and we only need the pool number (?skipSeq=1).
+  let pcmSeq = null;
+  let seqMs = 0;
+  if (!SKIP_SEQ) {
+    const files = await bank.load([...needed]);
+    for (const f of files) {
+      engine.add_sample_with_frq(
+        f.key,
+        f.wav instanceof Uint8Array ? f.wav : new Uint8Array(f.wav),
+        f.frq instanceof Uint8Array ? f.frq : new Uint8Array(f.frq),
+      );
+    }
+    const tSeq = performance.now();
+    pcmSeq = engine.render_planned_sequential();
+    seqMs = performance.now() - tSeq;
+    say(`sequential: ${pcmSeq.length} samples ใน ${seqMs.toFixed(0)} ms`);
+  } else {
+    say("sequential: ข้าม (skipSeq=1)");
+  }
+
+  // ---- 2. RenderPool (workers + per-chunk loading + cache) ---------------
+  const pool = await RenderPool.create({
+    workerCount: WORKERS, bank, otoPath: `${OTO_DIR}/oto.ini`, otoDir: OTO_DIR,
+    projectYaml: yaml, track: 0,
+  });
+  const tPool = performance.now();
+  const { samples: pcmPool, stats } = await pool.render();
+  const poolMs = performance.now() - tPool;
+  say(`pool: ${pcmPool.length} samples ใน ${poolMs.toFixed(0)} ms · workers ${WORKERS} (keys ต่อ worker: ${pool.perWorkerKeys.join(",")})`);
+
+  // ---- 3. pool vs sequential --------------------------------------------
+  if (pcmSeq && pcmSeq.length !== pcmPool.length) {
+    throw new Error(`length ต่างกัน: sequential ${pcmSeq.length} vs pool ${pcmPool.length}`);
+  }
+  let maxDiff = 0, peak = 0;
+  for (let i = 0; i < pcmPool.length; i++) {
+    if (pcmSeq) {
+      const d = Math.abs(pcmPool[i] - pcmSeq[i]);
+      if (d > maxDiff) maxDiff = d;
+    }
+    const a = Math.abs(pcmPool[i]);
+    if (a > peak) peak = a;
+  }
+  say(`pool vs sequential: max|diff| = ${pcmSeq ? maxDiff.toExponential(1) : "n/a (skipSeq)"} · peak ${peak.toFixed(4)} · ${(pcmPool.length / 44100).toFixed(2)}s`);
+  if (pcmSeq && maxDiff !== 0) throw new Error("pool กับ sequential ไม่ bit-identical");
+
+  // ---- 4. the WAV the runner compares with the native binary ------------
+  const wav = pool.toWav();
+  const magic = String.fromCharCode(wav[0], wav[1], wav[2], wav[3]);
+  say(`wav: ${wav.length} bytes · ${magic} · fnv ${fnv1a(wav).toString(16)}`);
+  const posted = await fetch("/__wav", { method: "POST", body: wav });
+  if (!posted.ok) throw new Error("ส่ง WAV ให้ runner ไม่สำเร็จ");
+
+  const result = {
+    project: PROJECT, bank: BANK, workers: WORKERS,
+    bankKeys: keys.length, aliases, chunks, perChunkKeys, skipped: skipped.length,
+    samples: pcmPool.length, seconds: pcmPool.length / 44100, peak,
+    seqMs: Math.round(seqMs), poolMs: Math.round(poolMs), totalMs: Math.round(performance.now() - t0),
+    poolStats: stats, perWorkerKeys: pool.perWorkerKeys, cachedBytes: pool.cachedBytes,
+    wavBytes: wav.length, wavFnv: fnv1a(wav), payloadFnv: fnv1a(wav, 44),
+  };
+  say("RESULT: PASS");
+  await fetch("/__result", { method: "POST", body: JSON.stringify(result, null, 1) });
+} catch (e) {
+  say("RESULT: FAIL " + (e && e.stack ? e.stack : e));
+  await fetch("/__result", { method: "POST", body: JSON.stringify({ error: String(e) }) }).catch(() => {});
+}
+</script>
+</body></html>

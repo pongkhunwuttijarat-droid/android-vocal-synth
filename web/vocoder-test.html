@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="th">
+<head><meta charset="utf-8"><title>vocoder wasm POC — onnxruntime-web</title></head>
+<body>
+<pre id="out" style="font:12px ui-monospace,monospace;white-space:pre-wrap">running…</pre>
+<script type="module">
+// POC: run the REAL nsf_hifigan vocoder (test/golden/diffsinger-kiritan/nsf_hifigan/model.onnx,
+// 56.6 MB) inside the browser through onnxruntime-web's wasm backend -- no server-side synth.
+//
+// Facts read off the model itself (protobuf, see docs/planning/vocoder-wasm-poc.md §2):
+//   inputs : mel float32 [1, n_frames, 128] · f0 float32 [1, n_frames]
+//   output : waveform float32 [1, n_samples]
+//   opset  : ai.onnx 15 · 272 nodes · ConvTranspose strides 8,8,2,2,2 => hop = 512
+//
+// The page measures real wall-clock time (the runner does NOT use --virtual-time-budget)
+// and POSTs the numbers to the runner's /__result endpoint. Every number below is produced
+// by actually loading the 56 MB file and running the graph; nothing is mocked.
+const qs = new URLSearchParams(location.search);
+const ORT_ENTRY = qs.get("ort") || "./vendor/ort/ort.min.mjs";
+const MODEL = qs.get("model") || "/test/golden/diffsinger-kiritan/nsf_hifigan/model.onnx";
+const N1 = Number(qs.get("n1") || 64);   // frames, run 1 + 2
+const N2 = Number(qs.get("n2") || 97);   // different frame count: proves length scales exactly
+const RUNS_WARM = Number(qs.get("warm") || 2);
+const MEL_DC = Number(qs.get("meldc") || -7);        // mel DC offset used by the 3 assertion runs
+const PROBE_DCS = (qs.get("probe") || "-3,-5,-7,-9,-11").split(",").map(Number).filter((x) => Number.isFinite(x));
+const EMIT_WAV = qs.get("wav") !== "0";
+const SR = 44100;
+
+const out = document.getElementById("out");
+const lines = [];
+const say = (m) => {
+  lines.push(String(m));
+  out.textContent = lines.join("\n");
+  fetch("/__progress", { method: "POST", body: String(m) }).catch(() => {});
+};
+const warns = [];
+for (const k of ["warn", "error"]) {
+  const orig = console[k].bind(console);
+  console[k] = (...a) => { warns.push(k + ": " + a.map(String).join(" ")); orig(...a); };
+}
+
+const t0 = performance.now();
+const round = (x) => Math.round(x * 1000) / 1000;
+
+function fnv1a(bytes, from = 0) {
+  let h = 0x811c9dc5;
+  for (let i = from; i < bytes.length; i++) { h ^= bytes[i]; h = Math.imul(h, 0x01000193) >>> 0; }
+  return h >>> 0;
+}
+async function sha256hex(buf) {
+  const d = await crypto.subtle.digest("SHA-256", buf);
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+function stats(pcm) {
+  let min = Infinity, max = -Infinity, sum = 0, peak = 0, zc = 0, nan = 0, distinct = new Set();
+  for (let i = 0; i < pcm.length; i++) {
+    const v = pcm[i];
+    if (!Number.isFinite(v)) { nan++; continue; }
+    if (v < min) min = v;
+    if (v > max) max = v;
+    sum += v;
+    const a = Math.abs(v);
+    if (a > peak) peak = a;
+    if (i > 0 && ((pcm[i - 1] < 0 && v >= 0) || (pcm[i - 1] >= 0 && v < 0))) zc++;
+    if (distinct.size < 8) distinct.add(v);
+  }
+  return { min, max, mean: sum / pcm.length, peak, rms: Math.sqrt(pcm.reduce((s, v) => s + v * v, 0) / pcm.length),
+           zcr: zc / (pcm.length / SR), nonFinite: nan, distinctLe8: distinct.size };
+}
+/** Normalised autocorrelation f0 estimate over one 8192-sample window. */
+function estimateF0(pcm) {
+  const start = Math.max(0, ((pcm.length / 2) | 0) - 4096), W = Math.min(8192, pcm.length - start);
+  const lo = Math.floor(SR / 500), hi = Math.floor(SR / 50);
+  let best = 0, bestLag = 0;
+  for (let lag = lo; lag <= hi; lag++) {
+    let s = 0, e1 = 0, e2 = 0;
+    for (let i = 0; i + lag < W; i += 2) { const a = pcm[start + i], b = pcm[start + i + lag]; s += a * b; e1 += a * a; e2 += b * b; }
+    const r = s / Math.sqrt(e1 * e2 + 1e-20);
+    if (r > best) { best = r; bestLag = lag; }
+  }
+  return { hz: bestLag ? SR / bestLag : 0, corr: best };
+}
+function toWav16(pcm, sr) {
+  const n = pcm.length, buf = new ArrayBuffer(44 + n * 2), dv = new DataView(buf);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); dv.setUint32(4, 36 + n * 2, true); w(8, "WAVEfmt ");
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true); dv.setUint16(32, 2, true);
+  dv.setUint16(34, 16, true); w(36, "data"); dv.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    const v = Math.max(-1, Math.min(1, pcm[i]));
+    dv.setInt16(44 + i * 2, Math.round(v * 32767), true);
+  }
+  return new Uint8Array(buf);
+}
+function b64(u8) {
+  let s = ""; const CH = 0x8000;
+  for (let i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+  return btoa(s);
+}
+
+// Deterministic, non-constant, plausible log-mel + f0 (Hz) input. No randomness, so a
+// re-run must reproduce the same numbers. The native path feeds f0 in Hz
+// (render.rs:136 "f0_norm * 500.0"); mel is a learned space with no public scale, so the
+// mel DC offset is swept in the probe below instead of being guessed.
+function makeInputs(n, dc) {
+  const mel = new Float32Array(n * 128), f0 = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    for (let k = 0; k < 128; k++) {
+      const formant = 2.5 * Math.exp(-((k - 24) ** 2) / 90) + 1.5 * Math.exp(-((k - 58) ** 2) / 220);
+      mel[i * 128 + k] = dc + formant + 0.8 * Math.sin((i * 0.17 + k * 0.11) * Math.PI);
+    }
+    // 148..224 Hz glide with light vibrato — visible in the output's autocorrelation.
+    f0[i] = 186 * (1 + 0.2 * Math.sin(Math.PI * i / n)) * (1 + 0.015 * Math.sin(i * 0.2));
+  }
+  return { mel, f0 };
+}
+
+const R = { page: "web/vocoder-test.html", model: MODEL, ortEntry: ORT_ENTRY, ortVersion: null,
+            modelBytes: 0, modelSha256: null, downloadMs: 0, ortImportMs: 0, sessionMs: 0,
+            inputNames: [], outputNames: [], hop: 512, sr: SR, runs: [], probes: [], warnings: warns, verdict: "PASS",
+            totalMs: 0, jsHeapMB: null, jsHeapLimitMB: null, wavB64: null, wavBytes: 0, wavFnv: null };
+const fail = (m) => { throw new Error("ASSERT: " + m); };
+
+try {
+  // ---- 1. onnxruntime-web (vendored, wasm backend only) -------------------
+  say("step 1/5: import ort-web " + ORT_ENTRY);
+  const tOrt = performance.now();
+  const ortUrl = new URL(ORT_ENTRY, location.href).href;
+  const ort = (await import(/* @vite-ignore */ ortUrl)).default ?? (await import(ortUrl));
+  const ORT_DIR = new URL("./vendor/ort/", location.href).href;
+  // Explicit {mjs,wasm} paths: the vendored plain (non-jsep) loader + its wasm, never a CDN.
+  ort.env.wasm.wasmPaths = { mjs: ORT_DIR + "ort-wasm-simd-threaded.mjs",
+                             wasm: ORT_DIR + "ort-wasm-simd-threaded.wasm" };
+  ort.env.wasm.numThreads = 1;          // no COOP/COEP on this server => single thread, no SAB
+  ort.env.wasm.proxy = false;
+  ort.env.logLevel = "warning";
+  R.ortImportMs = round(performance.now() - tOrt);
+  R.ortVersion = (ort.env.versions && (ort.env.versions.web || ort.env.versions.common)) || null;
+  say("  ort-web ok in " + R.ortImportMs + " ms · versions " + JSON.stringify(ort.env.versions));
+
+  // ---- 2. fetch the real model file --------------------------------------
+  say("step 2/5: fetch model " + MODEL);
+  const tDl = performance.now();
+  const resp = await fetch(MODEL);
+  if (!resp.ok) fail("model fetch HTTP " + resp.status);
+  const modelBuf = await resp.arrayBuffer();
+  R.downloadMs = round(performance.now() - tDl);
+  R.modelBytes = modelBuf.byteLength;
+  R.modelSha256 = await sha256hex(modelBuf);
+  say("  " + (R.modelBytes / 1048576).toFixed(2) + " MB in " + R.downloadMs + " ms · sha256 " + R.modelSha256);
+
+  // ---- 3. build the session (wasm backend) -------------------------------
+  say("step 3/5: InferenceSession.create (wasm EP)");
+  const tS = performance.now();
+  const session = await ort.InferenceSession.create(new Uint8Array(modelBuf), {
+    executionProviders: ["wasm"],
+    graphOptimizationLevel: "all",
+    intraOpNumThreads: 1,
+    interOpNumThreads: 1,
+    enableCpuMemArena: true,
+    enableMemPattern: true,
+  });
+  R.sessionMs = round(performance.now() - tS);
+  R.inputNames = session.inputNames.slice();
+  R.outputNames = session.outputNames.slice();
+  say("  session in " + R.sessionMs + " ms · inputs [" + R.inputNames + "] outputs [" + R.outputNames + "]");
+  if (!R.inputNames.includes("mel") || !R.inputNames.includes("f0")) fail("input names != mel,f0: " + R.inputNames);
+  if (!R.outputNames.includes("waveform")) fail("output name != waveform: " + R.outputNames);
+
+  // ---- 4. real inference -------------------------------------------------
+  const OUT = R.outputNames[0];
+  async function infer(n, label, dc, strict = true) {
+    const { mel, f0 } = makeInputs(n, dc === undefined ? MEL_DC : dc);
+    const feeds = { mel: new ort.Tensor("float32", mel, [1, n, 128]), f0: new ort.Tensor("float32", f0, [1, n]) };
+    const t = performance.now();
+    const res = await session.run(feeds);
+    const ms = performance.now() - t;
+    const o = res[OUT];
+    const pcm = new Float32Array(o.data);            // copy: ort reuses output buffers
+    const st = stats(pcm);
+    const rec = { label, nFrames: n, dims: Array.from(o.dims), samples: pcm.length,
+                  ms: round(ms), seconds: pcm.length / SR, realtimeX: round(pcm.length / SR / (ms / 1000)),
+                  hop: pcm.length / n, peak: st.peak, rms: st.rms, min: st.min, max: st.max,
+                  mean: st.mean, zcrHz: round(st.zcr), nonFinite: st.nonFinite,
+                  distinctLe8: st.distinctLe8, fnv: fnv1a(pcm.buffer ? new Uint8Array(pcm.buffer) : new Uint8Array(0)),
+                  frameRateHz: SR / 512,
+                  f0EstHz: null, f0Corr: null };
+    const f0e = estimateF0(pcm);
+    rec.f0EstHz = round(f0e.hz); rec.f0Corr = round(f0e.corr);
+    say("step 4/5: " + label + " n=" + n + " -> " + pcm.length + " samples in " + rec.ms + " ms (" +
+        rec.realtimeX + "x realtime) peak " + st.peak.toFixed(4) + " dom~" + rec.f0EstHz + " Hz");
+    // -- the assertions that make this a proof and not a mock --
+    if (!Number.isInteger(rec.hop) || rec.hop !== R.hop) fail(label + ": expected hop " + R.hop + ", got " + rec.hop);
+    if (rec.samples !== n * R.hop) fail(label + ": expected " + n * R.hop + " samples, got " + rec.samples);
+    if (st.nonFinite !== 0) fail(label + ": " + st.nonFinite + " non-finite samples");
+    if (strict) {   // the mel-offset probe is exploratory: a quiet probe is data, not a failure
+      if (!(st.peak > 1e-3)) fail(label + ": output is silent (peak " + st.peak + ")");
+      if (st.distinctLe8 < 2) fail(label + ": output is a constant");
+    }
+    return { rec, pcm };
+  }
+  const a = await infer(N1, "run1-cold");
+  const b = await infer(N1, "run2-warm");
+  const c = await infer(N2, "run3-otherN");
+  if (a.pcm.length !== b.pcm.length) fail("run1/run2 length differ");
+  let maxDiff = 0;
+  for (let i = 0; i < a.pcm.length; i++) { const d = Math.abs(a.pcm[i] - b.pcm[i]); if (d > maxDiff) maxDiff = d; }
+  R.runDeterminismMaxDiff = maxDiff;
+  say("  run1 vs run2 same input: max|diff| = " + maxDiff.toExponential(2) + " (deterministic)");
+  R.runs = [a.rec, b.rec, c.rec];
+
+  // Mel-DC probe: same f0 (186 Hz glide), different mel DC offsets. pc-nsf-hifigan's mel
+  // scale is learned/undocumented, so instead of guessing a value we sweep it and report
+  // how the output responds: a real graph gives a strongly input-dependent amplitude,
+  // a mock/constant path would not. (Autocorrelation is reported too, but it pins at the
+  // 86.13 Hz frame rate (44100/512), so it is NOT used as a pitch claim.)
+  R.probes = [];
+  for (const dc of PROBE_DCS) {
+    const p = await infer(N1, "probe-melDc" + dc, dc, false);
+    R.probes.push({ melDc: dc, ms: p.rec.ms, peak: p.rec.peak, rms: p.rec.rms,
+                    domAutocorrHz: p.rec.f0EstHz, domCorr: p.rec.f0Corr, zcrHz: p.rec.zcrHz,
+                    f0InHz: 186, samples: p.rec.samples });
+  }
+  say("  probe: " + R.probes.map((p) => "melDc" + p.melDc + "->peak " + p.peak.toFixed(4)).join(" · "));
+
+  // ---- 5. artifacts + memory --------------------------------------------
+  say("step 5/5: WAV + memory");
+  const wav = toWav16(a.pcm, SR);
+  R.wavBytes = wav.length; R.wavFnv = fnv1a(wav);
+  if (EMIT_WAV) R.wavB64 = b64(wav);
+  if (performance.memory) {
+    R.jsHeapMB = round(performance.memory.usedJSHeapSize / 1048576);
+    R.jsHeapLimitMB = round(performance.memory.jsHeapSizeLimit / 1048576);
+  }
+  say("  wav " + wav.length + " bytes · fnv " + R.wavFnv.toString(16) + " · jsHeap " +
+      (R.jsHeapMB === null ? "n/a" : R.jsHeapMB + " MB (limit " + R.jsHeapLimitMB + " MB)"));
+
+  R.totalMs = round(performance.now() - t0);
+  R.verdict = "PASS";
+  say("RESULT: PASS model " + (R.modelBytes / 1048576).toFixed(1) + "MB load " +
+      (R.downloadMs + R.sessionMs) + "ms infer " + R.runs[0].ms + "ms samples " + R.runs[0].samples +
+      " hop " + R.runs[0].hop + " peak " + R.runs[0].peak.toFixed(4));
+  await fetch("/__result", { method: "POST", body: JSON.stringify(R) });
+} catch (e) {
+  R.verdict = "FAIL";
+  R.error = String(e && e.stack ? e.stack : e);
+  R.totalMs = round(performance.now() - t0);
+  say("RESULT: FAIL " + R.error);
+  await fetch("/__result", { method: "POST", body: JSON.stringify(R) }).catch(() => {});
+}
+</script>
+</body></html>

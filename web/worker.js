@@ -34,8 +34,15 @@ let engineInitMs = 0;
 let sampleLoadMs = 0;
 let renderEngine = "r1-rs";
 let r2Runtime = null;
+let plannedRenderJob = null;
 /** Keys currently installed in this worker's engine. */
 const loadedKeys = new Set();
+const cancelledJobs = new Set();
+const activeJobs = new Set();
+
+function yieldToMessages() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 function installSamples(files) {
   let added = 0;
@@ -104,6 +111,7 @@ self.onmessage = async (ev) => {
         if (msg.projectYaml) projectYaml = msg.projectYaml;
         if (msg.track !== undefined) track = msg.track;
         const chunks = engine.plan_project(projectYaml, track);
+        plannedRenderJob = msg.renderJob || null;
         self.postMessage({ type: "replanned", id: msg.id, chunks });
         return;
       }
@@ -114,12 +122,24 @@ self.onmessage = async (ev) => {
           await ensureEngine(msg.samples);
         }
         if (msg.samples && msg.samples.files) installSamples(msg.samples.files);
+        if (msg.jobId && (
+          !plannedRenderJob ||
+          plannedRenderJob.renderId !== msg.jobId ||
+          plannedRenderJob.sessionId !== msg.sessionId ||
+          plannedRenderJob.revision !== msg.revision ||
+          plannedRenderJob.engine !== msg.engine
+        )) {
+          throw new Error("render job does not match the worker's committed snapshot plan");
+        }
         if (msg.projectYaml && msg.projectYaml !== projectYaml) {
           projectYaml = msg.projectYaml;
           engine.plan_project(projectYaml, msg.track ?? track);
         }
         const out = [];
+        const jobId = msg.jobId || null;
+        if (jobId) activeJobs.add(jobId);
         for (const index of msg.indices || []) {
+          if (jobId && cancelledJobs.has(jobId)) break;
           let pcm;
           if (renderEngine === "r2-webgpu") {
             if (!r2Runtime) throw new Error("R2 WebGPU runtime is not initialized");
@@ -129,9 +149,33 @@ self.onmessage = async (ev) => {
             // `slice()` copies out of wasm memory so the buffer is transferable.
             pcm = engine.render_chunk(index).slice();
           }
-          out.push({ index, pcm: pcm.buffer });
+          const chunk = { index, pcm: pcm.buffer };
+          out.push(chunk);
+          // Stream each completed chunk so the host can report contract-level
+          // progress and cancellation can be observed before the next chunk.
+          self.postMessage({
+            type: "chunk",
+            id: msg.id,
+            jobId,
+            sessionId: msg.sessionId,
+            revision: msg.revision,
+            index,
+            pcm: chunk.pcm,
+          }, [chunk.pcm]);
+          await yieldToMessages();
         }
-        self.postMessage({ type: "done", id: msg.id, chunks: out }, out.map((o) => o.pcm));
+        const cancelled = Boolean(jobId && cancelledJobs.has(jobId));
+        if (jobId) {
+          activeJobs.delete(jobId);
+          cancelledJobs.delete(jobId);
+        }
+        self.postMessage({ type: "done", id: msg.id, jobId, cancelled, chunkCount: out.length });
+        return;
+      }
+
+      case "cancel": {
+        if (msg.jobId && activeJobs.has(msg.jobId)) cancelledJobs.add(msg.jobId);
+        self.postMessage({ type: "cancelled", id: msg.id, jobId: msg.jobId });
         return;
       }
 
@@ -139,6 +183,10 @@ self.onmessage = async (ev) => {
         throw new Error(`unknown message type: ${msg.type}`);
     }
   } catch (err) {
+    if (msg?.jobId) {
+      activeJobs.delete(msg.jobId);
+      cancelledJobs.delete(msg.jobId);
+    }
     self.postMessage({ type: "error", id: msg?.id, message: String(err) });
   }
 };

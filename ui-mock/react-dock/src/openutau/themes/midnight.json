@@ -1,0 +1,31 @@
+{
+  "label": "Midnight",
+  "tokens": {
+    "surface": "#1b1d24",
+    "surfaceAlt": "#171920",
+    "surfaceSunken": "#1f222a",
+    "surfaceRaised": "#23262f",
+    "surfaceOverlay": "#23262fdd",
+    "border": "#363a45",
+    "borderStrong": "#40454f",
+    "divider": "#2d313a",
+
+    "text": "#dfe3ec",
+    "textStrong": "#cdd2dd",
+    "textMuted": "#939aa9",
+    "textFaint": "#767d8c",
+
+    "controlBg": "#2a2e39",
+    "controlBgHover": "#343949",
+    "controlBorder": "#40454f",
+    "controlText": "#cdd2dd",
+
+    "accent": "#7aa2f7",
+    "accentHover": "#23304a",
+    "accentText": "#a6c1ff",
+    "accentSoft": "#23304a",
+    "accent2": "#9ece6a",
+    "accent2Text": "#b9e07f",
+    "accent3": "#e0af68"
+  }
+}

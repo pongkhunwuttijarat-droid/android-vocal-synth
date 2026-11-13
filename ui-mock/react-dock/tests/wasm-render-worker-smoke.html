@@ -1,0 +1,115 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WASM render worker smoke</title>
+<pre id="result">starting</pre>
+<script type="module">
+import init, { Engine } from '../../../web/pkg/engine_wasm.js';
+import { HttpBank } from '../../../web/samples.js';
+import { fixtureBankBaseUrl } from '../../../web/fixture-bank.js';
+import scaleDemoUstx from '../../../web/fixture/scale-demo.ustx?raw';
+import { captureCommittedRenderSnapshot, fingerprintRenderJob, pinRenderAssetBytes } from '../../../web/app/session-render-contract.js';
+
+const output = document.querySelector('#result');
+const includeWave = new URLSearchParams(location.search).has('wave');
+const say = value => { output.textContent = value; };
+const must = (condition, message) => { if (!condition) throw new Error(message); };
+function makePcmWav(seconds = 1, rate = 44100) {
+  const frames = seconds * rate;
+  const buffer = new ArrayBuffer(44 + frames * 2);
+  const view = new DataView(buffer);
+  const ascii = (offset, value) => [...value].forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
+  ascii(0, 'RIFF'); view.setUint32(4, 36 + frames * 2, true); ascii(8, 'WAVE');
+  ascii(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true); ascii(36, 'data'); view.setUint32(40, frames * 2, true);
+  for (let index = 0; index < frames; index++) view.setInt16(44 + index * 2, Math.round(Math.sin(index * 2 * Math.PI * 220 / rate) * 9000), true);
+  return new Uint8Array(buffer);
+}
+function apply(engine, command) {
+  const raw = engine.session_apply_v2(JSON.stringify({ expected_revision: Number(engine.session_revision()), command }));
+  const result = JSON.parse(raw);
+  if (result.error) throw new Error(result.error.message || result.error.code);
+  return result;
+}
+
+try {
+  await init();
+  const yaml = scaleDemoUstx;
+  const bank = new HttpBank({ baseUrl: fixtureBankBaseUrl() });
+  await bank.openOto({ otoPath: 'voice/oto.ini', otoDir: 'voice' });
+  const engine = new Engine();
+  engine.session_open_yaml(yaml, '');
+  engine.set_voicebank('smoke-bank', 'Smoke fixture bank', 'voice', new Uint8Array(bank.otoBytes));
+
+  const media = makePcmWav();
+  if (includeWave) {
+    apply(engine, { type: 'track.create', name: 'Fixture Audio' });
+    const tracksAfterCreate = JSON.parse(engine.session_snapshot_json()).project.tracks;
+    const audioTrackId = tracksAfterCreate.at(-1)?.id;
+    must(audioTrackId, 'track.create did not expose the new stable track ID in the Rust snapshot');
+    engine.session_register_media('asset:render-smoke.wav', media);
+    apply(engine, {
+      type: 'part.create', track_id: audioTrackId, kind: 'wave', name: 'Fixture wave',
+      position_ticks: 0, duration_ticks: 1920, media_ref: 'asset:render-smoke.wav',
+    });
+  }
+
+  const snapshot = captureCommittedRenderSnapshot(engine, Number(engine.session_revision()));
+  const count = engine.plan_project(snapshot.ustx, 0);
+  const sampleKeys = new Set();
+  for (let index = 0; index < count; index++) {
+    for (const key of engine.chunk_wav_keys(index).split('\n').filter(Boolean)) sampleKeys.add(key);
+  }
+  const entries = await bank.load([...sampleKeys].map(key => key.startsWith('/vb/') ? key.slice(4) : key));
+  const assets = [{ kind: 'oto', key: 'fixture-bank', bytes: bank.otoBytes }];
+  if (includeWave) assets.push({ kind: 'project-media', key: 'asset:render-smoke.wav', bytes: media });
+  for (const entry of entries) {
+    const key = sampleKeys.has(entry.key) ? entry.key : `/vb/${entry.key}`;
+    const wav = new Uint8Array(entry.wav);
+    const frq = entry.frq ? new Uint8Array(entry.frq) : null;
+    if (frq) engine.add_sample_with_frq(key, wav, frq); else engine.add_sample(key, wav);
+    assets.push({ kind: 'sample-wav', key, bytes: wav });
+    if (frq) assets.push({ kind: 'sample-frq', key, bytes: frq });
+  }
+  const pinned = await pinRenderAssetBytes(assets);
+  const renderConfig = { sampleRate: 44100, mixdown: 'rust-session-stereo-v1', voicebankOtoDir: bank.otoDir };
+  const assetFingerprint = await fingerprintRenderJob(snapshot, pinned.manifest, renderConfig);
+  const reference = engine.session_render_mixdown();
+  const clone = new Engine();
+  clone.session_open_yaml_with_sidecars(snapshot.ustx, snapshot.identitySidecar, snapshot.pronunciationSidecar);
+  clone.set_voicebank('render-snapshot', 'Pinned render voicebank', bank.otoDir, new Uint8Array(bank.otoBytes));
+  for (const asset of pinned.assets.filter(item => item.kind === 'sample-wav')) {
+    const frq = pinned.assets.find(candidate => candidate.kind === 'sample-frq' && candidate.key === asset.key);
+    if (frq) clone.add_sample_with_frq(asset.key, asset.bytes, frq.bytes);
+    else clone.add_sample(asset.key, asset.bytes);
+  }
+  for (const asset of pinned.assets.filter(item => item.kind === 'project-media')) clone.session_register_media(asset.key, asset.bytes);
+  let clonePcm;
+  try { clonePcm = clone.session_render_mixdown(); }
+  catch (error) { throw new Error(`fresh Engine snapshot render failed: ${error?.message || error}`); }
+  must(clonePcm.length === reference.length, 'fresh Engine snapshot frame count differs from the live Session');
+  const worker = new Worker(new URL('../src/openutau/wasm-render.worker.js', import.meta.url), { type: 'module' });
+  const result = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('render worker timed out')), 120000);
+    worker.onmessage = ({ data }) => {
+      if (data?.jobId !== 'smoke-job') return;
+      if (data.type === 'error') { clearTimeout(timeout); reject(new Error(`${data.code} (${data.phase}): ${data.message}\n${data.stack || ''}`)); }
+      if (data.type === 'complete') { clearTimeout(timeout); resolve(data); }
+    };
+    worker.onerror = event => { clearTimeout(timeout); reject(new Error(event.message || 'render worker crashed')); };
+    worker.postMessage({ type: 'render', jobId: 'smoke-job', snapshot, assets: pinned.assets,
+      assetManifest: pinned.manifest, assetFingerprint, renderConfig, otoDir: bank.otoDir }, pinned.transfer);
+  }).finally(() => worker.terminate());
+  const actual = new Float32Array(result.pcm);
+  must(actual.length === reference.length, `PCM length mismatch ${actual.length} != ${reference.length}`);
+  let maxDiff = 0;
+  for (let index = 0; index < actual.length; index++) maxDiff = Math.max(maxDiff, Math.abs(actual[index] - reference[index]));
+  must(maxDiff <= 1e-6, `PCM parity failed; max diff ${maxDiff}`);
+  must(result.assetFingerprint === assetFingerprint, 'worker did not echo the pinned job fingerprint');
+  must(result.assetManifest.length === assets.length, 'worker did not receive the complete pinned manifest');
+  must(actual.some(sample => Math.abs(sample) > 1e-5), 'rendered mix is silent');
+  say(`PASS\nframes=${actual.length / 2}\nassetCount=${result.assetManifest.length}\nmaxPcmDiff=${maxDiff}\nknownMemoryHighWater=${result.memory.knownBytesHighWater}`);
+} catch (error) {
+  say(`FAIL\n${error?.stack || error}`);
+}
+</script>

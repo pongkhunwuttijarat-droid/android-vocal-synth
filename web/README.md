@@ -1,4 +1,4 @@
-# Lilt — web (wasm) target
+# Rusted UTAU — web (wasm) target
 
 Engine ทั้งตัวรันบน browser ด้วย `wasm32-unknown-unknown` — **ไม่ต้องมี
 server, ไม่มี `.so`, ไม่มี dlopen**
@@ -224,17 +224,41 @@ project browser ในแถบซ้าย (New / Save as / Export / Import / �
 `navigator.storage.persist()` ครั้งแรกที่บันทึก
 
 > ⚠️ **ล้าง site data = โปรเจกต์หายทั้งหมด** — ใช้ **Export .ustx** เก็บสำเนาไว้เสมอ
-> (voicebank ยังมาจาก HTTP fixture; การ import voicebank เข้า OPFS เป็นงานถัดไป)
+
+## Voicebanks (OPFS)
+
+Voicebank import เข้า OPFS ได้แล้ว — ปุ่ม **Import folder…** ในแถบซ้ายของ
+editor เลือกโฟลเดอร์ที่มี `voice/oto.ini` + `*.wav` (+ `*_wav.frq`) เก็บใต้
+`<root>/voice/…` เดียวกับ layout ที่ `HttpBank` เสิร์ฟ:
+
+```js
+import { OpfsBank } from "./samples.js";
+const bank = new OpfsBank({ root: "my-bank" });
+await bank.importFiles(fileList);                    // directory-picker FileList
+await OpfsBank.installedRoots();                     // ["my-bank", …]
+await OpfsBank.removeRoot("my-bank");                // ลบออกจาก OPFS
+```
+
+Editor เลือก bank ตอน boot: **OPFS ที่ import ไว้ก่อน → fixture** (ผ่าน
+`?voicebank=<root>` เพื่อระบุ หรือ `?voicebank=full` = full Teto ทาง HTTP แบบเดิม),
+เลือก/ลบจากแผง Voicebanks ได้ตอนรัน — สลับแล้ว render ใหม่ทันที ส่วน
+RenderPool โหลดเฉพาะ wav/frq ที่ chunk อ้างถึง (per-chunk sample loading)
+จึงรองรับ bank ใหญ่ได้โดยไม่ยัดทั้งก้อนเข้า engine
+
+> OPFS ใช้ได้บน Chrome/Edge 86+ และ Firefox 111+; Safari ยังไม่รองรับ
+> `createWritable` เต็มรูปแบบ — บน Safari editor ยัง boot ด้วย fixture bank ได้
 
 ## Browser editor checkpoint
 
 `editor-test.html` ผ่าน headless Chromium โดยครอบ boot, DOM/canvas paint,
-note hit-test, command edit, undo, Draw tool, marquee multi-select, audio render และ
-cursor-anchored zoom. Demo ใช้ `fixture/scale-demo.ustx` กับ HTTP fixture bank.
+note hit-test, command edit, undo, Draw tool, marquee multi-select, audio render,
+cursor-anchored zoom, OPFS project store และ voicebank OPFS flow (import /
+เลือก / render บน bank ที่ import / ลบ → fallback fixture). Demo ใช้
+`fixture/scale-demo.ustx` กับ HTTP fixture bank.
 
 ## ยังไม่ทำ
 
-- **Persistence** — OPFS/project browser, autosave และ export flow (pool wiring + progress/cancel ทำแล้ว)
+- **Persistence** — OPFS project/voicebank store, autosave และ export flow (pool wiring + progress/cancel ทำแล้ว)
 - **Feature breadth** — multi-track audio mix, expression lanes, authoritative
   phoneme labels และ tablet/pen hardware QA
 - **Neural engines** — R2 มี browser WebGPU preview แล้ว; DiffSinger/MoE ยัง native-only
