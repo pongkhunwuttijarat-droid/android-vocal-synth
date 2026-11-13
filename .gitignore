@@ -15,6 +15,10 @@ native/test-data/output/
 # === .NET / golden-renderer build ===
 test/golden/golden-renderer/bin/
 test/golden/golden-renderer/obj/
+native/tools/openutau-phonemizer-host/**/bin/
+native/tools/openutau-phonemizer-host/**/obj/
+**/bin/
+**/obj/
 # ref copy .NET build (parentheses need escaping but gitignore is glob)
 ref(openutau+openutau mobile)/core/**/bin/
 ref(openutau+openutau mobile)/core/**/obj/
