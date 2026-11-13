@@ -1,3 +1,9 @@
+# === JavaScript package caches and generated frontend output ===
+.npm-cache/
+.npm/
+**/node_modules/
+**/dist/
+
 # === Build artifacts ===
 native/target/
 native/build/
@@ -27,6 +33,7 @@ app/android/app/build/
 .DS_Store
 *.swp
 *~
+.zcodeignore
 
 # === Hermes ===
 .hermes/
@@ -78,4 +85,26 @@ test/poc/**/train-set.tsbin
 
 # === Scratch files จาก tooling (sqlite in-memory, ฯลฯ) ===
 /:memory:*
+
+# Local OpenUtau sample projects and voicebank archives (keep out of git history)
+test-ustx-example/
+
+# === Browser automation profiles and test vendor binaries ===
+.playwright-cli/
+.flowglass-localization/
+.freebuff/
+ui-mock/react-dock/.browser-profile/
+ui-mock/react-dock/.cdp-browser-profile/
+web/vendor/
+web/fixture/cache/
+
+# === Local test projects, voicebanks & scratch ===
+_memory_.ses
+projects/
+native/projects/
+scratch/
+miku-no-shoushitsu.*
+test/poc/compare-base-20260926/
+zhcvvplus.yaml
+native/plugins/worldline/src/worldline
 
