@@ -9,13 +9,15 @@
 
 use phonemizer::adapter::{IpaAdapter, NearestPhoneme};
 use phonemizer::ipa::IpaDictionary;
-use voicebank::manifest::PhonemeManifest;
 use voicebank::load_voicebank;
+use voicebank::manifest::PhonemeManifest;
 
 fn teto_manifest() -> PhonemeManifest {
     let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../test/golden/teto-english/library");
-    load_voicebank(&lib).expect("load voicebank").phoneme_manifest()
+    load_voicebank(&lib)
+        .expect("load voicebank")
+        .phoneme_manifest()
 }
 
 #[test]
@@ -72,13 +74,27 @@ fn capability_manager_is_engine_agnostic() {
 
     struct FakeEngine;
     impl EngineCapabilities for FakeEngine {
-        fn id(&self) -> &'static str { "fake" }
-        fn needs_wav_samples(&self) -> bool { true }
-        fn needs_oto(&self) -> bool { true }
-        fn needs_frq(&self) -> bool { false }
-        fn expressions(&self) -> &'static [&'static str] { &[] }
-        fn sample_rate(&self) -> u32 { 44100 }
-        fn channels(&self) -> u16 { 1 }
+        fn id(&self) -> &'static str {
+            "fake"
+        }
+        fn needs_wav_samples(&self) -> bool {
+            true
+        }
+        fn needs_oto(&self) -> bool {
+            true
+        }
+        fn needs_frq(&self) -> bool {
+            false
+        }
+        fn expressions(&self) -> &'static [&'static str] {
+            &[]
+        }
+        fn sample_rate(&self) -> u32 {
+            44100
+        }
+        fn channels(&self) -> u16 {
+            1
+        }
     }
 
     let manifest = teto_manifest();

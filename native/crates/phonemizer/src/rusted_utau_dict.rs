@@ -1,4 +1,4 @@
-//! Built-in English G2p dictionary for the Lilt demo voicebank (Teto
+//! Built-in English G2p dictionary for the Rusted UTAU demo voicebank (Teto
 //! English CVVC). Maps the words the editor's demo song uses to phoneme
 //! sequences that EXIST in the Teto oto table (vowel `aI` not `ay`, `D`
 //! for th, `N` for ng, etc.).
@@ -10,22 +10,24 @@
 
 use crate::g2p::{G2pDictionary, G2pFallbacks};
 
-/// The Lilt demo vocabulary: word → phoneme sequence (Teto symbols).
+/// The Rusted UTAU demo vocabulary: word → phoneme sequence (Teto symbols).
 /// Order matters: `add_entry` overwrites, so list longer words first when
 /// they share prefixes (none do here).
-pub fn lilt_demo_g2p() -> G2pFallbacks {
+pub fn rusted_utau_demo_g2p() -> G2pFallbacks {
     let mut dict = G2pDictionary::new();
     // Register symbols used by the vocabulary (vowel / glide / other).
     // Teto English CVVC symbol set (from the library's oto.ini).
-    for v in ["3", "E", "A", "I", "O", "U", "a", "aI", "aU", "e", "eI", "i",
-              "o", "oU", "u", "{", "@"] {
+    for v in [
+        "3", "E", "A", "I", "O", "U", "a", "aI", "aU", "e", "eI", "i", "o", "oU", "u", "{", "@",
+    ] {
         dict.add_symbol(v, true, false);
     }
     for g in ["j", "w", "l", "r", "hi"] {
         dict.add_symbol(g, false, true);
     }
-    for c in ["b", "d", "D", "f", "g", "h", "k", "m", "n", "N", "p", "s",
-              "t", "v", "z", "-"] {
+    for c in [
+        "b", "d", "D", "f", "g", "h", "k", "m", "n", "N", "p", "s", "t", "v", "z", "-",
+    ] {
         dict.add_symbol(c, false, false);
     }
     // Words used by the editor's demo song (Lead Vocal + Harmony tracks).

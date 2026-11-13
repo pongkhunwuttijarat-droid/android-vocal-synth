@@ -1,9 +1,9 @@
-//! Tests for the Lilt demo G2p dictionary: words must map to phoneme
+//! Tests for the Rusted UTAU demo G2p dictionary: words must map to phoneme
 //! sequences that EXIST in the Teto oto table (the golden voicebank).
 
 use phonemizer::english::EnglishCvvcPhonemizer;
-use phonemizer::lilt_dict::lilt_demo_g2p;
 use phonemizer::phonemizer::Phonemizer;
+use phonemizer::rusted_utau_dict::rusted_utau_demo_g2p;
 
 fn note(lyric: &str) -> domain::UNote {
     domain::UNote {
@@ -17,16 +17,16 @@ fn note(lyric: &str) -> domain::UNote {
 
 fn teto() -> voicebank::Voicebank {
     // The golden Teto English library (CVVC aliases like `3`, `A`, `e d`).
-    let dir = std::path::Path::new(
-        "/home/seal/project/android-voice-synth/test/golden/teto-english/library",
-    );
-    voicebank::load_voicebank(dir).expect("load Teto library")
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .join("test/golden/teto-english/library");
+    voicebank::load_voicebank(&dir).expect("load Teto library")
 }
 
 #[test]
 fn demo_words_resolve_to_oto_aliases() {
     let vb = teto();
-    let g2p = lilt_demo_g2p();
+    let g2p = rusted_utau_demo_g2p();
     let phonemizer = EnglishCvvcPhonemizer::with_g2p(g2p);
 
     for word in [
@@ -38,8 +38,7 @@ fn demo_words_resolve_to_oto_aliases() {
         assert!(!phs.is_empty(), "{word}: phonemizer produced nothing");
         // Every phoneme must resolve to an oto alias in the bank.
         for ph in &phs {
-            let ok = vb.lookup(&ph.phoneme, 60).is_some()
-                || vb.lookup(&ph.phoneme, 60).is_some();
+            let ok = vb.lookup(&ph.phoneme, 60).is_some() || vb.lookup(&ph.phoneme, 60).is_some();
             assert!(ok, "{word}: phoneme '{}' has no oto alias", ph.phoneme);
         }
     }
@@ -48,7 +47,7 @@ fn demo_words_resolve_to_oto_aliases() {
 #[test]
 fn unknown_word_falls_back_verbatim() {
     let vb = teto();
-    let g2p = lilt_demo_g2p();
+    let g2p = rusted_utau_demo_g2p();
     let phonemizer = EnglishCvvcPhonemizer::with_g2p(g2p);
     let phs = phonemizer.process(&[note("zzzznope")], Some(&vb));
     // Verbatim fallback: one phoneme named after the lyric, which then has

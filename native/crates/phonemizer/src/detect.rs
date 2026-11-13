@@ -17,9 +17,10 @@ pub enum Language {
 /// mixed lyric ("ド dō") goes down the Japanese path. Everything else
 /// (latin, digits, spaces, punctuation) is English.
 pub fn detect_language(lyric: &str) -> Language {
-    if lyric.chars().any(|c| {
-        matches!(c as u32, 0x3040..=0x309F | 0x30A0..=0x30FF | 0x31F0..=0x31FF)
-    }) {
+    if lyric
+        .chars()
+        .any(|c| matches!(c as u32, 0x3040..=0x309F | 0x30A0..=0x30FF | 0x31F0..=0x31FF))
+    {
         Language::Japanese
     } else {
         Language::English

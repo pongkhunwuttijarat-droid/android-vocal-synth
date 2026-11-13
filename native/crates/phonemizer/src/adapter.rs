@@ -44,7 +44,9 @@ impl<'a> NearestPhoneme<'a> {
             if self.manifest.types.get(candidate) != Some(&want.ty) {
                 continue;
             }
-            let Some(cand) = feature_of(candidate) else { continue };
+            let Some(cand) = feature_of(candidate) else {
+                continue;
+            };
             let d = want.distance(&cand);
             if d <= THRESHOLD && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
                 best = Some((d, candidate.clone()));
@@ -102,11 +104,11 @@ fn feature_of(token: &str) -> Option<Features> {
         "o" | "O" => Some([2.0, 3.0, 1.0]),
         "aI" | "aU" | "eI" | "oU" => Some([2.0, 2.0, 0.0]),
         // Consonant feature table: [place(0-7), manner(0-6), voicing]
-        "l" => Some([4.0, 3.0, 1.0]), // alveolar lateral
+        "l" => Some([4.0, 3.0, 1.0]),        // alveolar lateral
         "r" | "r3" => Some([4.0, 4.0, 1.0]), // alveolar approx
-        "n" => Some([4.0, 5.0, 1.0]), // alveolar nasal
-        "m" => Some([3.0, 5.0, 1.0]), // bilabial nasal
-        "b" => Some([3.0, 0.0, 1.0]), // bilabial stop
+        "n" => Some([4.0, 5.0, 1.0]),        // alveolar nasal
+        "m" => Some([3.0, 5.0, 1.0]),        // bilabial nasal
+        "b" => Some([3.0, 0.0, 1.0]),        // bilabial stop
         "p" => Some([3.0, 0.0, 0.0]),
         "d" => Some([4.0, 0.0, 1.0]),
         "t" => Some([4.0, 0.0, 0.0]),
@@ -138,7 +140,11 @@ pub struct IpaAdapter<'a> {
 
 impl<'a> IpaAdapter<'a> {
     pub fn new(manifest: &'a PhonemeManifest, dict: &'a IpaDictionary) -> Self {
-        IpaAdapter { manifest, dict, nearest: NearestPhoneme::new(manifest) }
+        IpaAdapter {
+            manifest,
+            dict,
+            nearest: NearestPhoneme::new(manifest),
+        }
     }
 
     /// The manifest this adapter maps against (the universal phonemizer

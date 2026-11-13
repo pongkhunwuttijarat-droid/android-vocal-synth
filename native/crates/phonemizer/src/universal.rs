@@ -33,7 +33,7 @@ impl<'a> UniversalPhonemizer<'a> {
     pub fn new(adapter: IpaAdapter<'a>) -> Self {
         UniversalPhonemizer {
             dict: IpaDictionary::en_subset(),
-            word_dict: crate::lilt_dict::lilt_demo_g2p(),
+            word_dict: crate::rusted_utau_dict::rusted_utau_demo_g2p(),
             adapter,
         }
     }
@@ -64,7 +64,7 @@ impl<'a> UniversalPhonemizer<'a> {
                 if self.can_render_alias(lyric) {
                     return vec![lyric.to_string()];
                 }
-                // 1. Word dictionary (lilt demo vocabulary).
+                // 1. Word dictionary (Rusted UTAU demo vocabulary).
                 if let Some(tokens) = self.word_dict.query(lyric) {
                     return tokens;
                 }
@@ -134,7 +134,8 @@ impl Phonemizer for UniversalPhonemizer<'_> {
             let aliases = if hinted.is_some() {
                 self.pair_hint(&tokens, singer, note.tone)
             } else {
-                self.adapter.map_ipa(&tokens.iter().map(String::as_str).collect::<Vec<_>>())
+                self.adapter
+                    .map_ipa(&tokens.iter().map(String::as_str).collect::<Vec<_>>())
             };
             let durations = split_duration(note.duration, aliases.len());
             let positions = positions_from_durations(&durations);

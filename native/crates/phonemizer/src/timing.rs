@@ -11,10 +11,9 @@
 //! 2. converts to milliseconds with the project [`TimeAxis`]
 //!    (`PositionMs = timeAxis.TickPosToMsPos(part.position + position)`,
 //!    `DurationMs = EndMs - PositionMs`);
-//! 3. fills `leading_ms` (preutter) / `overlap_ms` (overlap) from the oto
-//!    entry of each resolved phoneme, plus the `auto_*` fields that carry
-//!    the raw oto values before any user deltas (mirroring
-//!    `UPhoneme.ValidateOverlap`).
+//! 3. fills effective `leading_ms` / `overlap_ms` from the oto entry,
+//!    velocity stretch and OpenUtau's adjacent-phoneme constraints
+//!    (`UPhoneme.ValidateOverlap`).
 
 use domain::{TimeAxis, UNote, UPhoneme};
 use voicebank::Voicebank;
@@ -43,7 +42,9 @@ impl TimingEngine {
         time_axis: &TimeAxis,
         singer: Option<&Voicebank>,
     ) {
-        for ph in phonemes.iter_mut() {
+        for phoneme_index in 0..phonemes.len() {
+            let (before, current_and_after) = phonemes.split_at_mut(phoneme_index);
+            let ph = &mut current_and_after[0];
             let Some(parent) = ph.parent else { continue };
             let Some(note) = notes.get(parent) else {
                 continue;
@@ -60,14 +61,67 @@ impl TimingEngine {
             ph.position_ms = time_axis.tick_to_ms(start_tick as f64);
             ph.duration_ms = time_axis.ms_between_ticks(start_tick as f64, end_tick as f64);
 
-            // Preutter / overlap from the oto entry of the resolved alias.
+            // OpenUtau UPhoneme.ValidateOverlap: scale OTO timing by VEL,
+            // then constrain it against the preceding phoneme before storing
+            // the effective preutter used by phrase placement.
             if let Some(vb) = singer {
                 if let Some(oto) = vb.lookup(&ph.phoneme, note.tone) {
-                    ph.leading_ms = oto.preutter;
-                    ph.overlap_ms = oto.overlap;
-                    ph.auto_preutter = oto.preutter;
-                    ph.auto_overlap = oto.overlap;
-                    ph.max_oto_preutter = oto.preutter;
+                    let velocity = note
+                        .phoneme_expressions
+                        .iter()
+                        .find(|expression| {
+                            expression.abbr == domain::expression::VEL
+                                && expression.index == Some(ph.index)
+                        })
+                        .map(|expression| expression.value)
+                        .unwrap_or(100.0);
+                    let consonant_stretch = 2.0_f64.powf(f64::from(1.0_f32 - velocity / 100.0_f32));
+                    let mut auto_preutter = oto.preutter * consonant_stretch;
+                    let mut auto_overlap = oto.overlap * consonant_stretch;
+                    ph.max_oto_preutter = auto_preutter;
+                    ph.adjacent = false;
+                    ph.tail_intrude = 0.0;
+                    ph.tail_overlap = 0.0;
+
+                    if let Some(previous) = before.last() {
+                        let gap_ms = ph.position_ms - (previous.position_ms + previous.duration_ms);
+                        let previous_duration_ms = previous.duration_ms;
+                        let mut max_preutter = auto_preutter;
+                        if gap_ms <= 0.0 {
+                            ph.adjacent = true;
+                            if auto_overlap > 0.0 {
+                                if auto_preutter - auto_overlap > previous_duration_ms * 0.5 {
+                                    max_preutter = previous_duration_ms * 0.5
+                                        / (auto_preutter - auto_overlap)
+                                        * auto_preutter;
+                                }
+                            } else {
+                                max_preutter = max_preutter.min(previous_duration_ms * 0.9);
+                            }
+                            max_preutter = max_preutter.min(previous_duration_ms);
+                            if previous.leading_ms < 5.0 {
+                                max_preutter = max_preutter
+                                    .min(previous_duration_ms + previous.leading_ms - 5.0);
+                            }
+                        } else if gap_ms < auto_preutter {
+                            max_preutter = gap_ms;
+                        }
+                        if auto_preutter > max_preutter {
+                            let ratio = max_preutter / auto_preutter;
+                            auto_preutter = max_preutter;
+                            auto_overlap *= ratio;
+                        }
+                        if auto_overlap < 0.0 {
+                            auto_overlap = auto_overlap
+                                .max((35.0 - previous_duration_ms + auto_preutter).min(0.0));
+                        }
+                    }
+
+                    ph.auto_preutter = auto_preutter;
+                    ph.auto_overlap = auto_overlap;
+                    ph.leading_ms = (auto_preutter + ph.preutter_delta.unwrap_or(0.0)).max(0.0);
+                    ph.overlap_ms = auto_overlap + ph.overlap_delta.unwrap_or(0.0);
+                    ph.overlapped = ph.adjacent && ph.overlap_ms > 0.0;
                 }
             }
         }
@@ -166,6 +220,27 @@ mod tests {
         assert_close(phs[0].auto_preutter, 90.0);
         assert_close(phs[0].auto_overlap, 45.0);
         assert_close(phs[0].max_oto_preutter, 90.0);
+    }
+
+    #[test]
+    fn velocity_stretches_effective_preutter_and_overlap() {
+        let axis = axis_120bpm();
+        let vb = en_vccv_voicebank();
+        let mut note = note(0, 480, 60);
+        note.phoneme_expressions.push(domain::UExpression {
+            index: Some(0),
+            abbr: domain::expression::VEL.to_string(),
+            value: 150.0,
+        });
+        let notes = [note];
+        // -h@ has OTO preutter 90 / overlap 45. OpenUtau applies
+        // 2^(1 - VEL/100) before constructing the phrase origin.
+        let mut phs = [phoneme("-h@", 0, 480, 0)];
+        TimingEngine.process(&notes, 0, &mut phs, &axis, Some(&vb));
+        let scale = 2.0_f64.powf(-0.5);
+        assert_close(phs[0].leading_ms, 90.0 * scale);
+        assert_close(phs[0].overlap_ms, 45.0 * scale);
+        assert_close(phs[0].max_oto_preutter, 90.0 * scale);
     }
 
     #[test]

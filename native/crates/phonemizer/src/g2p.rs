@@ -71,7 +71,12 @@ impl G2pDictionary {
     }
 
     /// Register `symbol` with its classification.
-    pub fn add_symbol(&mut self, symbol: impl Into<String>, is_vowel: bool, is_glide: bool) -> &mut Self {
+    pub fn add_symbol(
+        &mut self,
+        symbol: impl Into<String>,
+        is_vowel: bool,
+        is_glide: bool,
+    ) -> &mut Self {
         self.symbols
             .insert(symbol.into(), SymbolInfo { is_vowel, is_glide });
         self
@@ -84,7 +89,8 @@ impl G2pDictionary {
         let symbol = symbol.into();
         let is_vowel = ty == "vowel";
         let is_glide = matches!(ty, "semivowel" | "liquid");
-        self.symbols.insert(symbol, SymbolInfo { is_vowel, is_glide });
+        self.symbols
+            .insert(symbol, SymbolInfo { is_vowel, is_glide });
         self
     }
 

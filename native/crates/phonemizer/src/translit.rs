@@ -90,8 +90,22 @@ pub fn mora_to_english(mora: &str) -> Option<&'static [&'static str]> {
 pub fn is_english_vowel(symbol: &str) -> bool {
     matches!(
         symbol,
-        "a" | "e" | "i" | "o" | "u" | "A" | "E" | "I" | "O" | "U" | "3"
-            | "aI" | "aU" | "eI" | "oU" | "@" | "{"
+        "a" | "e"
+            | "i"
+            | "o"
+            | "u"
+            | "A"
+            | "E"
+            | "I"
+            | "O"
+            | "U"
+            | "3"
+            | "aI"
+            | "aU"
+            | "eI"
+            | "oU"
+            | "@"
+            | "{"
     )
 }
 

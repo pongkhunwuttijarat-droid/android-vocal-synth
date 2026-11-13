@@ -36,41 +36,41 @@ const VOWEL_ROWS: &[(&str, &[&str])] = &[
     (
         "a",
         &[
-            "ぁ", "あ", "か", "が", "さ", "ざ", "た", "だ", "な", "は", "ば", "ぱ", "ま", "ゃ", "や",
-            "ら", "わ", "ァ", "ア", "カ", "ガ", "サ", "ザ", "タ", "ダ", "ナ", "ハ", "バ", "パ", "マ",
-            "ャ", "ヤ", "ラ", "ワ", "a",
+            "ぁ", "あ", "か", "が", "さ", "ざ", "た", "だ", "な", "は", "ば", "ぱ", "ま", "ゃ",
+            "や", "ら", "わ", "ァ", "ア", "カ", "ガ", "サ", "ザ", "タ", "ダ", "ナ", "ハ", "バ",
+            "パ", "マ", "ャ", "ヤ", "ラ", "ワ", "a",
         ],
     ),
     (
         "i",
         &[
-            "ぃ", "い", "き", "ぎ", "し", "じ", "ち", "ぢ", "に", "ひ", "び", "ぴ", "み", "り", "ゐ",
-            "ィ", "イ", "キ", "ギ", "シ", "ジ", "チ", "ヂ", "ニ", "ヒ", "ビ", "ピ", "ミ", "リ", "ヰ",
-            "i",
+            "ぃ", "い", "き", "ぎ", "し", "じ", "ち", "ぢ", "に", "ひ", "び", "ぴ", "み", "り",
+            "ゐ", "ィ", "イ", "キ", "ギ", "シ", "ジ", "チ", "ヂ", "ニ", "ヒ", "ビ", "ピ", "ミ",
+            "リ", "ヰ", "i",
         ],
     ),
     (
         "u",
         &[
-            "ぅ", "う", "く", "ぐ", "す", "ず", "つ", "づ", "ぬ", "ふ", "ぶ", "ぷ", "む", "ゅ", "ゆ",
-            "る", "ゥ", "ウ", "ク", "グ", "ス", "ズ", "ツ", "ヅ", "ヌ", "フ", "ブ", "プ", "ム", "ュ",
-            "ユ", "ル", "ヴ", "u",
+            "ぅ", "う", "く", "ぐ", "す", "ず", "つ", "づ", "ぬ", "ふ", "ぶ", "ぷ", "む", "ゅ",
+            "ゆ", "る", "ゥ", "ウ", "ク", "グ", "ス", "ズ", "ツ", "ヅ", "ヌ", "フ", "ブ", "プ",
+            "ム", "ュ", "ユ", "ル", "ヴ", "u",
         ],
     ),
     (
         "e",
         &[
-            "ぇ", "え", "け", "げ", "せ", "ぜ", "て", "で", "ね", "へ", "べ", "ぺ", "め", "れ", "ゑ",
-            "ェ", "エ", "ケ", "ゲ", "セ", "ゼ", "テ", "デ", "ネ", "ヘ", "ベ", "ペ", "メ", "レ", "ヱ",
-            "e",
+            "ぇ", "え", "け", "げ", "せ", "ぜ", "て", "で", "ね", "へ", "べ", "ぺ", "め", "れ",
+            "ゑ", "ェ", "エ", "ケ", "ゲ", "セ", "ゼ", "テ", "デ", "ネ", "ヘ", "ベ", "ペ", "メ",
+            "レ", "ヱ", "e",
         ],
     ),
     (
         "o",
         &[
-            "ぉ", "お", "こ", "ご", "そ", "ぞ", "と", "ど", "の", "ほ", "ぼ", "ぽ", "も", "ょ", "よ",
-            "ろ", "を", "ォ", "オ", "コ", "ゴ", "ソ", "ゾ", "ト", "ド", "ノ", "ホ", "ボ", "ポ", "モ",
-            "ョ", "ヨ", "ロ", "ヲ", "o",
+            "ぉ", "お", "こ", "ご", "そ", "ぞ", "と", "ど", "の", "ほ", "ぼ", "ぽ", "も", "ょ",
+            "よ", "ろ", "を", "ォ", "オ", "コ", "ゴ", "ソ", "ゾ", "ト", "ド", "ノ", "ホ", "ボ",
+            "ポ", "モ", "ョ", "ヨ", "ロ", "ヲ", "o",
         ],
     ),
     ("n", &["ん", "n"]),
@@ -94,11 +94,27 @@ fn vowel_lookup() -> &'static HashMap<&'static str, &'static str> {
 /// Tail vowel of a single mora (`か` → `Some("a")`, `ん` → `Some("n")`,
 /// `っ` / `ー` / unknown → `None`).
 pub fn tail_vowel(mora: &str) -> Option<&'static str> {
-    vowel_lookup().get(mora).copied()
+    if let Some(vowel) = vowel_lookup().get(mora) {
+        return Some(vowel);
+    }
+    let mut chars = mora.chars();
+    chars.next()?;
+    let small_yoon = chars.next()?;
+    if chars.next().is_some() || !is_small_yoon(small_yoon) {
+        return None;
+    }
+    match small_yoon {
+        'ゃ' | 'ャ' => Some("a"),
+        'ゅ' | 'ュ' => Some("u"),
+        'ょ' | 'ョ' => Some("o"),
+        _ => None,
+    }
 }
 
-/// Kana that are vowels on their own (a single-phoneme mora).
-fn is_pure_vowel_mora(mora: &str) -> bool {
+/// Kana that are vowels on their own (a single-phoneme mora). Shared with
+/// the T013 composition engine, which must not append a tail vowel after
+/// pure vowel morae.
+pub fn is_pure_vowel_mora(mora: &str) -> bool {
     let mut chars = mora.chars();
     let Some(c) = chars.next() else {
         return false;
@@ -229,14 +245,8 @@ impl Phonemizer for JapaneseVcvPhonemizer {
                         .enumerate()
                     {
                         let candidates = vec![token.clone(), format!("- {token}")];
-                        let mut ph = make_phoneme(
-                            token.clone(),
-                            pos,
-                            dur,
-                            i as i32,
-                            note.tone,
-                            nidx,
-                        );
+                        let mut ph =
+                            make_phoneme(token.clone(), pos, dur, i as i32, note.tone, nidx);
                         resolve(&mut ph, singer, note.tone, &candidates);
                         out.push(ph);
                     }
@@ -404,8 +414,11 @@ mod tests {
             "_sau+_sau+_s-.wav=- a,100.0,100.0,-275.001,1.994,10.0\n",
         );
         let parsed = parse_oto_ini(ini.as_bytes(), None);
-        let oto_map: HashMap<String, _> =
-            parsed.otos.into_iter().map(|o| (o.alias.clone(), o)).collect();
+        let oto_map: HashMap<String, _> = parsed
+            .otos
+            .into_iter()
+            .map(|o| (o.alias.clone(), o))
+            .collect();
         Voicebank {
             name: "jp-test".into(),
             base_path: Default::default(),
@@ -443,6 +456,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn yoon_morae_preserve_their_tail_vowel() {
+        assert_eq!(tail_vowel("じゃ"), Some("a"));
+        assert_eq!(tail_vowel("しゅ"), Some("u"));
+        assert_eq!(tail_vowel("ちょ"), Some("o"));
+        assert_eq!(tail_vowel("ジャ"), Some("a"));
+    }
+
     /// Regression (T9): a single `sa` note used to be split into the
     /// consonant `s` and the tail `- a` with the note duration divided
     /// EVENLY — the vowel only started at 750 ms of a 1500 ms note, which is
@@ -453,7 +474,10 @@ mod tests {
         let vb = jp_voicebank();
         let phs = JapaneseVcvPhonemizer.process(&[note("sa")], Some(&vb));
         assert_eq!(phs.len(), 1, "one phoneme per note, got {phs:?}");
-        assert_eq!(phs[0].phoneme, "- sa", "VCV alias, as the reference picks it");
+        assert_eq!(
+            phs[0].phoneme, "- sa",
+            "VCV alias, as the reference picks it"
+        );
         assert_eq!(phs[0].position, 0);
         assert_eq!(phs[0].duration, 1440, "the phoneme owns the whole note");
     }
@@ -468,4 +492,3 @@ mod tests {
         assert!(phs.len() > 1, "expected the mora split, got {phs:?}");
     }
 }
-

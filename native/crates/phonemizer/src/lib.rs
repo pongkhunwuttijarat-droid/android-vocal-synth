@@ -28,22 +28,31 @@
 //! `OpenUtau.Core/Classic/ClassicSinger.cs`.
 
 pub mod adapter;
+pub mod composition;
 pub mod default;
 pub mod detect;
 pub mod english;
 pub mod g2p;
 pub mod ipa;
 pub mod japanese;
-pub mod lilt_dict;
+pub mod rusted_utau_dict;
 pub mod phonemizer;
+pub mod selection;
+pub mod thai;
 pub mod timing;
 pub mod translit;
 pub mod universal;
 
+pub use composition::{
+    AliasResolution, AliasResolutionKind, CompositionCandidate, CompositionRequest,
+    CompositionResult, Language, MappingMode, NotePronunciation, PhonemeComposer, Strategy, Style,
+    DEFAULT_LIMIT, MAX_INPUT_CHARS, MAX_LIMIT,
+};
 pub use default::DefaultPhonemizer;
 pub use domain::UPhoneme as Phoneme;
 pub use english::EnglishCvvcPhonemizer;
 pub use g2p::{G2p, G2pDictionary, G2pFallbacks, AP, SP};
 pub use japanese::{split_morae, tail_vowel, JapaneseVcvPhonemizer};
 pub use phonemizer::{make_phoneme, Phonemizer};
+pub use selection::PhonemizerKind;
 pub use timing::TimingEngine;

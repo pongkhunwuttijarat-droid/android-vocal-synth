@@ -14,8 +14,8 @@ use phonemizer::adapter::IpaAdapter;
 use phonemizer::ipa::IpaDictionary;
 use phonemizer::universal::UniversalPhonemizer;
 use phonemizer::Phonemizer;
-use voicebank::manifest::PhonemeManifest;
 use voicebank::load_voicebank;
+use voicebank::manifest::PhonemeManifest;
 
 fn teto() -> (voicebank::Voicebank, PhonemeManifest) {
     let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -71,7 +71,11 @@ fn unhinted_english_lyric_goes_through_ipa() {
     let out = ph.process(&notes, Some(&vb));
     assert!(!out.is_empty());
     let phonemes: Vec<&str> = out.iter().map(|p| p.phoneme.as_str()).collect();
-    assert_eq!(phonemes, ["na"], "bank has direct alias 'na' — use it, not l+A split: {phonemes:?}");
+    assert_eq!(
+        phonemes,
+        ["na"],
+        "bank has direct alias 'na' — use it, not l+A split: {phonemes:?}"
+    );
 }
 
 #[test]
@@ -86,7 +90,10 @@ fn unhinted_japanese_lyric_detects_and_runs() {
     // empty output).
     let notes = [note("ら", 60)];
     let out = ph.process(&notes, Some(&vb));
-    assert!(!out.is_empty(), "kana lyric must produce at least one phoneme");
+    assert!(
+        !out.is_empty(),
+        "kana lyric must produce at least one phoneme"
+    );
 }
 
 #[test]
@@ -117,6 +124,10 @@ fn letter_split_resolves_zzz_to_phonemes() {
     let out = ph.process(&notes, Some(&vb));
     assert_eq!(out.len(), 3);
     for p in &out {
-        assert!(vb.lookup_plain(&p.phoneme).is_some(), "unresolved: {}", p.phoneme);
+        assert!(
+            vb.lookup_plain(&p.phoneme).is_some(),
+            "unresolved: {}",
+            p.phoneme
+        );
     }
 }

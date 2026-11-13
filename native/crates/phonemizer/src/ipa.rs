@@ -22,7 +22,7 @@ pub struct IpaDictionary {
 
 impl IpaDictionary {
     /// The known-good subset for Teto English (ARPABET symbols that the
-    /// bank + lilt_dict actually use).
+    /// bank + rusted_utau_dict actually use).
     pub fn en_subset() -> Self {
         let mut d = IpaDictionary::default();
         // Vowels (monophthongs + diphthongs)
@@ -100,6 +100,10 @@ impl IpaDictionary {
 pub fn ipa_to_symbols(dict: &IpaDictionary, symbols: &[&str]) -> Vec<String> {
     symbols
         .iter()
-        .map(|s| dict.ipa(s).map(str::to_string).unwrap_or_else(|| (*s).to_string()))
+        .map(|s| {
+            dict.ipa(s)
+                .map(str::to_string)
+                .unwrap_or_else(|| (*s).to_string())
+        })
         .collect()
 }
