@@ -1,4 +1,4 @@
-package com.lilt.lilt
+package com.rustedutau.app
 
 import android.content.ContentValues
 import android.os.Bundle
@@ -21,7 +21,7 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
-            "com.lilt.lilt/engine",
+            "com.rustedutau.app/engine",
         ).setMethodCallHandler { call, result ->
             when (call.method) {
                 "engineDir" -> {
@@ -34,6 +34,14 @@ class MainActivity : FlutterActivity() {
                 }
                 "engineRunning" -> {
                     result.success(EngineProcess.isRunning())
+                }
+                "streamCredential" -> {
+                    val credential = EngineProcess.streamCredential()
+                    if (credential == null) {
+                        result.error("engine_unavailable", "Local engine has not started", null)
+                    } else {
+                        result.success(credential)
+                    }
                 }
                 "writeProject" -> {
                     // Editor → engine: persist the .ustx the UI built from
@@ -58,7 +66,7 @@ class MainActivity : FlutterActivity() {
                     // that's why no permission dialog appears.
                     try {
                         val bytes = call.argument<ByteArray>("bytes")
-                        val name = call.argument<String>("fileName") ?: "lilt-export.wav"
+                        val name = call.argument<String>("fileName") ?: "rusted-utau-export.wav"
                         if (bytes == null || bytes.isEmpty()) {
                             result.error("empty", "no wav bytes", null)
                             return@setMethodCallHandler
@@ -66,7 +74,7 @@ class MainActivity : FlutterActivity() {
                         val values = ContentValues().apply {
                             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
                             put(MediaStore.MediaColumns.MIME_TYPE, "audio/wav")
-                            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Lilt")
+                            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/rusted Utau")
                             put(MediaStore.MediaColumns.IS_PENDING, 1)
                         }
                         val uri = contentResolver.insert(

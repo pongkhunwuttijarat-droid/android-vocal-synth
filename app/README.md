@@ -1,6 +1,6 @@
-# lilt
+# rusted Utau
 
-A new Flutter project.
+Android client for the rusted Utau vocal editor.
 
 ## Getting Started
 

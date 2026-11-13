@@ -1,9 +1,11 @@
-package com.lilt.lilt
+package com.rustedutau.app
 
 import android.content.Context
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
+import java.security.SecureRandom
+import android.util.Base64
 
 /**
  * Spawns the bundled synth-server (Rust, aarch64) as a child process and
@@ -25,11 +27,13 @@ import java.io.FileOutputStream
  * and the EngineClient interface swaps transport without touching UI.
  */
 object EngineProcess {
-    private const val TAG = "LiltEngine"
+    private const val TAG = "RustedUtauEngine"
     private const val PORT = 18080
 
     @Volatile
     private var process: Process? = null
+    @Volatile
+    private var launchCredential: String? = null
 
     /** Extract bundled engine assets into [dir] (idempotent). */
     private fun extractAssets(context: Context, dir: File) {
@@ -144,12 +148,22 @@ object EngineProcess {
                 add("--port"); add(PORT.toString())
                 add("--bind"); add("127.0.0.1")
             }
-            Log.i(TAG, "starting engine: $cmd")
+            val credentialBytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
+            val credential = Base64.encodeToString(
+                credentialBytes,
+                Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
+            )
 
             try {
                 val pb = ProcessBuilder(cmd)
+                // Keep the secret out of argv/logcat. The local WebView gets
+                // the same launch-scoped value from the native method bridge.
+                pb.environment()["RUSTED_UTAU_STREAM_CREDENTIAL"] = credential
+                pb.environment()["RUSTED_UTAU_STREAM_ALLOWED_ORIGINS"] =
+                    "https://appassets.androidplatform.net"
                 pb.redirectErrorStream(true)
                 process = pb.start()
+                launchCredential = credential
                 // Drain stdout so the pipe never fills up and blocks the server.
                 Thread {
                     try {
@@ -170,11 +184,15 @@ object EngineProcess {
         }
     }
 
+    /** Credential for the trusted WebView native bridge; never serve it over HTTP. */
+    fun streamCredential(): String? = launchCredential
+
     /** Stop the server (called when the app process is going away). */
     fun stop() {
         synchronized(this) {
             process?.destroy()
             process = null
+            launchCredential = null
         }
     }
 

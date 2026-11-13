@@ -1,4 +1,4 @@
-# Lilt / Android Voice Synth
+# Rusted UTAU / Android Voice Synth
 
 > Singing-synthesis engine and pen-first editor, derived from the OpenUtau
 > architecture and targeting native/Android as well as a static WASM web app.

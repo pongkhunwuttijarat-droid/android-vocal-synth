@@ -2,7 +2,7 @@
 
 ## Engine-owned product state (mandatory)
 
-For Lilt, Rust is the single source of truth for all authoritative musical and project state across **every host** (Flutter/Android, Web/WASM, and future desktop/Tauri). Frontends are UI-only clients: they present engine-provided views, send user intents as engine commands, and render engine results. Do not implement a second project model, musical rule set, edit history, serializer, or render-planning authority in Flutter, JavaScript/TypeScript, or another UI layer.
+For Rusted UTAU, Rust is the single source of truth for all authoritative musical and project state across **every host** (Flutter/Android, Web/WASM, and future desktop/Tauri). Frontends are UI-only clients: they present engine-provided views, send user intents as engine commands, and render engine results. Do not implement a second project model, musical rule set, edit history, serializer, or render-planning authority in Flutter, JavaScript/TypeScript, or another UI layer.
 
 ### State that belongs to the Rust engine
 
@@ -43,10 +43,19 @@ The existing Web `Driver` already routes project edits through `engine-wasm`, bu
 
 Never write to the mainstream project this repository was forked from. Work locally and publish only to a confirmed repository owned by the user, subject to the global instructions.
 
+## Agent task board
+
+- Read [`docs/work/BOARD.md`](docs/work/BOARD.md) at the start of a task and before taking over work from another harness or agent.
+- For work that spans more than one focused editing session, create or update a task record in `docs/work/tasks/` and add its link to the board. Small one-shot changes may stay untracked.
+- Update the task record when meaningful progress changes, when blocked, and before handing work off or ending a session. Keep the board row concise; the task record is the handoff source of truth.
+- Record the repository branch and base commit, relevant dirty files, exact verification commands and outcomes, blockers, and the next concrete step. Do not claim existing edits unless their ownership is known; describe unowned working-tree changes as such.
+- Use ISO 8601 UTC timestamps. An `active` status records the last known state; it does not prove an agent is still running. Include a last-updated time so a receiving harness can check freshness.
+- Keep durable task details and artifacts in the repository or link to stable locations. Do not rely on chat history, machine-local temporary files, or harness-specific IDs as the only handoff record.
+- Mark work `done` only when its stated completion criteria are met. Move completed task records to `docs/work/archive/` when the active board becomes crowded.
+
 ## Verification expectations
 
 - Rust command/model tests cover validation, atomicity, group undo/redo, serialization round-trip, and host parity.
 - Host tests verify commands update the authoritative Rust document and that saved/rendered documents reflect those commands.
 - UI tests assert presentation and command dispatch; do not duplicate Rust musical-rule tests in frontend code.
 - Report any unverified build/test result honestly.
-
