@@ -98,8 +98,8 @@ pub fn scan_voicebanks(root: &Path) -> Result<ScanResult, String> {
         vec![root.to_path_buf()]
     } else {
         let mut dirs = Vec::new();
-        for entry in std::fs::read_dir(root)
-            .map_err(|e| format!("read_dir {}: {e}", root.display()))?
+        for entry in
+            std::fs::read_dir(root).map_err(|e| format!("read_dir {}: {e}", root.display()))?
         {
             let entry = entry.map_err(|e| format!("read_dir entry: {e}"))?;
             if entry.path().is_dir() {

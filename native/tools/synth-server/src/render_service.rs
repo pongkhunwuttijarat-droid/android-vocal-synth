@@ -9,13 +9,108 @@
 //! serialized on the worker, which the library requires anyway.
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use synth_cli::pipeline::{self, RenderReport};
+use media::{FileMediaSource, MediaSource, MemoryMediaSource};
+use synth_cli::pipeline::{self, MixdownReport, RenderReport, StreamMixdownReport};
 use tokio::sync::oneshot;
 use voicebank::Voicebank;
+
+/// Host asset resolver for wave (audio) parts.
+///
+/// `None` = this host serves no media, so every wave part is reported as
+/// skipped instead of silently dropped. It is the host's job to resolve a
+/// logical `media_ref` to bytes; the engine owns everything after that.
+pub type SharedMedia = Arc<dyn MediaSource + Send + Sync>;
+
+struct UploadedMediaResolver {
+    uploaded: MemoryMediaSource,
+    files: Option<FileMediaSource>,
+    uploaded_root: Arc<std::sync::RwLock<Option<PathBuf>>>,
+}
+
+impl MediaSource for UploadedMediaResolver {
+    fn load(&self, media_ref: &str) -> Result<Vec<u8>, String> {
+        self.uploaded.load(media_ref).or_else(|_| {
+            if let Some(id) = media_ref.strip_prefix("asset:") {
+                let root = self
+                    .uploaded_root
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone();
+                if let Some(root) = root {
+                    if !id.is_empty()
+                        && id
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                    {
+                        if let Ok(bytes) = std::fs::read(root.join(format!("{id}.media"))) {
+                            return Ok(bytes);
+                        }
+                    }
+                }
+            }
+            self.files
+                .as_ref()
+                .ok_or_else(|| format!("no uploaded media registered for '{media_ref}'"))?
+                .load(media_ref)
+        })
+    }
+}
+
+/// Chunk counters shared with the owner of a render job (§6.13 item 3).
+///
+/// The pipeline writes `done`/`total` at chunk boundaries only; the counters
+/// are therefore the *coarsest* honest progress a client can show, and a
+/// reader must treat a missing update as "no chunk finished yet", never as a
+/// stall verdict.
+#[derive(Debug, Default)]
+pub struct ProgressCounters {
+    done: AtomicUsize,
+    total: AtomicUsize,
+    /// Set by the first pipeline callback. This is how a job's owner can tell
+    /// "still queued behind another render" from "the worker picked it up" —
+    /// the worker has a single serial queue and reports nothing else.
+    started: AtomicBool,
+}
+
+impl ProgressCounters {
+    /// `(done_chunks, total_chunks)`; `total == 0` means the plan is not known.
+    pub fn snapshot(&self) -> (usize, usize) {
+        (
+            self.done.load(Ordering::Relaxed),
+            self.total.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Whether the render worker has begun this job.
+    pub fn is_started(&self) -> bool {
+        self.started.load(Ordering::Acquire)
+    }
+
+    /// Record the chunk counters the pipeline reported.
+    pub fn report(&self, done: usize, total: usize) {
+        // The pipeline can render chunks on Rayon workers, so callbacks may
+        // arrive out of order. Never let a slower callback move the UI's
+        // progress bar backwards.
+        self.total.store(total, Ordering::Relaxed);
+        self.done.fetch_max(done, Ordering::Relaxed);
+        self.started.store(true, Ordering::Release);
+    }
+}
+
+/// Where a render job reads its project from.
+enum ProjectSource {
+    /// Legacy: the worker re-reads the file (preserved behavior, §6.13 item 8).
+    Path(PathBuf),
+    /// v2: an immutable snapshot serialized at revision R by the session
+    /// (§6.13 item 9 — the worker must never re-read a file that may have
+    /// changed since the job started).
+    Yaml(String),
+}
 
 /// Chunk render cache capacity (same as the synth-cli CLI default). The
 /// pipeline caches rendered PCM chunks keyed by chunk hash + engine salt,
@@ -23,6 +118,44 @@ use voicebank::Voicebank;
 /// instead of re-synthesizing the whole song (a 14 s demo ≈ 6.6 s of
 /// mel→vocoder per fresh render).
 const RENDER_CACHE_BYTES: usize = 64 << 20;
+/// At most one complete PCM block may wait for a transport consumer.
+pub const STREAM_QUEUE_BLOCKS: usize = 1;
+/// Do not let an abandoned transport pin the serial render worker forever.
+pub const STREAM_QUEUE_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn send_stream_event(
+    events: &mpsc::SyncSender<StreamRenderEvent>,
+    mut event: StreamRenderEvent,
+    cancel: Option<&AtomicBool>,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return Err("render cancelled".to_string());
+        }
+        match events.try_send(event) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                return Err("stream consumer disconnected".to_string());
+            }
+            Err(mpsc::TrySendError::Full(returned)) => {
+                event = returned;
+                if Instant::now() >= deadline {
+                    return Err("stream consumer idle timeout".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+    }
+}
+
+/// One bounded producer event from a pinned mixdown stream.
+#[derive(Debug)]
+pub enum StreamRenderEvent {
+    Data { frame_start: u64, samples: Vec<f32> },
+    Finished(Result<StreamMixdownReport, String>),
+}
 
 /// One unit of work for the render worker.
 enum RenderJob {
@@ -37,7 +170,7 @@ enum RenderJob {
     /// `render`: render every voice part of a track of a `.ustx` project.
     /// The project is loaded on the worker (pure Rust, no .so needed).
     RenderProject {
-        project_path: PathBuf,
+        source: ProjectSource,
         voicebank: Arc<Voicebank>,
         track: i32,
         /// Engine for the whole render ("r1"/"r2"/"classic").
@@ -45,7 +178,41 @@ enum RenderJob {
         /// Optional per-phrase engines (one id per phrase in render
         /// order) — "ระหว่างท่อน". Empty = use `engine` for everything.
         engines: Vec<String>,
+        /// Stable-session choices aligned to voice parts/notes, if the render
+        /// was requested from a live project session.
+        pronunciations: Option<Vec<Vec<Option<domain::UPronunciation>>>>,
+        /// Resolver for this track's wave (audio) parts. `None` when the host
+        /// serves no media; wave parts are then reported as skipped.
+        media: Option<SharedMedia>,
+        /// Per-job cancel flag. `None` = the legacy shared flag (`/cancel`),
+        /// which is what v1 clients still drive.
+        cancel: Option<Arc<AtomicBool>>,
+        /// Per-job chunk counters, when the caller wants progress.
+        progress: Option<Arc<ProgressCounters>>,
         reply: oneshot::Sender<Result<RenderReport, String>>,
+    },
+    /// Render every track plus wave parts into OpenUtau's stereo mixdown.
+    RenderMixdown {
+        yaml: String,
+        voicebank: Arc<Voicebank>,
+        engine: String,
+        media: Option<SharedMedia>,
+        pronunciations: Vec<Vec<Vec<Option<domain::UPronunciation>>>>,
+        cancel: Arc<AtomicBool>,
+        progress: Arc<ProgressCounters>,
+        reply: oneshot::Sender<Result<MixdownReport, String>>,
+    },
+    /// Incremental full-project mixdown. The bounded synchronous channel
+    /// applies backpressure directly to the render worker.
+    RenderMixdownStream {
+        yaml: String,
+        voicebanks: Vec<Option<Arc<Voicebank>>>,
+        engine: String,
+        media: Option<SharedMedia>,
+        pronunciations: Vec<Vec<Vec<Option<domain::UPronunciation>>>>,
+        cancel: Arc<AtomicBool>,
+        progress: Arc<ProgressCounters>,
+        events: mpsc::SyncSender<StreamRenderEvent>,
     },
     /// Hard Stop: abort the in-flight render. Sets the shared cancel flag
     /// the pipeline checks between chunks; the worker also drains queued
@@ -67,6 +234,11 @@ enum RenderJob {
 #[derive(Clone)]
 pub struct RenderService {
     tx: mpsc::Sender<RenderJob>,
+    /// Resolver handed to every render job so a track's wave (audio) parts can
+    /// be mixed in. `None` when the host was started without a media root.
+    media: Option<SharedMedia>,
+    uploaded_media: MemoryMediaSource,
+    uploaded_media_root: Arc<std::sync::RwLock<Option<PathBuf>>>,
     /// Shared cancel flag: set directly by [`RenderService::cancel`]
     /// (NOT via the channel — the worker is blocked inside a render when
     /// Stop is pressed, so a queued Cancel job would only land after the
@@ -88,11 +260,24 @@ impl RenderService {
         ds_model: Option<PathBuf>,
         moe_prefix: Option<PathBuf>,
         moe_vocoder: Option<PathBuf>,
+        media_root: Option<PathBuf>,
     ) -> Result<Self, String> {
         let (tx, rx) = mpsc::channel::<RenderJob>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_for_worker = cancel.clone();
+        // Resolution follows OpenUtau's `UWavePart.AfterLoad`: the reference is
+        // combined with the project folder, and real `.ustx` files do point
+        // outside it, so this is `new` (not `restricted`) — the same trust
+        // decision `FileMediaSource` documents.
+        let uploaded_media = MemoryMediaSource::new();
+        let uploaded_media_root = Arc::new(std::sync::RwLock::new(None));
+        let files = media_root.clone().map(FileMediaSource::new);
+        let media: Option<SharedMedia> = Some(Arc::new(UploadedMediaResolver {
+            uploaded: uploaded_media.clone(),
+            files,
+            uploaded_root: uploaded_media_root.clone(),
+        }));
         std::thread::Builder::new()
             .name("synth-render".to_string())
             .spawn(move || {
@@ -114,7 +299,27 @@ impl RenderService {
         ready_rx
             .recv()
             .map_err(|_| "render worker died during startup".to_string())??;
-        Ok(RenderService { tx, cancel })
+        Ok(RenderService {
+            tx,
+            media,
+            uploaded_media,
+            uploaded_media_root,
+            cancel,
+        })
+    }
+
+    /// Register one host-uploaded audio asset under its opaque logical key.
+    pub fn register_media(&self, media_ref: impl Into<String>, bytes: Vec<u8>) {
+        self.uploaded_media.insert(media_ref, bytes);
+    }
+
+    /// Configure persistent storage for `asset:<id>` uploads. Reads are lazy,
+    /// so a restart does not preload large media files into memory.
+    pub fn set_uploaded_media_root(&self, root: PathBuf) {
+        *self
+            .uploaded_media_root
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(root);
     }
 
     /// Render one note with a single phoneme (see `pipeline::synth_note`).
@@ -155,11 +360,16 @@ impl RenderService {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(RenderJob::RenderProject {
-                project_path,
+                source: ProjectSource::Path(project_path),
                 voicebank,
                 track,
                 engine: engine.to_string(),
                 engines,
+                pronunciations: None,
+                media: self.media.clone(),
+                // Legacy path: the shared `/cancel` flag drives it, as before.
+                cancel: None,
+                progress: None,
                 reply: reply_tx,
             })
             .map_err(|e| format!("render worker is gone: {e}"))?;
@@ -168,13 +378,125 @@ impl RenderService {
             .map_err(|_| "render worker dropped the reply".to_string())?
     }
 
+    /// Render a project from an **immutable snapshot** with its own cancel flag
+    /// and progress counters (§6.13 items 1, 3, 9).
+    ///
+    /// `cancel` belongs to this job alone: setting it stops this render and
+    /// leaves other queued jobs untouched. `progress` is written at chunk
+    /// boundaries by the worker.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn render_project_snapshot(
+        &self,
+        yaml: String,
+        voicebank: Arc<Voicebank>,
+        track: i32,
+        engine: &str,
+        engines: Vec<String>,
+        cancel: Arc<AtomicBool>,
+        progress: Arc<ProgressCounters>,
+    ) -> Result<RenderReport, String> {
+        self.render_project_snapshot_with_pronunciations(
+            yaml, voicebank, track, engine, engines, None, cancel, progress,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn render_project_snapshot_with_pronunciations(
+        &self,
+        yaml: String,
+        voicebank: Arc<Voicebank>,
+        track: i32,
+        engine: &str,
+        engines: Vec<String>,
+        pronunciations: Option<Vec<Vec<Option<domain::UPronunciation>>>>,
+        cancel: Arc<AtomicBool>,
+        progress: Arc<ProgressCounters>,
+    ) -> Result<RenderReport, String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(RenderJob::RenderProject {
+                source: ProjectSource::Yaml(yaml),
+                voicebank,
+                track,
+                engine: engine.to_string(),
+                engines,
+                pronunciations,
+                media: self.media.clone(),
+                cancel: Some(cancel),
+                progress: Some(progress),
+                reply: reply_tx,
+            })
+            .map_err(|e| format!("render worker is gone: {e}"))?;
+        reply_rx
+            .await
+            .map_err(|_| "render worker dropped the reply".to_string())?
+    }
+
+    /// Render a whole-project stereo mixdown from an immutable session snapshot.
+    pub async fn render_mixdown_snapshot(
+        &self,
+        yaml: String,
+        voicebank: Arc<Voicebank>,
+        engine: &str,
+        pronunciations: Vec<Vec<Vec<Option<domain::UPronunciation>>>>,
+        cancel: Arc<AtomicBool>,
+        progress: Arc<ProgressCounters>,
+    ) -> Result<MixdownReport, String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(RenderJob::RenderMixdown {
+                yaml,
+                voicebank,
+                engine: engine.to_string(),
+                media: self.media.clone(),
+                pronunciations,
+                cancel,
+                progress,
+                reply: reply_tx,
+            })
+            .map_err(|e| format!("render worker is gone: {e}"))?;
+        reply_rx
+            .await
+            .map_err(|_| "render worker dropped the reply".to_string())?
+    }
+
+    /// Start incremental whole-project rendering from an immutable snapshot.
+    /// The returned receiver has a one-block capacity; if the consumer stops
+    /// reading, rendering blocks instead of accumulating the final mix.
+    pub fn render_mixdown_stream_snapshot(
+        &self,
+        yaml: String,
+        voicebanks: Vec<Option<Arc<Voicebank>>>,
+        engine: &str,
+        pronunciations: Vec<Vec<Vec<Option<domain::UPronunciation>>>>,
+        cancel: Arc<AtomicBool>,
+        progress: Arc<ProgressCounters>,
+    ) -> Result<mpsc::Receiver<StreamRenderEvent>, String> {
+        let (events_tx, events_rx) = mpsc::sync_channel(STREAM_QUEUE_BLOCKS);
+        self.tx
+            .send(RenderJob::RenderMixdownStream {
+                yaml,
+                voicebanks,
+                engine: engine.to_string(),
+                media: self.media.clone(),
+                pronunciations,
+                cancel,
+                progress,
+                events: events_tx,
+            })
+            .map_err(|e| format!("render worker is gone: {e}"))?;
+        Ok(events_rx)
+    }
+
     /// Hard Stop: abort the in-flight render. Sets the shared cancel flag
     /// DIRECTLY (not via the channel — the worker is blocked inside the
     /// render when Stop is pressed, so a queued Cancel job would only be
     /// processed after the render finished). The pipeline checks the flag
     /// between chunks and the in-flight reply comes back as an error.
     pub fn cancel(&self) -> Result<(), String> {
-        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
@@ -188,11 +510,7 @@ impl RenderService {
 
     /// Post-synth FX: apply the mixer chain (`params`) to raw samples —
     /// no synthesis. Returns the FX'd samples.
-    pub async fn post_fx(
-        &self,
-        params: String,
-        samples: Vec<f32>,
-    ) -> Result<Vec<f32>, String> {
+    pub async fn post_fx(&self, params: String, samples: Vec<f32>) -> Result<Vec<f32>, String> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(RenderJob::PostFx {
@@ -338,11 +656,15 @@ fn run_worker(
                 let _ = reply.send(result);
             }
             RenderJob::RenderProject {
-                project_path,
+                source,
                 voicebank,
                 track,
                 engine: engine_name,
                 engines: per_phrase,
+                pronunciations,
+                media,
+                cancel: job_cancel,
+                progress: job_progress,
                 reply,
             } => {
                 // Engine select: "r2"/"classic" route to the matching
@@ -363,14 +685,10 @@ fn run_worker(
                     }
                     .map(|b| b.as_ref() as &dyn pipeline::PhraseRenderer)
                 };
-                let default_renderer = resolve(&engine_name).unwrap_or_else(|| {
-                    engines.get("r1").expect("r1 always opened").as_ref()
-                });
+                let default_renderer = resolve(&engine_name)
+                    .unwrap_or_else(|| engines.get("r1").expect("r1 always opened").as_ref());
                 // Per-phrase map: index (in render order) → engine id.
-                let phrase_map: Vec<&str> = per_phrase
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect();
+                let phrase_map: Vec<&str> = per_phrase.iter().map(|s| s.as_str()).collect();
                 // Resolve every phrase's renderer up front — the engines
                 // live for the worker's lifetime in the HashMap, so the
                 // borrows are safe to hand out as 'static for the span
@@ -387,20 +705,45 @@ fn run_worker(
                         }
                     })
                     .collect();
-                let engine_by_phrase_ref: Option<&dyn Fn(usize) -> &'static dyn pipeline::PhraseRenderer> =
-                    if resolved.is_empty() {
-                        None
-                    } else {
-                        Some(&move |idx: usize| -> &'static dyn pipeline::PhraseRenderer {
-                            resolved.get(idx).copied().unwrap_or(unsafe {
-                                std::mem::transmute(default_renderer)
-                            })
-                        })
-                    };
-                // Fresh render: clear any stale cancel flag first.
-                cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+                let engine_by_phrase_ref: Option<
+                    &dyn Fn(usize) -> &'static dyn pipeline::PhraseRenderer,
+                > = if resolved.is_empty() {
+                    None
+                } else {
+                    Some(
+                        &move |idx: usize| -> &'static dyn pipeline::PhraseRenderer {
+                            resolved
+                                .get(idx)
+                                .copied()
+                                .unwrap_or(unsafe { std::mem::transmute(default_renderer) })
+                        },
+                    )
+                };
+                // Cancel: a per-job flag when the caller supplied one (v2),
+                // otherwise the legacy shared flag. The shared flag is cleared
+                // at the start of a fresh render as it always was; a per-job
+                // flag is fresh by construction, so clearing it would only
+                // race with a cancel that arrived while the job was queued.
+                let cancel_ref: &AtomicBool = match job_cancel.as_deref() {
+                    Some(flag) => flag,
+                    None => {
+                        cancel.store(false, Ordering::Relaxed);
+                        &cancel
+                    }
+                };
+                // Chunk counters, when the job asked for progress.
+                let progress_cb: Option<Box<dyn Fn(usize, usize) + Sync>> =
+                    job_progress.as_ref().map(|counters| {
+                        let counters = counters.clone();
+                        Box::new(move |done: usize, total: usize| {
+                            counters.report(done, total);
+                        }) as Box<dyn Fn(usize, usize) + Sync>
+                    });
                 let result = (|| {
-                    let project = pipeline::load_project(&project_path)?;
+                    let project = match &source {
+                        ProjectSource::Path(path) => pipeline::load_project(path)?,
+                        ProjectSource::Yaml(yaml) => pipeline::parse_project(yaml)?,
+                    };
                     // Render cache next to the voicebank (OpenUtau-style
                     // res-{hash} files). On Android this lands in
                     // filesDir/engine/cache — persists across Play/Export.
@@ -408,16 +751,24 @@ fn run_worker(
                         .path
                         .parent()
                         .map(|p| p.join("cache"))
-                        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/lilt-cache"));
-                    let mut cache =
-                        Some(runtime::RenderCache::new_in_dir(&cache_dir, RENDER_CACHE_BYTES));
+                        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/rusted-utau-cache"));
+                    let mut cache = Some(runtime::RenderCache::new_in_dir(
+                        &cache_dir,
+                        RENDER_CACHE_BYTES,
+                    ));
                     let kind = pipeline::PhonemizerKind::from_track(
                         project
                             .tracks
                             .get(track as usize)
                             .ok_or_else(|| format!("track {track} not found"))?,
                     );
-                    pipeline::render_project_with(
+                    // A host without a media root still renders: the voice
+                    // path is unchanged and any wave part is reported as
+                    // skipped with the reason.
+                    let empty_media =
+                        FileMediaSource::new(std::path::PathBuf::from("/nonexistent-media-root"));
+                    let media = media.as_ref().map(|m| m.as_ref()).unwrap_or(&empty_media);
+                    pipeline::render_track_with_media(
                         &project,
                         &voicebank,
                         default_renderer,
@@ -425,12 +776,138 @@ fn run_worker(
                         kind,
                         false,
                         &mut cache,
+                        media,
                         None,
-                        Some(&cancel),
+                        Some(cancel_ref),
                         engine_by_phrase_ref,
+                        progress_cb.as_deref(),
+                        pronunciations.as_deref(),
                     )
                 })();
                 let _ = reply.send(result);
+            }
+            RenderJob::RenderMixdown {
+                yaml,
+                voicebank,
+                engine: engine_name,
+                media: wave_media,
+                pronunciations,
+                cancel: job_cancel,
+                progress: job_progress,
+                reply,
+            } => {
+                let renderer = engines
+                    .get(&engine_name)
+                    .or_else(|| engines.get("r1"))
+                    .expect("r1 always opened");
+                let progress_cb: Option<Box<dyn Fn(usize, usize) + Sync>> = Some(Box::new({
+                    let counters = job_progress.clone();
+                    move |done: usize, total: usize| counters.report(done, total)
+                }));
+                let result = (|| {
+                    let project = pipeline::parse_project(&yaml)?;
+                    let cache_dir = voicebank
+                        .path
+                        .parent()
+                        .map(|p| p.join("cache"))
+                        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/rusted-utau-cache"));
+                    let mut cache = Some(runtime::RenderCache::new_in_dir(
+                        &cache_dir,
+                        RENDER_CACHE_BYTES,
+                    ));
+                    let empty_media =
+                        FileMediaSource::new(std::path::PathBuf::from("/nonexistent-media-root"));
+                    let media = wave_media
+                        .as_ref()
+                        .map(|m| m.as_ref())
+                        .unwrap_or(&empty_media);
+                    pipeline::render_mixdown_with_pronunciations(
+                        &project,
+                        &voicebank,
+                        renderer.as_ref(),
+                        None,
+                        false,
+                        &mut cache,
+                        media,
+                        None,
+                        Some(&job_cancel),
+                        progress_cb.as_deref(),
+                        Some(&pronunciations),
+                    )
+                })();
+                let _ = reply.send(result);
+            }
+            RenderJob::RenderMixdownStream {
+                yaml,
+                voicebanks,
+                engine: engine_name,
+                media: wave_media,
+                pronunciations,
+                cancel: job_cancel,
+                progress: job_progress,
+                events,
+            } => {
+                let renderer = engines
+                    .get(&engine_name)
+                    .or_else(|| engines.get("r1"))
+                    .expect("r1 always opened");
+                let progress_cb: Option<Box<dyn Fn(usize, usize) + Sync>> = Some(Box::new({
+                    let counters = job_progress.clone();
+                    move |done: usize, total: usize| counters.report(done, total)
+                }));
+                let result = (|| {
+                    let project = pipeline::parse_project(&yaml)?;
+                    let cache_dir = voicebanks
+                        .iter()
+                        .flatten()
+                        .next()
+                        .and_then(|bank| bank.path.parent())
+                        .map(|p| p.join("cache"))
+                        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/rusted-utau-cache"));
+                    let mut cache = Some(runtime::RenderCache::new_in_dir(
+                        &cache_dir,
+                        RENDER_CACHE_BYTES,
+                    ));
+                    let empty_media =
+                        FileMediaSource::new(std::path::PathBuf::from("/nonexistent-media-root"));
+                    let media = wave_media
+                        .as_ref()
+                        .map(|m| m.as_ref())
+                        .unwrap_or(&empty_media);
+                    let voicebank_refs = voicebanks
+                        .iter()
+                        .map(|bank| bank.as_deref())
+                        .collect::<Vec<_>>();
+                    pipeline::render_mixdown_stream_by_track_with_pronunciations(
+                        &project,
+                        &voicebank_refs,
+                        renderer.as_ref(),
+                        None,
+                        &mut cache,
+                        media,
+                        Some(&job_cancel),
+                        progress_cb.as_deref(),
+                        Some(&pronunciations),
+                        pipeline::STREAM_BLOCK_FRAMES,
+                        |frame_start, samples| {
+                            send_stream_event(
+                                &events,
+                                StreamRenderEvent::Data {
+                                    frame_start,
+                                    samples: samples.to_vec(),
+                                },
+                                Some(&job_cancel),
+                                STREAM_QUEUE_IDLE_TIMEOUT,
+                            )
+                        },
+                    )
+                })();
+                let _ = send_stream_event(
+                    &events,
+                    StreamRenderEvent::Finished(result),
+                    None,
+                    STREAM_QUEUE_IDLE_TIMEOUT,
+                );
             }
             RenderJob::Cancel => {
                 // Hard Stop: set the flag — the pipeline bails between
@@ -453,18 +930,16 @@ fn run_worker(
                 // process the raw samples, reply with the FX'd stream.
                 // No synthesis — this is the fast fader/EQ drag path.
                 let result = match mixer_so.as_ref() {
-                    Some(mixer_path) => {
-                        match mixer_fx::MixerFx::open(mixer_path, &params) {
-                            Ok(mut fx) => {
-                                let mut out = samples;
-                                match fx.process(&mut out, 0.0) {
-                                    Ok(()) => Ok(out),
-                                    Err(e) => Err(format!("mixer fx process: {e}")),
-                                }
+                    Some(mixer_path) => match mixer_fx::MixerFx::open(mixer_path, &params) {
+                        Ok(mut fx) => {
+                            let mut out = samples;
+                            match fx.process(&mut out, 0.0) {
+                                Ok(()) => Ok(out),
+                                Err(e) => Err(format!("mixer fx process: {e}")),
                             }
-                            Err(e) => Err(format!("mixer fx open {e}")),
                         }
-                    }
+                        Err(e) => Err(format!("mixer fx open {e}")),
+                    },
                     None => Err("no mixer .so configured (--mixer-so)".to_string()),
                 };
                 let _ = reply.send(result);
@@ -473,4 +948,40 @@ fn run_worker(
     }
 }
 
+#[cfg(test)]
+mod stream_queue_tests {
+    use super::*;
 
+    #[test]
+    fn bounded_stream_send_times_out_when_consumer_stops_reading() {
+        let (tx, _rx) = mpsc::sync_channel(0);
+        let start = Instant::now();
+        let result = send_stream_event(
+            &tx,
+            StreamRenderEvent::Data {
+                frame_start: 0,
+                samples: vec![0.0; 8],
+            },
+            None,
+            Duration::from_millis(10),
+        );
+        assert_eq!(result.unwrap_err(), "stream consumer idle timeout");
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn bounded_stream_send_observes_cancel_while_waiting_for_capacity() {
+        let (tx, _rx) = mpsc::sync_channel(0);
+        let cancel = AtomicBool::new(true);
+        let result = send_stream_event(
+            &tx,
+            StreamRenderEvent::Data {
+                frame_start: 0,
+                samples: vec![0.0; 8],
+            },
+            Some(&cancel),
+            Duration::from_secs(1),
+        );
+        assert_eq!(result.unwrap_err(), "render cancelled");
+    }
+}

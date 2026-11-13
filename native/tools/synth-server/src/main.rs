@@ -1,4 +1,4 @@
-//! synth-server: a LAN HTTP API over the synth-cli render pipeline.
+//! synth-server: a local HTTP API over the synth-cli render pipeline.
 //!
 //! ```sh
 //! synth-server --so build/build-linux/libworldline.so \
@@ -19,13 +19,14 @@ use clap::Parser;
 use synth_server::render_service::RenderService;
 use synth_server::server;
 use synth_server::state::AppState;
+use synth_server::stream_ws::StreamAuth;
 use synth_server::voicebanks;
 
 #[derive(Parser)]
 #[command(
     name = "synth-server",
     version,
-    about = "LAN HTTP API over the worldline render pipeline (Sprint 2.4.1)"
+    about = "Local HTTP API over the worldline render pipeline (Sprint 2.4.1)"
 )]
 struct Cli {
     /// Path to libworldline.so (omit to run without the engine;
@@ -66,11 +67,18 @@ struct Cli {
     /// lives server-side — the app saves/loads via HTTP).
     #[arg(long, default_value = "projects")]
     projects: PathBuf,
+    /// Root that a wave (audio) part's `relative_path` is resolved against —
+    /// normally the folder holding the `.ustx`.
+    ///
+    /// Omit it and a track's audio parts are reported as skipped rather than
+    /// silently dropped; the rest of the render is unaffected.
+    #[arg(long)]
+    media: Option<PathBuf>,
     /// TCP port to listen on.
     #[arg(long, default_value_t = 8080)]
     port: u16,
-    /// Address to bind (0.0.0.0 exposes the API on the LAN).
-    #[arg(long, default_value = "0.0.0.0")]
+    /// Address to bind (loopback by default; use 0.0.0.0 only for explicit LAN hosting).
+    #[arg(long, default_value = "127.0.0.1")]
     bind: String,
 }
 
@@ -84,6 +92,53 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<(), String> {
+    let bind: IpAddr = cli
+        .bind
+        .parse()
+        .map_err(|e| format!("invalid --bind '{}': {e}", cli.bind))?;
+    let stream_auth = match (
+        std::env::var("RUSTED_UTAU_STREAM_CREDENTIAL").ok(),
+        std::env::var("RUSTED_UTAU_STREAM_ALLOWED_ORIGINS").ok(),
+    ) {
+        (Some(credential), Some(origins)) => Some(
+            StreamAuth::new(
+                credential,
+                origins.split(',').map(str::trim).map(str::to_string),
+            )
+            .map_err(|e| format!("invalid WebSocket auth configuration: {e}"))?,
+        ),
+        (None, Some(origins)) => {
+            if !bind.is_loopback() {
+                return Err(
+                    "browser credential bootstrap requires a loopback --bind address".into(),
+                );
+            }
+            Some(
+                StreamAuth::browser_bootstrap(
+                    origins.split(',').map(str::trim).map(str::to_string),
+                )
+                .map_err(|e| format!("invalid WebSocket origin configuration: {e}"))?,
+            )
+        }
+        (Some(_), None) => {
+            return Err("RUSTED_UTAU_STREAM_CREDENTIAL requires RUSTED_UTAU_STREAM_ALLOWED_ORIGINS".into())
+        }
+        (None, None) => None,
+    };
+    // A media root that does not exist is NOT harmless: every wave part then
+    // fails deep inside a render job with "No such file or directory", which
+    // reads like a broken audio track rather than a missing fixture directory
+    // (a `cargo clean` or a fresh checkout wipes `target/`, where the demo
+    // fixture lives). Say it at boot, with the command that rebuilds it.
+    if let Some(media) = &cli.media {
+        if !media.is_dir() {
+            eprintln!(
+                "warning: --media {} does not exist; wave parts will fail to load. \
+                 Rebuild the demo fixture with `python3 scripts/make-audio-track-demo.py`.",
+                media.display()
+            );
+        }
+    }
     let renderer = match &cli.so {
         Some(path) => {
             let service = RenderService::spawn(
@@ -95,6 +150,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                 cli.ds_model.clone(),
                 cli.moe_prefix.clone(),
                 cli.moe_vocoder.clone(),
+                cli.media.clone(),
             )
             .map_err(|e| format!("open {}: {e}", path.display()))?;
             println!("loaded renderer from {}", path.display());
@@ -143,18 +199,18 @@ async fn run(cli: Cli) -> Result<(), String> {
         );
     }
 
-    let state = Arc::new(AppState::new(
+    let mut app_state = AppState::new(
         cli.voicebanks.clone(),
         cli.projects.clone(),
         scan.entries,
         renderer,
-    ));
+    );
+    if let Some(auth) = stream_auth {
+        app_state = app_state.with_stream_auth(auth);
+    }
+    let state = Arc::new(app_state);
     // Server-side project storage must exist before any save.
     state.projects.ensure().map_err(|e| e.message())?;
-    let bind: IpAddr = cli
-        .bind
-        .parse()
-        .map_err(|e| format!("invalid --bind '{}': {e}", cli.bind))?;
     let addr = SocketAddr::new(bind, cli.port);
     let listener = tokio::net::TcpListener::bind(addr)
         .await

@@ -6,7 +6,9 @@ edition.workspace = true
 [dependencies]
 synth-cli = { path = "../synth-cli", features = ["r2"] }
 domain = { path = "../../crates/domain" }
+project-session = { path = "../../crates/project-session" }
 runtime = { path = "../../crates/runtime", features = ["feed-integration"] }
+media = { path = "../../crates/media" }
 voicebank = { path = "../../crates/voicebank" }
 phonemizer = { path = "../../crates/phonemizer" }
 worldline-plugin = { path = "../../crates/worldline-plugin" }
@@ -17,5 +19,12 @@ ustx-codec = { path = "../../crates/ustx-codec" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
+futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+engine-wasm = { path = "../../crates/engine-wasm" }
+tokio-tungstenite = "0.29"
+tower = { version = "0.5", features = ["util"] }

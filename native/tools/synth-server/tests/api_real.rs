@@ -13,9 +13,7 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::{header, StatusCode};
-use synth_server::handlers::{
-    self, JsonBody, ProjectSaveRequest, RenderRequest, SynthNoteRequest,
-};
+use synth_server::handlers::{self, JsonBody, ProjectSaveRequest, RenderRequest, SynthNoteRequest};
 use synth_server::render_service::RenderService;
 use synth_server::state::AppState;
 use synth_server::voicebanks;
@@ -55,14 +53,24 @@ fn mock_song_path() -> PathBuf {
 /// AppState with the real renderer and the mock bank scanned.
 fn real_state() -> Arc<AppState> {
     let scan = voicebanks::scan_voicebanks(&mock_bank_path()).expect("scan mock bank");
-    let projects = std::env::temp_dir().join("lilt-api-test-projects");
+    let projects = std::env::temp_dir().join("rusted-utau-api-test-projects");
     let state = Arc::new(AppState::new(
         mock_bank_path(),
         projects,
         scan.entries,
         Some(
-            RenderService::spawn(so_path(), None, "{}".to_string(), None, None, None, None, None)
-                .expect("spawn render service"),
+            RenderService::spawn(
+                so_path(),
+                None,
+                "{}".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("spawn render service"),
         ),
     ));
     state.projects.ensure().expect("projects dir");
@@ -234,11 +242,7 @@ async fn project_crud_round_trip() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK, "delete");
-    let resp = handlers::project_load(
-        State(state),
-        axum::extract::Path("test-song".into()),
-    )
-    .await;
+    let resp = handlers::project_load(State(state), axum::extract::Path("test-song".into())).await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND, "load after delete");
 }
 
@@ -265,7 +269,10 @@ async fn render_unmapped_project_returns_json_error() {
         .expect("read body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("error json");
     assert!(
-        json["error"].as_str().unwrap().contains("no audio produced"),
+        json["error"]
+            .as_str()
+            .unwrap()
+            .contains("no audio produced"),
         "error body: {json}"
     );
 }

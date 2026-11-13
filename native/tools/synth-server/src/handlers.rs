@@ -21,7 +21,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use synth_cli::pipeline::{self, SAMPLE_RATE};
 use voicebank::Voicebank;
-use wavwriter::write_wav_16;
+use wavwriter::{write_wav_16, write_wav_16_channels};
 
 use crate::state::AppState;
 use crate::stats::StatsSnapshot;
@@ -50,9 +50,28 @@ where
     type Rejection = (StatusCode, Json<Value>);
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        let bytes = Bytes::from_request(req, state)
-            .await
-            .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("invalid body: {e}") }))))?;
+        let bytes = Bytes::from_request(req, state).await.map_err(|e| {
+            // A body-limit rejection is a documented, typed outcome (§6.15):
+            // 413 + `payload_too_large`, not a generic 400. Any client can then
+            // tell "too big" apart from "malformed JSON" without parsing prose.
+            let status = e.status();
+            if status == StatusCode::PAYLOAD_TOO_LARGE {
+                (
+                    status,
+                    Json(json!({
+                        "error": {
+                            "code": "payload_too_large",
+                            "message": "request body exceeds the configured limit",
+                        }
+                    })),
+                )
+            } else {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("invalid body: {e}") })),
+                )
+            }
+        })?;
         let value = serde_json::from_slice::<T>(&bytes).map_err(|e| {
             (
                 StatusCode::BAD_REQUEST,
@@ -148,16 +167,11 @@ pub async fn phonemize(
     }
     let project = match pipeline::load_project(project_path) {
         Ok(p) => p,
-        Err(e) => {
-            return error_response(StatusCode::BAD_REQUEST, format!("load project: {e}"))
-        }
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, format!("load project: {e}")),
     };
     let track_no = req.track.unwrap_or(0);
     let Some(track) = project.tracks.get(track_no as usize) else {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            format!("track {track_no} not found"),
-        );
+        return error_response(StatusCode::NOT_FOUND, format!("track {track_no} not found"));
     };
     let Some(part) = project
         .parts
@@ -169,7 +183,9 @@ pub async fn phonemize(
             format!("no voice part on track {track_no}"),
         );
     };
-    let domain::UPart::Voice(voice) = part else { unreachable!() };
+    let domain::UPart::Voice(voice) = part else {
+        unreachable!()
+    };
 
     let manifest = voicebank.phoneme_manifest();
     // Route by the track's phonemizer setting — mirror the render
@@ -183,17 +199,21 @@ pub async fn phonemize(
         pipeline::PhonemizerKind::Japanese => {
             phonemizer::japanese::JapaneseVcvPhonemizer.process(&voice.notes, Some(&voicebank))
         }
-        pipeline::PhonemizerKind::English => {
-            phonemizer::english::EnglishCvvcPhonemizer::with_g2p(
-                phonemizer::lilt_dict::lilt_demo_g2p(),
-            )
-            .process(&voice.notes, Some(&voicebank))
-        }
+        pipeline::PhonemizerKind::English => phonemizer::english::EnglishCvvcPhonemizer::with_g2p(
+            phonemizer::rusted_utau_dict::rusted_utau_demo_g2p(),
+        )
+        .process(&voice.notes, Some(&voicebank)),
         pipeline::PhonemizerKind::Universal => {
             let dict = phonemizer::ipa::IpaDictionary::en_subset();
             let adapter = phonemizer::adapter::IpaAdapter::new(&manifest, &dict);
             phonemizer::universal::UniversalPhonemizer::new(adapter)
                 .process(&voice.notes, Some(&voicebank))
+        }
+        // OpenUtau DefaultPhonemizer parity (one note → one phoneme, lyric
+        // verbatim, unresolvable aliases dropped). Mirrors pipeline.rs so the
+        // endpoint reports exactly the labels the renderer would use.
+        pipeline::PhonemizerKind::Default => {
+            phonemizer::default::DefaultPhonemizer.process(&voice.notes, Some(&voicebank))
         }
     };
     // Group the flat phoneme list back per note (parent index) so the
@@ -274,9 +294,7 @@ pub async fn project_save(
             "project codec: encode failed (invalid JSON view)".into(),
         );
     }
-    let bytes = unsafe { std::ffi::CStr::from_ptr(out) }
-        .to_bytes()
-        .to_vec();
+    let bytes = unsafe { std::ffi::CStr::from_ptr(out) }.to_bytes().to_vec();
     unsafe { ustx_codec::UstxFree(out) };
 
     match state.projects.save(&req.name, &bytes) {
@@ -397,7 +415,8 @@ pub async fn synth_note(
     }
     // Oto gate: the phoneme must map to an oto alias in this voicebank
     // (cheap, no renderer needed — mirrors the CLI's error path).
-    if let Err(e) = pipeline::synth_note_validate(&voicebank, &req.phoneme, req.tone, req.duration_ms)
+    if let Err(e) =
+        pipeline::synth_note_validate(&voicebank, &req.phoneme, req.tone, req.duration_ms)
     {
         return error_response(StatusCode::BAD_REQUEST, e);
     }
@@ -468,14 +487,24 @@ pub async fn render(
 
     let started = Instant::now();
     match renderer
-        .render_project(project_path.to_path_buf(), voicebank, track, engine, engines)
+        .render_project(
+            project_path.to_path_buf(),
+            voicebank,
+            track,
+            engine,
+            engines,
+        )
         .await
     {
         Ok(report) if !report.samples.is_empty() => {
             state
                 .stats
                 .record_render(started.elapsed().as_millis() as u64);
-            wav_response(write_wav_16(&report.samples, SAMPLE_RATE))
+            wav_response(write_wav_16_channels(
+                &report.samples,
+                SAMPLE_RATE,
+                report.channels,
+            ))
         }
         Ok(report) => {
             let total = report.phrases_rendered + report.skipped.len();
@@ -562,10 +591,7 @@ pub async fn post_fx(
     };
     let samples = wav.samples;
     if samples.is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "post-fx: empty wav".into(),
-        );
+        return error_response(StatusCode::BAD_REQUEST, "post-fx: empty wav".into());
     }
     let started = Instant::now();
     match renderer.post_fx(params, samples).await {
@@ -587,7 +613,9 @@ pub async fn post_fx(
 /// project-content problems are client errors, everything else is a
 /// server-side engine failure.
 fn render_error_status(e: &str) -> StatusCode {
-    if e.starts_with("track ") || e.starts_with("no voice part") || e.starts_with("parse ")
+    if e.starts_with("track ")
+        || e.starts_with("no voice part")
+        || e.starts_with("parse ")
         || e.starts_with("after_load")
     {
         StatusCode::BAD_REQUEST
@@ -601,10 +629,7 @@ fn validate_synth_note(req: &SynthNoteRequest) -> Result<(), String> {
     if !(0..=127).contains(&req.tone) {
         return Err(format!("tone {} out of range (0..=127)", req.tone));
     }
-    if !req.duration_ms.is_finite()
-        || req.duration_ms <= 0.0
-        || req.duration_ms > MAX_DURATION_MS
-    {
+    if !req.duration_ms.is_finite() || req.duration_ms <= 0.0 || req.duration_ms > MAX_DURATION_MS {
         return Err(format!(
             "duration_ms {} out of range (0..={MAX_DURATION_MS})",
             req.duration_ms
@@ -617,7 +642,7 @@ fn validate_synth_note(req: &SynthNoteRequest) -> Result<(), String> {
 }
 
 /// Where a request's `voicebank` field may point.
-enum ResolveError {
+pub(crate) enum ResolveError {
     /// No configured bank matched and the value is not a directory.
     NotFound(String),
     /// The value is a directory but does not load as a voicebank.
@@ -625,13 +650,13 @@ enum ResolveError {
 }
 
 impl ResolveError {
-    fn status(&self) -> StatusCode {
+    pub(crate) fn status(&self) -> StatusCode {
         match self {
             ResolveError::NotFound(_) => StatusCode::NOT_FOUND,
             ResolveError::LoadFailed(_) => StatusCode::BAD_REQUEST,
         }
     }
-    fn message(&self) -> String {
+    pub(crate) fn message(&self) -> String {
         match self {
             ResolveError::NotFound(m) | ResolveError::LoadFailed(m) => m.clone(),
         }
@@ -642,17 +667,17 @@ impl ResolveError {
 /// scanned at startup (by name / dir id / absolute path), then — so a
 /// client can point at any library dir — by loading the value directly
 /// when it is an existing directory.
-fn resolve_voicebank(state: &AppState, name: &str) -> Result<Arc<Voicebank>, ResolveError> {
+pub(crate) fn resolve_voicebank(
+    state: &AppState,
+    name: &str,
+) -> Result<Arc<Voicebank>, ResolveError> {
     if let Some(bank) = state.find_voicebank(name) {
         return Ok(bank);
     }
     let path = Path::new(name);
     if path.is_dir() {
         let vb = pipeline::load_voicebank(path).map_err(|e| {
-            ResolveError::LoadFailed(format!(
-                "cannot load voicebank at {}: {e}",
-                path.display()
-            ))
+            ResolveError::LoadFailed(format!("cannot load voicebank at {}: {e}", path.display()))
         })?;
         return Ok(Arc::new(vb));
     }
@@ -663,7 +688,7 @@ fn resolve_voicebank(state: &AppState, name: &str) -> Result<Arc<Voicebank>, Res
 }
 
 /// 200 with the wav bytes.
-fn wav_response(wav: Vec<u8>) -> Response {
+pub(crate) fn wav_response(wav: Vec<u8>) -> Response {
     (
         [
             (
@@ -701,7 +726,7 @@ mod tests {
     /// AppState without a renderer (validation/error paths only).
     fn test_state() -> Arc<AppState> {
         let scan = voicebanks::scan_voicebanks(&test_data_dir()).expect("scan test-data");
-        let projects = std::env::temp_dir().join("lilt-test-projects");
+        let projects = std::env::temp_dir().join("rusted-utau-test-projects");
         Arc::new(AppState::new(test_data_dir(), projects, scan.entries, None))
     }
 
