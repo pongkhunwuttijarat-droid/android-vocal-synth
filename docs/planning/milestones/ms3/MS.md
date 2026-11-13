@@ -88,7 +88,7 @@ Renderer ทั้งหมด + คุณภาพเสียง: classic mode
 | 3.5.1 | Render cache เต็ม | src-/res-/cat- hash files (OpenUtau pattern) | ✅ Native chunk/render cache ใช้งานจริง |
 | 3.5.2 | Tensor cache | DiffSinger mel cache | ⬜ |
 | 3.5.3 | Performance | benchmark: render time/note, peak RAM (Mi Pad) | 🟡 มี native/WASM desktop metrics; Mi Pad matrix ยังไม่ครบ |
-| 3.5.4 | Optimize | chunk size, thread pool, memory limits | 🟡 Chunking/cache/Web Worker pool มีแล้ว; product wiring ยังเหลือ |
+| 3.5.4 | Optimize | chunk size, thread pool, memory limits | 🟡 Legacy pool + Session render adapter parity/cancel/invalidation checks pass; stable-ID React product wiring and device memory gates remain |
 | 3.5.5 | เสถียรภาพ | 30-min stress test, crash-free | ⬜ |
 
 **Exit target:** benchmark ผ่านเป้าหมาย (1 note < 1s, RAM < 1GB)

@@ -10,7 +10,7 @@ change notifications for a UI.
 
 - `create({ name, bpm })` calls `session_new_json`.
 - `openStored(name)` loads canonical USTX and the adjacent
-  `<name>.ustx.lilt-ids.json`, then calls `session_open_yaml` with both.
+  `<name>.ustx.rusted-utau-ids.json`, then calls `session_open_yaml` with both.
 - `importUstx(text)` calls `session_open_yaml` without a sidecar; Rust assigns
   fresh entity IDs for the imported portable document.
 - `save(name)` obtains canonical USTX and the current identity sidecar from the

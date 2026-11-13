@@ -1,4 +1,4 @@
-# Lilt / Android Voice Synth — Product Vision
+# Rusted UTAU / Android Voice Synth — Product Vision
 
 **สถานะ:** Revised — 2026-09-12
 

@@ -225,8 +225,8 @@ voicebank every phone is `unresolved`.
 
 ## Session wiring plan and current implementation map
 
-1. Keep `.ustx` unchanged and preserve the existing `lilt.ids/1` file. Store choices in a
-   separate `<project>.ustx.lilt-pronunciations.json` sidecar with schema `lilt.pronunciations/1`,
+1. Keep `.ustx` unchanged and preserve the existing `rusted-utau.ids/1` file. Store choices in a
+   separate `<project>.ustx.rusted-utau-pronunciations.json` sidecar with schema `rusted-utau.pronunciations/1`,
    `project_id`, and a stable-note-ID → committed-form map. Open tolerates a missing/corrupt or
    wrong-project pronunciation sidecar by dropping the choices with a warning. Save As forks
    the project ID while retaining entity IDs and pronunciation choices in its staged bundle.
@@ -274,7 +274,7 @@ Merge these requirements into the T014 session-extension proposal before any fro
 - The lyric and selected pronunciation commit together as one transaction/undo step; canceling
   composition does not mutate committed state.
 - The session sidecar preserves choices across save/reopen and Save As, and defines behavior for
-  import replacement, note removal, ID repair, undo, and redo. CONTRACT-v1's `lilt.ids/1`
+  import replacement, note removal, ID repair, undo, and redo. CONTRACT-v1's `rusted-utau.ids/1`
   format is not silently changed; choose a separately versioned session sidecar or reviewed
   schema revision in the combined draft.
 - Render rederives bank aliases from the stored universal sequence using the active voicebank.
@@ -292,7 +292,7 @@ Merge these requirements into the T014 session-extension proposal before any fro
 2. Does compose need `expected_revision` (read-staleness) or is
    revision-tagging at the session layer enough?
 3. Which versioned sidecar schema wraps stable IDs and pronunciations while
-   preserving compatibility with existing `lilt.ids/1` files.
+   preserving compatibility with existing `rusted-utau.ids/1` files.
 4. Whether `mode` belongs to the committed form or the UI (it records which
    view the user edits; render should be driven by the sequence either way).
 5. How per-phoneme expressions/overrides behave when a committed phone sequence changes.

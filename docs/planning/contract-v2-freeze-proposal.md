@@ -39,7 +39,7 @@ No new product decision is proposed for these items:
 
 1. **Ownership:** Rust owns canonical document, identity, validation, mutation, undo/redo, serialization and render-affecting state. UI selection, layout, pan/zoom, active tool and transient pointer previews stay frontend-owned.
 2. **Gesture model:** preview pointer moves locally; pointer-up submits one semantic commit. A single curve stroke is one mutation/undo step. Raw preview samples can never be saved/rendered/exported before commit.
-3. **Identity:** Rust mints opaque stable IDs. Legacy USTX identity is recovered through `lilt.ids/1` sidecar matching; embedded YAML metadata is not used. Import creates a new identity domain; Save As forks project ID and retains entity IDs.
+3. **Identity:** Rust mints opaque stable IDs. Legacy USTX identity is recovered through `rusted-utau.ids/1` sidecar matching; embedded YAML metadata is not used. Import creates a new identity domain; Save As forks project ID and retains entity IDs.
 4. **Revision:** starts at 0 per session; increases only for committed document changes, successful undo/redo or replace/import; save/export/render do not increment. Rejected commands change neither document, history, revision nor render input.
 5. **Groups:** at most one isolated tentative group per session; public reads see committed state only; child failure discards the tentative group; cancel restores the pre-group state; commit is exactly one undo step and one revision transition.
 6. **Mutation responses:** every successful mutation returns revision plus authoritative patch/invalidation changes; full snapshots are supported but are not required after every mutation.

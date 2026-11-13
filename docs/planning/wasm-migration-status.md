@@ -1,6 +1,6 @@
 # WASM Migration — สถานะการย้ายไป web
 
-> อัปเดต: 2026-09-23
+> อัปเดต: 2026-10-01
 > ต่อจาก: `docs/planning/web-static-feasibility.md` (feasibility study 2026-08-10)
 
 ---
@@ -14,8 +14,23 @@
 project browser, OPFS autosave และ import/export `.ustx`; render ผ่าน RenderPool
 (Web Worker + per-chunk sample loading + chunk cache, progress/cancel และ epoch
 guard กันผลเก่ามาทับ). ยังไม่ใช่ product flow เต็มตัว: voicebank manager/OPFS
-import, multi-track mixer, expression lanes และ PWA ยังเหลือ. Neural engines
+import และ RenderPool-backed playback ใน React ยังเหลือ. Neural engines
 (ort/burn) ยัง native-first; R2/WebGPU ใน browser เป็น experimental path.
+
+**Session render adapter (2026-10-01):** the browser now has a committed Rust
+snapshot capture helper and a job-aware RenderPool path with revision-tagged
+progress/completion, immutable worker plans, per-job cancellation, stale-result
+guard, and worker replacement after a worker error. Its browser harness matches
+the sequential WASM output (sampled max difference 0), cancels at chunk
+boundaries, invalidates one changed chunk, and recovers a simulated worker
+failure. This is adapter readiness only: the stable-ID production Driver and
+selected React UI are not connected to this RenderPool path, export/playback
+integration is pending, and `engine-wasm` capabilities still report async jobs
+and per-job cancellation as unsupported. The selected React/Dockview UI now
+connects stable-ID project, track, note, mixer, and Direct-WASM curve intents
+to the Session API; its
+production build emits a PWA app shell and precache. Browser/offline behavior
+and RenderPool-backed playback are still unverified/unwired.
 
 ---
 
@@ -31,8 +46,8 @@ import, multi-track mixer, expression lanes และ PWA ยังเหลื�
 | burn บน WASM | ✅ | 🟡 **spike 2026-09-23: compile ผ่าน** (burn 0.21 `ndarray` + `getrandom` `wasm_js` + `--cfg getrandom_backend="wasm_js"`) — ยังไม่มี engine/โมเดลที่รันจริงบน wasm |
 | ONNX → burn | ✅ | 🟡 **spike 2026-09-23: `ort` แบบ `default-features = false` compile ผ่าน** แต่ต้องพก onnxruntime-web (JS) ตอนรัน + โมเดล DiffSinger 271 MB ไม่คุ้มโหลดเข้าบราวเซอร์ |
 | train บน WebGPU | 🔶 ต้อง spike | ⬜ ยังไม่ทำ |
-| Browser editor | (ยังไม่ได้ประเมิน) | 🟡 Vertical slice + **RenderPool ใน editor** ผ่าน headless test; project persistence เสร็จ, voicebank flow/PWA/feature breadth ยังเหลือ |
-| Static hosting | ✅ | ⬜ ยังไม่มี PWA/deploy config |
+| Browser editor | (ยังไม่ได้ประเมิน) | 🟡 Legacy RenderPool and Session render adapter pass headless checks; selected React UI now uses stable-ID Session lifecycle/note/track/mixer/curve APIs; voicebank flow and RenderPool/playback wiring remain |
+| Static hosting | ✅ | 🟡 React build emits manifest, icon, and app-shell service worker; static artifact inspection passes, browser install/offline verification remains |
 
 **การค้นพบสำคัญ:** feasibility doc คิดว่า worldline ต้อง compile C++ ด้วย
 Emscripten — แต่จริงๆ **port เป็น Rust ตรงกว่าและได้ผลตรงกว่า** เพราะตอนนี้
@@ -116,15 +131,22 @@ bytes ไม่เหมือนกันในสองครั้งที�
    สร้าง pool ตอน boot, `setProject` + `render({signal, onProgress})` ทุกครั้งที่แก้,
    epoch guard + `cancelRender()` (ปุ่ม Stop), chunk overlay จาก cache จริง;
    ถอยไป main thread อัตโนมัติถ้า Worker ใช้ไม่ได้ — เทสต์: `web/run-editor.sh`
-2. **Project persistence** — **เสร็จ 2026-09-23**:
+2. **Session-backed RenderPool product wiring** — adapter API and worker job
+   protocol are ready (`web/app/session-render-contract.js`, `web/pool.js`,
+   `web/worker.js`); parity/cancel/invalidation/worker replacement check:
+   `web/run-session-render.sh`. **Remaining:** route the stable-ID production
+   Driver and selected React UI through this adapter, then verify export/playback
+   and update v2 render capabilities only when the Engine surface supports the
+   complete lifecycle.
+3. **Project persistence** — **เสร็จ 2026-09-23**:
    `web/app/project-store.js` เก็บ `.ustx` ใน OPFS (`projects/<name>.ustx`),
    editor มี project browser (list/open/new/save as/delete), autosave 1500 ms,
    export/import `.ustx` และ `navigator.storage.persist()`. **เหลือ voicebank**:
    import/เลือก bank ผ่าน UI และเชื่อมกับ `OpfsBank`; ตอนนี้ editor ใช้ `HttpBank`
    (fixture เป็นค่าเริ่มต้น, `?voicebank=full` ใช้ทดสอบ local Teto bank)
-3. **UI production breadth** — multi-track mix, expression lanes, phoneme labels
+4. **UI production breadth** — multi-track mix, expression lanes, phoneme labels
    authoritative, voicebank flow และ tablet/pen hardware QA
-4. **Neural engines** — native R2 / DiffSinger ใช้งานได้; R2/WebGPU บน browser ยังเป็น
+5. **Neural engines** — native R2 / DiffSinger ใช้งานได้; R2/WebGPU บน browser ยังเป็น
    experimental path. **ทิศทางที่ตกลงสำหรับ product: รันบน native server** (ผ่าน render
    backend ข้อ 3) ไม่ต้องโหลดโมเดลเข้าบราวเซอร์; ถ้าจะลอง neural บน wasm จริงให้เริ่มจาก
    **moe/burn** (8–40 MB) เพราะ ort/ONNX ต้องพก runtime + โมเดล 56–271 MB
@@ -133,7 +155,7 @@ bytes ไม่เหมือนกันในสองครั้งที�
    (และมีแผนแยก **render backend** ให้เว็บต่อ `synth-server` ได้ด้วย —
    ดู [web-render-backend.md](web-render-backend.md) ซึ่งจะทำให้ neural engine
    ใช้ผ่าน server ได้ก่อนโดยไม่ต้อง port ลง wasm)
-5. **Static hosting + service worker** — PWA/offline/versioning และ deploy จริง
+6. **Static hosting + service worker** — PWA/offline/versioning และ deploy จริง
 
 ---
 

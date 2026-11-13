@@ -4,11 +4,13 @@
 > **สถาปัตยกรรมปัจจุบัน:** Flutter/Android ใช้ bundled `synth-server` ผ่าน loopback HTTP;
 > browser ใช้ `engine-wasm` in-process. JNI embedded ยังเป็นทางเลือกถัดไป ไม่ใช่ path
 > ที่แอปใช้อยู่ตอนนี้.
-> **Draft ร่วมทุก host (2026-09-29):** ดู §6 `Project Session API (Draft v1 — implementation-ready, partially implemented)`
+> **Project Session logical standard (2026-09-30):** ดู §6 `Project Session API (v2 logical contract — frozen)`
 > — เป็น logical API ที่ transport adapter ของ native HTTP, WASM และอนาคต JNI ต้องให้ semantics
-> เหมือนกัน; ไม่ได้หมายความว่าต้อง serialize ผ่าน HTTP ใน Web. **ยังไม่ implement และยังไม่ freeze
-> เป็น CONTRACT-v2** — ข้อที่ยังปิดไม่ได้ถูกทำเครื่องหมาย UNRESOLVED พร้อมหลักฐานใน §6.18; §0–§5
+> เหมือนกัน; ไม่ได้หมายความว่าต้อง serialize ผ่าน HTTP ใน Web. §6 freeze logical schema และ
+> semantics แล้ว โดยไม่รับรอง implementation readiness; §0–§5
 > ยังเป็น legacy CONTRACT-v1 ที่ไม่ถูกเปลี่ยน.
+> **สถานะ (2026-09-30):** logical contract §6 freeze แล้ว; implementation และ adapter conformance ยังตามหลังใน T004/T011. นี่ไม่ใช่การรับรองว่า v2 product release พร้อมใช้งาน. `part.*`/`project.*` เป็นคำสั่ง required, child failure ใช้ `group_failed`, native polling เป็น baseline และ WASM async session render unavailable จนกว่าจะมี worker adapter.
+> **DTO encoding:** every Project Session logical request/result/error/capability DTO has a canonical JSON representation on every host. Native transports it as HTTP+JSON; WASM calls `Engine` directly and maps to/from the same JSON DTO shape, without HTTP. Function names/call signatures may differ; JSON field names/types/enums may not.
 > อ้างอิง: `docs/architecture/data-contracts.md` (engine internals), `native/tools/synth-server/`
 
 ---
@@ -84,7 +86,7 @@
 ---
 *Breaking changes ของ legacy endpoints ต้อง bump เป็น CONTRACT-v2 + แจ้งทั้งสองฝั่ง*
 
-## 6. Project Session API (Draft v1 — implementation-ready, partially implemented)
+## 6. Project Session API (v2 logical contract — frozen 2026-09-30)
 
 > **เป้าหมาย:** Rust ถือเอกสารโปรเจกต์เป็น source of truth เดียว ทุก frontend ส่ง semantic
 > commands และแสดง authoritative read models. นี่คือ **logical API**: ทุก adapter ใช้
@@ -94,12 +96,11 @@
 > - Browser: WASM facade เรียก `project-session` ใน process โดยตรง (ไม่ผ่าน HTTP).
 > - อนาคต JNI/Tauri: native facade ครอบ session semantics ชุดเดียวกัน.
 >
-> **สถานะ: ยังไม่ freeze เป็น CONTRACT-v2; เริ่ม implement แล้วบางส่วน.** ทุกข้อที่ยังปิด
-> ไม่ได้ถูกทำเครื่องหมาย **UNRESOLVED** พร้อมหลักฐานที่ block — ห้ามเดา.
+> **สถานะ:** logical contract นี้ freeze แล้ว; implementation gaps ด้านล่างเป็นงานตามให้ตรงสเปก ไม่ใช่ข้อกำกวมของสัญญา.
 >
 > **สิ่งที่ implement แล้ว (2026-09-29, `native/crates/project-session`):**
 > §6.2 ทั้งหมด — `EntityId` (opaque UUIDv4, Rust-mint, seed inject ได้), fingerprint ต่อ kind,
-> `IdentityTable` + sidecar `lilt.ids/1` (`table_to_json`/`table_from_json`), matching
+> `IdentityTable` + sidecar `rusted-utau.ids/1` (`table_to_json`/`table_from_json`), matching
 > Pass A/A2/B + orphan tombstone + repair, `fork_for_save_as`; §6.3 snapshot DTO พร้อม ID;
 > §6.9 เฉพาะ command/undo/redo + save (revision เริ่ม 0, +1 ต่อ committed change,
 > rejected/no-op/save ไม่ขยับ) รวมถึง `ids_stable` + warnings; **§6.4 envelope + result**
@@ -124,13 +125,9 @@
 > `project-session` ได้แล้ว (14 vectors + runner, อ้าง entity ด้วย `@note:0` ฯลฯ).
 >
 > **สิ่งที่ยังไม่ implement (อย่าเข้าใจว่ามีแล้ว):**
-> - คำสั่ง `part.*`/`project.*` — `plan()` ตอบ `unsupported_operation` (ไม่ใช่ validation error)
-> - render job model (§6.13) — `capabilities().render.async_jobs` ยังเป็น `false`
->   และ `per_job_cancel` เป็น `false`
-> - §6.15 ฝั่ง transport: native HTTP ต้อง map เป็น 413 + `payload_too_large` และ
->   capability ต้องรายงาน engine ที่เปิดได้จริง (งานของ task-12 ร่วมกับ server)
-> - sidecar **file I/O** ที่ host adapter (server filesystem / OPFS) — crate นี้ผลิต/อ่าน
->   payload เท่านั้น; และ HTTP routes `/api/v2/...` ทั้งหมด
+> - ฝั่ง WASM ยังไม่เปิด async render job; `project-session` capability จึงรายงาน `async_jobs: false` และ `per_job_cancel: false`. Native server มี render jobs/poll/cancel แยกตาม `render_id` แล้ว
+> - §6.10 bounded reads และ §6.4.4 commands ใช้ semantics กลางเดียวกัน; vectors ครอบ metadata/part group ผ่าน reference/native/WASM, stale/group/history/render invalidation ของ session vectors และ split curve-boundary ผ่านทั้งสาม adapter. Shared `project_part_edge_shared.json` now exercises 13 representative project/part invalid/no-op cases across reference, native HTTP, and direct WASM, including revision/document/history atomicity; it is not an exhaustive enumeration of every possible malformed payload or boundary value.
+> - WASM/browser host ยังต้องเชื่อม sidecar file I/O กับ OPFS; shared crate ผลิต/อ่าน sidecar payload แต่ไม่เลือก host storage
 > **Legacy:** §0–§5 และ index-addressed command facade ของ `engine-wasm`
 > (`add_note`/`move_note`/`set_track_*` โดยใช้ `part`/`note` index) ยังคง behavior เดิม
 > ไม่ถูกนิยามใหม่. Draft นี้เป็นสัญญาใหม่สำหรับ cross-host session เท่านั้น.
@@ -227,10 +224,10 @@ session mint ID หลัง construction; ทางเลือกอื่น�
 
 #### 6.2.4 Sidecar: ตำแหน่ง รูปแบบ และ matching (FROZEN)
 
-**ตำแหน่ง/ชื่อ:** ไฟล์พี่น้องของ `.ustx` ชื่อ `<project-file-name>.lilt-ids.json`
-→ native: `<projects_root>/<name>.ustx.lilt-ids.json`
+**ตำแหน่ง/ชื่อ:** ไฟล์พี่น้องของ `.ustx` ชื่อ `<project-file-name>.rusted-utau-ids.json`
+→ native: `<projects_root>/<name>.ustx.rusted-utau-ids.json`
 (`native/tools/synth-server/src/projects.rs:8,60-62`)
-→ web: OPFS `projects/<name>.ustx.lilt-ids.json`.
+→ web: OPFS `projects/<name>.ustx.rusted-utau-ids.json`.
 
 **ผู้เขียน (FROZEN 2026-09-29):** เขียนผ่าน **session v2 save path เท่านั้น** ในรอบนี้.
 Rust session เป็นเจ้าของเนื้อหา (`save_sidecar()`); host storage adapter (server filesystem /
@@ -242,7 +239,7 @@ sidecar เงียบ ๆ; การย้าย legacy path ไปเขี�
 
 ```json
 {
-  "schema": "lilt.ids/1",
+  "schema": "rusted-utau.ids/1",
   "project_id": "8f14e45f-ea0a-4b1c-9d3a-2b7c6e5f0a91",
   "document_fingerprint": "9c1d4e0b77a2f3aa",
   "tracks": [
@@ -397,6 +394,27 @@ Snapshot เป็น read-only DTO; canonical file ยังเป็น USTX �
   cache ID ข้าม session ในกรณีนี้.
 - `snapshot` ไม่ใช่ payload บังคับของทุก mutation (§6.4).
 
+#### 6.3.1 Snapshot schema v2 (FROZEN)
+
+The frozen-schema-v1 example above documents the current projection. The complete first-release
+project/part contract needs these additional canonical fields; `snapshot_schema_version: 2`
+retains v1 fields as deprecated read-only aliases:
+
+- Project: `comment`, `key`, complete sorted `tempos:[{position_tick,bpm}]` and
+  `time_signatures:[{bar_position,numerator,denominator}]` maps. Existing `bpm` and
+  `time_signature` remain derived tick-zero/bar-zero convenience fields.
+- Part: `kind` (`voice` or `wave`), `name`, `comment`, existing `position_ticks` and
+  `duration_ticks`, plus notes/curves. A wave part exposes a logical `media_ref`; it never
+  exposes an absolute host filesystem path. Host adapters resolve the reference to their own
+  storage.
+- All arrays use canonical domain order; identity continues to use opaque IDs, never indices.
+
+`ProjectMetaView` in `project.changed` is exactly the project metadata/timing fields above,
+excluding tracks. `PartView` in `part.*` changes is the part fields above with child notes and
+curves when `authority:"patch"`; otherwise the change must invalidate and permit a
+revision-tagged part read. This frozen schema is not a claim that the
+current `snapshot_schema_version: 1` implementation emits it.
+
 ### 6.4 Mutation request, result, and change vocabulary
 
 #### 6.4.1 Request
@@ -449,13 +467,13 @@ Snapshot เป็น read-only DTO; canonical file ยังเป็น USTX �
 
 | `kind` | required IDs | optional tick range | `data` (patch) |
 |---|---|---|---|
-| `project.changed` | — | — | project metadata (name/bpm/time_signature) |
+| `project.changed` | — | — | canonical `ProjectMetaView` (see §6.4.4) |
 | `track.added` | `track_id` | — | track metadata + empty parts |
 | `track.removed` | `track_id` | — | — |
 | `track.changed` | `track_id` | — | track metadata (name/singer/mute/solo/volume/pan) |
-| `part.added` | `track_id`, `part_id` | — | part + notes/curves |
+| `part.added` | `track_id`, `part_id` | — | canonical `PartView` + notes/curves |
 | `part.removed` | `track_id`, `part_id` | — | — |
-| `part.changed` | `track_id`, `part_id` | `start_tick`,`end_tick` (part-relative) | part metadata |
+| `part.changed` | `track_id`, `part_id` | `start_tick`,`end_tick` (part-relative) | canonical `PartView` or invalidate |
 | `note.added` | `part_id`, `note_id` | — | note |
 | `note.removed` | `part_id`, `note_id` | — | — |
 | `note.changed` | `part_id`, `note_id` | — | note |
@@ -472,24 +490,75 @@ Snapshot เป็น read-only DTO; canonical file ยังเป็น USTX �
   ถ้า can_undo/can_redo ไม่เปลี่ยน).
 - **ห้ามขยาย vocabulary นี้โดยไม่แก้ contract**; frontend ห้ามตีความ event ภายใน engine.
 
+สำหรับ first required `part.*`/`project.*` commands: `project.changed.data` เป็น
+canonical `ProjectMetaView` (name/comment/key + tempo map + meter map); `part.added.data`
+เป็น canonical `PartView`. `part.changed` ใช้ `PartView` patch ได้เมื่อส่ง child data
+ครบ มิฉะนั้นต้องเป็น invalidate แล้ว client เรียก bounded `part` read. `part.split` ส่ง
+ทั้ง change ของ part เดิมและ part ใหม่ หรือ invalidate ทั้งสอง ID.
+
+#### 6.4.4 Project and part mutation commands (FROZEN, required in v2)
+
+คำสั่งในหัวข้อนี้เป็น **logical command names** ไม่ใช่ route หรือชื่อ binding.
+ทุกคำสั่งส่งผ่าน envelope §6.4.1 พร้อม stable IDs; `expected_revision` บังคับ,
+validation/apply ต้อง atomic, คำสั่งที่เปลี่ยน document เพิ่ม revision หนึ่งครั้งและเป็น
+undo/redo หนึ่ง step. ใน group ใช้ child semantics §6.8 และเพิ่ม revision เฉพาะตอน commit.
+ไม่มี-op ต้องคืน `changed:false` และไม่เพิ่ม revision/history.
+
+| `command.type` | Fields | Semantics |
+|---|---|---|
+| `project.set_metadata` | `fields` object: optional `name`, `comment`, `key` | เปลี่ยนเฉพาะ fields ที่ส่ง; `name` ต้องไม่ว่าง, `key` อยู่ใน 0..11, comment อนุญาต empty string. Project identity ไม่เปลี่ยน |
+| `project.set_tempo` | `position_tick`, `bpm` | Insert หรือแทน tempo ณ tick นั้น; tick ต้องไม่ติดลบ, BPM ต้อง finite และ > 0. ต้องมี tempo ที่ tick 0; position ซ้ำคือแทน entry เดิม |
+| `project.remove_tempo` | `position_tick` | ลบ tempo change ที่ tick นั้น; ลบ tempo ที่ tick 0 ไม่ได้; ID ไม่มีเพราะ tempo เป็น timeline entry ไม่ใช่ entity |
+| `project.set_time_signature` | `bar_position`, `numerator`, `denominator` | Insert หรือแทน meter ณ bar นั้น; bar ไม่ติดลบ, numerator/denominator เป็นจำนวนเต็มบวก และคำนวณ ticks-per-bar ได้ตรงจำนวนเต็มโดยไม่ overflow; ต้องมี entry ที่ bar 0 |
+| `project.remove_time_signature` | `bar_position` | ลบ meter change ที่ bar นั้น; ลบ entry bar 0 ไม่ได้ |
+| `part.create` | `track_id`, `kind`, `name`, `position_ticks`, `duration_ticks`; wave ต้องมี `media_ref` | สร้าง part ว่างบน track ที่ระบุ; engine mint `part_id`; name ไม่ว่าง, position ≥ 0, duration > 0. `kind:"voice"` มี notes/curves ว่าง. `kind:"wave"` ใช้ project-relative media reference ตาม §6.3.1; ห้ามส่ง host filesystem path |
+| `part.remove` | `part_id` | ลบ part และข้อมูลภายในจาก committed document; undo ต้องคืนข้อมูลและ IDs เดิมครบ |
+| `part.move` | `part_id`, `position_ticks` | ย้าย part บน project timeline โดยไม่เปลี่ยน relative note/curve ticks; position ไม่ติดลบ |
+| `part.resize` | `part_id`, `duration_ticks` | เปลี่ยน extent โดยไม่ clip/ลบ note หรือ curve; ถ้าค่าใหม่ตัด content ที่มีอยู่ให้ reject ทั้งคำสั่ง |
+| `part.set_metadata` | `part_id`, `fields` object: optional `name`, `comment` | เปลี่ยนเฉพาะ metadata ที่ส่ง; name ต้องไม่ว่าง; comment รับ empty string |
+| `part.set_media_ref` | `part_id`, `media_ref` | เปลี่ยน source reference ของ wave part เท่านั้น; voice part ไม่รองรับ; reference ต้องเป็น non-empty project-relative/host asset key และห้าม absolute path หรือ `..`; เปลี่ยน render input และทำให้ render stale |
+| `part.split` | `part_id`, `at_tick` | แยก voice part ณ part-relative tick ภายใน `(0,duration)`; part เดิมคง ID ฝั่งซ้าย, ฝั่งขวาได้ ID ใหม่ และ `position = old.position + at_tick`; notes ที่อยู่ขวาถูกย้ายและ rebase; note ที่คร่อมจุดแบ่งทำให้ reject atomic เพื่อไม่ split note โดยเงียบ. Wave part split ไม่อยู่ใน first scope |
+
+`part.create` และ `part.remove` คืน `part.added`/`part.removed`; move/resize/metadata/media-ref คืน
+`part.changed`; split คืน `part.changed` สำหรับ part เดิมและ `part.added` สำหรับ part ใหม่.
+Project edits คืน `project.changed`. Patch data ต้องเป็น canonical view ครบตาม
+`authority:"patch"`; ถ้า adapter ไม่มีข้อมูลครบให้ส่ง `invalidate` และ bounded read.
+Tempo/meter และการเพิ่ม/ย้าย/resize/ลบ part ทำให้ render input stale จึงคืน
+`render.invalidated`; เปลี่ยนชื่อ/comment/key ไม่ invalidate audio เว้นแต่การ render model
+ของ Rust ระบุว่ามีผล. Undo/redo ต้องคืน project/session view และ IDs ที่ถูกต้อง.
+
+รายละเอียด field names, edge cases และ patch DTO ถูกปิดใน §6.20. รายการนี้เป็นสัญญาที่
+adapters ต้องทำตาม ไม่ใช่คำกล่าวว่าคำสั่งมี implementation แล้ว. `part.split` อยู่ใน v2;
+track reordering และการแก้ voicebank reference อยู่นอกขอบเขต v2.
+
+ตัวอย่าง request (illustrative logical shape):
+
+```json
+{"expected_revision":12,"command":{"type":"project.set_tempo","position_tick":1920,"bpm":100.0}}
+```
+
+```json
+{"expected_revision":13,"command":{"type":"part.split","part_id":"part-opaque-id","at_tick":1920}}
+```
+
+Part commands ใช้ `position_ticks` และ `duration_ticks` เป็น project/part ticks ตาม
+ชื่อ field; `part.split.at_tick` เป็น tick ภายใน part. หลัง split part เดิมเก็บช่วงซ้ายและ
+ID เดิม, part ใหม่เริ่มที่ `old.position + at_tick`, duration เป็นส่วนที่เหลือ. Note ที่
+คร่อมจุด split ปฏิเสธทั้งคำสั่ง. Curve ถูกแบ่งที่ boundary โดย sample linear interpolation
+ด้วยกฎ round ของ domain; left side คง curve ID เดิม ส่วน right side ได้ curve ID ใหม่.
+การ undo คืน part, curve และ IDs ก่อน split ครบถ้วน.
+
 ### 6.5 High-frequency gesture model (FROZEN)
 
 สถานการณ์เป้าหมาย: ลากโน้ต ปรับความยาว วาด curve ด้วยปากกา → เกิด pointer event หลายร้อยครั้ง.
 
-1. **ระหว่าง gesture:** frontend อัปเดต preview ของตัวเองต่อ frame/input. **ไม่ส่ง mutation.**
-   ตัวอย่าง transient state ที่อนุญาต: drag delta, resize delta, raw stroke samples,
-   selection rect, handles, pointer trajectory. ทั้งหมดทิ้งได้.
-2. **ตอน pointer-up:** ส่ง **หนึ่ง semantic command** ที่อธิบายเจตนาสุดท้าย
-   (`note.move` / `note.resize` / bulk variant / `curve.apply_stroke`).
-3. Rust validate + apply ทั้งชุดแบบ atomic, mint/move ตาม command, บันทึก **หนึ่ง undo step**,
-   เพิ่ม revision **หนึ่งครั้ง**, คืน `changes`.
-4. Frontend แทน/reconcile preview ด้วยผลจริงจาก `changes` (หรือขอ read model ถ้า
-   `authority: "invalidate"`).
-5. **ก่อน commit: save/export/render ต้องใช้ committed state เท่านั้น** — preview ห้ามรั่วเข้า
-   ไปไม่ว่าจะทางใด. Audio ที่เล่นอยู่ให้เล่นต่อได้ แต่ต้องไม่ถูกติดป้ายว่าตรงกับ preview.
-6. Throttling การวาด preview ทำได้ตามต้องการ; ไม่เปลี่ยนเอกลักษณ์ของ final command.
-7. Multi-entity gesture (ลากหลายโน้ตพร้อมกัน) ใช้ bulk command หรือ committed group
-   (§6.8) — ต้อง all-or-nothing และหนึ่ง undo step.
+1. **ระหว่าง gesture:** frontend วาด preview ต่อ frame/input โดยใช้ transient state ที่ทิ้งได้ เช่น drag delta, resize delta, raw curve samples, selection rectangle, handles และ pointer trajectory. ยังไม่มี persistent mutation และ preview ห้ามใช้เป็น save/export/render input.
+2. **ตอน pointer-up:** ส่งหนึ่ง semantic commit (`note.move` / `note.resize` / bulk command / `curve.apply_stroke`). ไม่มีข้อกำหนดให้ส่ง request ต่อ pointer event.
+3. **Curve payload reduction (optional):** client MAY ลดจำนวน raw samples ก่อนส่งเพื่อลด traffic ก็ต่อเมื่อมี authoritative committed curve data ที่ revision ตรงกับ `expected_revision` และการลดนั้นผ่าน simplification vectors/tolerance เดียวกับ §6.7.2. ต้อง normalize base กับช่วง stroke ตาม §6.6.2 ก่อน simplify ทั้งเส้น. ถ้า base revision ไม่ตรง, ไม่มี base curve ที่ authoritative หรือ client reduction ยังไม่ผ่าน parity tests ให้ส่ง captured points โดยไม่ลด ภายใน limits ที่ประกาศ. การลดฝั่ง client เป็น transport optimization เท่านั้น ไม่ใช่ canonical state, ไม่เพิ่ม revision/undo และห้ามใช้แทน Rust validation/commit.
+4. Rust ตรวจ `expected_revision`/stable IDs, validate, canonicalize/merge/simplify ตาม §6.6.2/§6.7.2 แบบ atomic, commit หนึ่ง undo step และเพิ่ม revision หนึ่งครั้ง; response/read ที่คืนจาก Rust คือผล canonical authoritative.
+5. Frontend ทิ้ง buffer/preview หลังรับ commit result แล้ว reconcile จาก `changes` patch หรือ bounded read ที่ revision-tagged. ถ้า commit ล้มเหลว/stale ให้ทิ้งหรือคงไว้เป็น preview ที่ยังไม่ commitอย่างชัดเจน ห้ามนำไป persist/render.
+6. `save`/`export`/`render` ระหว่าง gesture ใช้ committed Rust state เท่านั้น. Audio ที่กำลังเล่นอาจเล่นต่อ แต่ห้ามแสดงว่าเป็นผลของ preview.
+7. Throttle การวาด preview ได้ตามต้องการ. Multi-entity gesture ใช้ bulk command หรือ committed group (§6.8) ให้ all-or-nothing และหนึ่ง undo step; อย่าใช้ group ส่งทุก raw pointer sample.
 
 ### 6.6 Curve semantics and `curve.apply_stroke` v2 (FROZEN)
 
@@ -512,7 +581,7 @@ Snapshot เป็น read-only DTO; canonical file ยังเป็น USTX �
 | value clamping precedent | `SetCurveCommand` clamp เป็น `(min as i32, max as i32)` เฉพาะค่าที่แก้ (`exp_commands.rs:35-40,109-110`) |
 | uniqueness `(part, abbr)` | **ไม่รับประกัน**; `UVoicePart.curves: Vec<UCurve>` (`part.rs:46`); lookup เป็น first-match; delete เป็น `retain` ลบทุกตัวที่ abbr ตรง (`exp_commands.rs:118,204`) → ต้องใช้ `curve_id` |
 | track-level Curve override | **ไม่ถูกใช้โดย render** — `phrase/src/builder.rs:228` วนจาก `project.expressions` เท่านั้น |
-| simplify/merge | **ไม่มีใน Rust** — `Simplify`/`MergeCurves` มีแค่ใน reference (`UCurve.cs:120-182`); comment ยืนยันที่ `curve.rs:4-6` |
+| simplify/merge | `Simplify()` มีใน OpenUtau reference และถูกเรียกจาก `SetCurveCommand.Merge()` หลัง merge gesture commands (`UCurve.cs:120-161`, `Commands/ExpCommands.cs:363-375`); **ยังไม่มีใน Rust** (`domain/src/curve.rs:4-6`). v2 `curve.apply_stroke` จะใช้ deterministic OpenUtau-compatible simplification ตาม §6.7.2 ที่ขอบเขต commit gesture; generic `MergeCurves` ยังอยู่นอก scope |
 | render matching | curve-type expressions ใช้ part curves; curve ที่ไม่มี → default ทุกจุด (`builder.rs:249-260`); pitd อ่านตรงโดย `PitchComputer` ด้วย `unwrap_or(0)` (`feed/src/pitch.rs:203-216`) |
 | cache impact | chunk hash ครอบ curve arrays (`synth-cli/src/chunking.rs:141-153`) |
 
@@ -608,22 +677,54 @@ helper ที่มีอยู่จริงใน domain. Additive/blend/curv
 + metadata `clamped_values: <n>`, `points_written: <n>` + `render.invalidated` สำหรับช่วงที่กระทบ
 (แปลงเป็น project ticks).
 
-**ข้อกำหนด parity ที่ตั้งใจให้ต่างจาก OpenUtau (บันทึกไว้):** OpenUtau รัน
-`SetCurveCommand` ต่อ pointer update แล้ว merge เป็น `MergedSetCurveCommand` และเรียก
-`Simplify()` (Douglas-Peucker, tolerance `min(5,(max-min)*0.005)`;
-`ref-openutau-clean/core/OpenUtau.Core/Commands/ExpCommands.cs:357-377`,
-`UCurve.cs:120-182`). v2 **ไม่ทำ simplify** → ไฟล์ที่ได้จะมีจุดมากกว่า OpenUtau และ render
-อาจต่างเล็กน้อยในระดับ sample. นี่เป็น deviation ที่ยอมรับ consciously, ไม่ใช่ bug.
+**OpenUtau gesture boundary (หลักฐาน):** `SetCurveCommand` ถูกสร้างต่อ edit update, `CanMerge()` รวมคำสั่ง curve gesture และ `Merge()` เรียก `curve.Simplify()` ก่อนสร้าง merged undo command (`ref-openutau-clean/core/OpenUtau.Core/Commands/ExpCommands.cs:330-375`). ดังนั้น Rusted UTAU v2 จะรับ preview/batches ได้ แต่ทำ simplify **ครั้งเดียวตอน commit gesture**—ตรง logical boundary ของการรวม gesture ไม่ใช่ทุก pointer update และไม่ใช่ทุก save/render.
 
 ### 6.7 Canonicalization / resampling ownership (FROZEN)
 
+#### 6.7.1 Sparse storage vs render sampling
+
+Curve storage เป็น **sparse control-point list**, ไม่ใช่ recording ที่มี fixed Hz. ช่วง snap 5 ticks คือ edit grid/render evaluation interval; ไม่ได้บังคับให้มี stored point ทุกช่วง. Renderers อาจ sample/interpolate เส้นตาม tick positions ที่ต้องใช้ โดยไม่ materialize ทุก sample ลง curve ที่บันทึก.
+
+#### 6.7.2 OpenUtau-compatible simplification at commit
+
+หลัง Rust canonicalize และ merge/replacement ช่วง stroke ตาม §6.6.2 แล้ว Rust MUST simplify **curve ทั้งเส้น** ด้วยพฤติกรรมเทียบเท่า OpenUtau `UCurve.Simplify()` (`UCurve.cs:120-161`): OpenUtau เรียก `Simplify()` บน curve object หลัง merge gesture command ทั้งหมด ไม่ได้จำกัดเฉพาะช่วงที่ pointer ลาก.
+
+**Algorithm reference (ต้องคง tie/scan order ของ implementation เพื่อ parity):**
+
+```text
+simplify(points, first, last, tolerance):
+  if last - first < 2: return
+  best_distance = 0
+  best_index = 0
+  for i in first .. last-1:        // exclude final endpoint
+    d = perpendicular_distance(points[first], points[last], points[i])
+    if d > best_distance:          // strict; equal distance keeps the earlier index
+      best_distance = d
+      best_index = i
+  if best_distance > tolerance and best_index != 0:
+    keep(best_index)
+    simplify(first, best_index, tolerance)
+    simplify(best_index, last, tolerance)
+```
+
+- `tolerance = min(5, (descriptor.max - descriptor.min) * 0.005)` in descriptor value units.
+- Perpendicular distance is the Euclidean distance to the **infinite line** through the span endpoints, as implemented by OpenUtau's doubled triangle-area divided by endpoint length (`UCurve.cs:140-161`). Do not silently replace this with vertical interpolation error or segment-clamped distance.
+- Keep first and last points of the whole curve; recursively retain an interior point only when its perpendicular distance is **strictly greater** than tolerance. If the maximum distance ties, keep the first point in ascending-x order (`height > maxHeight` in reference). Then recurse left/right.
+- Canonicalization guarantees strictly increasing x ticks, so a multi-point span's endpoint x values differ and its endpoint segment cannot have zero length. The implementation guards zero length defensively by measuring from the endpoint; this branch is unreachable for valid canonical input.
+- Inputs to simplification have x strictly increasing after §6.6.2 canonicalization/dedupe. Spans with fewer than three points are unchanged.
+- Distance comparisons and retained-point decisions MUST match in native and WASM. Match the reference's IEEE-754-style distance comparison and tie rule; no host-specific epsilon. If a fixed-point implementation is desired, prove it makes exactly the same keep/drop decisions at threshold and tie fixtures before substituting it.
+- Simplification is part of one committed mutation: it adds no revision/undo. Undo restores the pre-stroke arrays byte-exactly; response patch/read carries the post-simplification committed curve.
+- Since reference simplifies the whole curve after merged gesture commands, redundant points outside the replaced interval may be removed if they are within tolerance of the retained polyline. No unrelated curve/entity may change. Generic cross-part `MergeCurves` and save/render-time simplification are out of scope.
+
+**Conformance:** strict tolerance boundary (equal drops, greater retains), endpoint preservation, first-maximum tie, collinear points, line-extension/perpendicular-distance case, narrow spike below/above tolerance, uneven x-spacing, negative descriptor values, multi-span gesture, redundant outside-span removal only within tolerance, unaffected curve/entity preservation, deterministic replay, exact undo/redo, native/WASM identical output, and degenerate zero-length endpoint cases for the explicitly chosen rule.
+
 | เรื่อง | v2 |
 |---|---|
-| UI sampling density | ทำได้ตามใจ (dense); เป็น transport/preview detail |
-| Rust stored result | canonicalize ตาม §6.6.2 (sort, snap 5 ticks, dedupe last-wins, clamp) แล้วเก็บในรูป domain ปัจจุบัน (parallel `Vec<i32>`) |
-| simplification | **ไม่มีใน v2.** ถ้าจะเพิ่มภายหลังต้อง (a) เปิด capability `curve_simplify`, (b) ประกาศ algorithm + tolerance, (c) พิสูจน์ native/WASM parity, (d) ยืนยันว่าไม่เปลี่ยนความหมายของ command (intent เดิม, จุดที่เก็บอาจต่าง) |
-| determinism | same input → structurally identical canonical output ทั้ง native และ WASM; ห้ามใช้ floating-point ที่ทำให้ผลต่างกัน (ขั้น canonicalize ใช้ integer math ล้วน + half-to-even ที่ระบุชัด) |
-| tolerance | ไม่ประกาศใน v2 เพราะไม่มีการ simplify |
+| UI sampling density | input/preview policy; dense samples ได้เฉพาะภายใน advertised payload/point limits |
+| Rust stored result | canonicalize ตาม §6.6.2 → interval merge → simplify ทั้ง curve ตาม §6.7.2 → เก็บ parallel `Vec<i32>` |
+| simplification | **required** สำหรับ adapters ที่ประกาศ `curve_apply_stroke` |
+| tolerance | `min(5, descriptor_range * 0.005)`; retain เมื่อ `distance > tolerance` เท่านั้น |
+| determinism | ascending-tick scan, first-maximum tie, exact shared distance decision, same native/WASM output |
 
 ### 6.8 Groups: state machine and transaction semantics (FROZEN)
 
@@ -750,6 +851,8 @@ Native และ WASM ต้องให้ผลตรงกันสำหร�
 | read | path (proposed) | คืนอะไร | ใช้เมื่อ |
 |---|---|---|---|
 | full snapshot | `GET /api/v2/sessions/{id}` | snapshot §6.3 | create/open, resync, conflict recovery, structural change, test |
+| project metadata/maps | `GET /api/v2/sessions/{id}/project` | `{revision, project: ProjectMetaView}` | หลัง `project.*` ที่ invalidate |
+| one part | `GET /api/v2/sessions/{id}/parts/{part_id}` | `{revision, part: PartView}` | หลัง `part.*` ที่ invalidate |
 | part notes | `GET /api/v2/sessions/{id}/parts/{part_id}/notes` | `{revision, part_id, notes[]}` | หลัง `note.*` ที่ `authority: "invalidate"` |
 | one curve | `GET /api/v2/sessions/{id}/parts/{part_id}/curves/{curve_id}` | `{revision, part_id, curve_id, abbr, points[]}` | หลัง `curve.changed` ที่ invalidate |
 | track metadata | `GET /api/v2/sessions/{id}/tracks` | `{revision, tracks[]}` | หลัง `track.*` ที่ invalidate |
@@ -794,6 +897,22 @@ Native และ WASM ต้องให้ผลตรงกันสำหร�
 - Response ของ create = full snapshot (บังคับ) + session descriptor + capabilities ที่
   session ใช้จริง.
 
+#### Lifecycle persistence adapters (draft implementation)
+
+- Native save ใช้ `PUT /api/v2/sessions/{id}/save`; Save As ใช้
+  `PUT /api/v2/sessions/{id}/save-as` กับ `{name, expected_revision}`. Save As เตรียม
+  `.ustx` + sidecar ที่มี `project_id` ใหม่และ entity IDs เดิม, เขียนไฟล์ทั้งคู่ก่อน
+  แล้วค่อย adopt project ID ใหม่เข้า live session. ความล้มเหลวก่อนเขียนสำเร็จต้องไม่
+  เปลี่ยน identity/revision ใน session.
+- รอบร่างนี้ยังไม่ได้เพิ่ม lifecycle Save As/export API ให้ WASM. จะทำ adapter
+  ฝั่ง WASM และ UI Web แยกในขั้นลง Web โดยคง identity fork semantics เดียวกับ
+  `project-session`; ห้ามถือว่าร่างนี้เป็น API ที่มีอยู่แล้ว.
+- native export ใช้ `GET /api/v2/sessions/{id}/export` ส่ง canonical USTX โดยไม่มี
+  sidecar. Portable export และการ import ที่ mint IDs ใหม่เป็น logical semantics
+  ร่วมกัน แต่ adapter ฝั่ง WASM ยังรอการลงงานแยก.
+- Portable export เป็น canonical USTX จาก Rust โดยไม่มี sidecar; open/import ไฟล์นั้น
+  จะ mint identity ใหม่ตาม §6.2.6.
+
 ### 6.12 Session lifecycle (FROZEN)
 
 **หลักการ:** logical session เป็น in-memory, process-local, **ไม่ durable**. v2 ไม่มี
@@ -801,30 +920,41 @@ durable session, ไม่มี cross-restart recovery, ไม่มี multi-u
 
 #### Native (synth-server)
 
+**Web host recovery extension (2026-10-17):** the HTTP editor may send an opaque
+per-tab `recovery_id` when it opens a session. The server writes a separate
+Rust-authored checkpoint under its project storage after each committed
+revision (grouped gestures checkpoint at commit). This checkpoint is not a
+named project and never overwrites one. After a page/server restart the same
+tab can call `POST /api/v2/recovery/{recovery_id}`; the server opens a fresh
+session from the last checkpoint. The logical session is still process-local:
+revision and undo history restart, and an in-progress gesture is not recovered.
+The browser stores only the opaque recovery key; project bytes, sidecars, and
+uploaded `asset:<id>` media bytes remain in Rust/server storage.
+
 | เหตุการณ์ | พฤติกรรม (FROZEN) |
 |---|---|
 | create | session ใหม่ + registry entry (server ต้องเพิ่ม session registry วันนี้ยังไม่มี — `AppState` มีแค่ voicebanks/projects/renderer/stats, `state.rs:16-27`) |
 | explicit close | ทิ้ง session และ state ทั้งหมดที่ยังไม่ save; open group ถูกทิ้ง; render job ที่ค้างอยู่ต้องถูก cancel; idempotent (`not_found` ถ้าไม่มีอยู่แล้ว) |
 | idle expiry | **FROZEN 2026-09-29:** default **30 นาที** ของ "ไม่มี activity"; ทุก logical operation นับเป็น activity และ **reset TTL**. Session ที่มี render job สถานะ `queued` หรือ `running` **ต้องไม่ expire** จนกว่า job จะจบหรือถูก cancel. Expiry = close แบบเดียวกับ explicit close (state ที่ไม่ save หาย). ค่าจริงต้องประกาศใน capabilities |
-| unsaved committed changes | **หาย** เมื่อ close/expire/restart. การกันหายต้องมาจาก autosave ที่ client/host ทำเอง (`save` เป็น explicit logical operation) |
-| server restart | **ทุก session หาย** — client ต้อง handshake ใหม่และ reopen จาก `.ustx` + sidecar. ห้ามทำเป็น durable session เงียบ ๆ |
+| unsaved committed changes | logical session หายเมื่อ close/expire/restart. HTTP Web host recovery ข้างต้นเก็บ checkpoint ของ committed document แยกจาก session; host อื่นต้องกำหนด recovery ของตัวเอง |
+| server restart | live session และ undo history หาย. HTTP Web host เปิด session ใหม่จาก checkpoint ได้; หากไม่มี checkpoint client ต้องเปิดจาก `.ustx` + sidecar. นี่ไม่ใช่ durable logical session |
 | crash | เหมือน restart. sidecar ที่เขียน atomic แล้วทำให้ ID ต่อเนื่องได้; revision/undo history เริ่มใหม่ที่ 0 |
 | Android | server เป็น child process ที่ถูก kill ตอน `onDestroy` (`MainActivity.kt:92-95`, `EngineProcess.kt:173-179`) และ **ไม่มี watchdog** (`engineRunning` ไม่เคยถูกเรียกจาก Dart) → ถ้า process ตาย client ต้องตรวจ `/health` และ reopen เอง; v2 ไม่สัญญา auto-recovery |
 | concurrency | 여러 session isolated; render ใช้ worker เดียวและคิว FIFO วันนี้ (`render_service.rs:92-113`) → v2 ต้องมี per-job cancel ไม่ใช่ global flag (ดู §6.13) |
 
 #### WASM / browser
 
-- หนึ่ง session = หนึ่ง `Engine`/session object (วันนี้ `Engine` ถือ `doc` + `plan` เดียว,
-  `engine-wasm/src/lib.rs:111-119`). Close = drop object. ไม่มี idle expiry.
+- หนึ่ง session = หนึ่ง `Engine`/session object (`engine-wasm/src/lib.rs` ถือ shared
+  `project_session::Session` + derived render `plan`). Close = drop object. ไม่มี idle expiry.
 - ไม่มี cross-tab/cross-worker shared session ใน v2; หลาย `Engine` = หลาย session ที่ isolated กัน.
 - Revision/ID ทั้งหมดอยู่ใน Rust; epoch ที่ `web/app/editor.js` ถืออยู่เป็น UI-side
   stale-result guard เท่านั้น และ **ไม่ใช่** revision ของสัญญานี้ (ต้อง map ให้ชัดตอน implement).
 
 #### สิ่งที่ v2 ไม่สัญญา
 
-- ไม่มี durable session, ไม่มี server-side autosave, ไม่มี recovery หลัง restart/crash,
-  ไม่มี multi-user/remote access control. ถ้าต้องการ durability ต้องสร้างกลไกแยก
-  (เช่น autosave + recovery file) และต้องไม่เปลี่ยน revision/ID semantics ที่นี่.
+- logical v2 เองไม่มี durable session หรือ recovery semantics. Host-specific recovery
+  เช่น Web HTTP ต้องแยกจาก session lifecycle และห้ามเปลี่ยน revision/ID semantics.
+  ไม่มี multi-user/remote access control.
 
 ### 6.13 Render job model (FROZEN — asynchronous)
 
@@ -868,7 +998,7 @@ Response: `{"error": {"code": "...", "message": "...", "details": {...}}, "revis
 
 | code | HTTP | หมวด | เกิดเมื่อ |
 |---|---|---|---|
-| `not_found` | 404 | user | session/group/render_id/track_id/part_id/note_id/curve_id/stored project ไม่มี |
+| `not_found` | 404 | user | session/group/render_id/track_id/part_id/note_id/curve_id/stored project หรือ tempo/meter position ไม่มี |
 | `validation_error` | 400 | user | input ผิด (tick out of range, lyric/tone ผิด, `points` ไม่ถูกตาม mode, `abbr` mismatch, `name_conflict`) — แก้ได้โดยผู้ใช้ |
 | `unsupported_operation` | 400/501 | user | คำสั่ง/mode ที่รู้จักแต่ v2 ไม่รองรับ (เช่น `mode: "blend"`, nested group) |
 | `revision_conflict` | 409 | concurrency | `expected_revision` ไม่ตรงกับ committed revision |
@@ -877,6 +1007,7 @@ Response: `{"error": {"code": "...", "message": "...", "details": {...}}, "revis
 | `group_failed` | 409 | concurrency | child command ใน group ล้ม → tentative ถูกทิ้งทั้งชุด (code นี้ยังคงไว้ เพราะ frontend ต้องแยกจาก validation error เดี่ยว) |
 | `payload_too_large` | 413 | transport | เกิน limit ที่ประกาศใน capabilities — ไม่มี mutation/revision/history change |
 | `storage_error` | 500 | storage | อ่าน/เขียน `.ustx`/sidecar/lock ล้มเหลว |
+| `media_unavailable` | 404 | storage | host ไม่พบ asset ตาม logical `media_ref` |
 | `render_error` | 500 | internal/render | render ล้มเหลวระหว่างทำงาน |
 | `render_cancelled` | 409 | user | job ถูก cancel โดยผู้ใช้/close |
 | `internal_error` | 500 | internal | bug/panic ที่ถูก guard แล้ว; ต้องมี diagnostic |
@@ -917,20 +1048,24 @@ Response: `{"error": {"code": "...", "message": "...", "details": {...}}, "revis
 
 ```json
 {
-  "contract_version": "2-draft1",
-  "command_schema_version": 1,
-  "snapshot_schema_version": 1,
+  "contract_version": "2.0",
+  "command_schema_version": 2,
+  "snapshot_schema_version": 2,
   "id_schema_version": 1,
-  "features": ["stable_ids", "partial_reads", "async_render", "group_transactions",
+  "features": ["stable_ids", "partial_reads", "group_transactions",
                "curve_apply_stroke", "curve_clear"],
-  "engines": [{"id": "r1-rs", "available": true}],
-  "limits": {"max_command_bytes": 2097152, "max_stroke_points": 20000},
-  "render": {"progress": ["poll", "sse"], "max_concurrent_jobs": 1}
+  "limits": {"max_command_bytes": 1048576, "max_stroke_points": 20000},
+  "render": {"async_jobs": false, "per_job_cancel": false, "progress_transports": []},
+  "host": {"engines": [{"id": "r1-rs", "available": true}],
+           "idle_ttl_seconds": 1800, "max_import_bytes": 8388608,
+           "transport_methods": ["http_json"]}
 }
 ```
 
-- ต้อง expose: contract version, schema versions, features, engines ที่ **ใช้งานได้จริง**,
-  limits, และ render progress transports.
+- Shared logical DTO fields are `contract_version`, schema versions, `features`, `limits`, and
+  `render`; host-only extensions live under `host` (for example `engines`, idle TTL, import size,
+  and transport methods). Native implementations include `poll` when the polling route is ready;
+  direct WASM may report no progress transport while `async_jobs:false`.
 - **ห้าม** ให้ client ตรวจ support ด้วยการยิงคำสั่งให้ error (probe by error).
 - **หมายเหตุ:** `/capabilities` วันนี้คืน static `WorldlineCapabilities` และไม่รายงานว่า
   server เปิด engine ไหนได้จริง (`handlers.rs:360-372`, `worldline-plugin/src/capabilities.rs:64-79`)
@@ -940,7 +1075,7 @@ Response: `{"error": {"code": "...", "message": "...", "details": {...}}, "revis
 
 ### 6.16 Legacy compatibility (ย้ำ)
 
-- §0–§5 ของเอกสารนี้ยังเป็น CONTRACT-v1 ที่ frozen; v2 draft ไม่แก้ route/behavior เดิม.
+- §0–§5 ของเอกสารนี้ยังเป็น CONTRACT-v1 ที่ frozen; v2 logical contract ไม่แก้ route/behavior เดิม.
 - `engine-wasm` facade ที่รับ string command `{"cmd":"move_note","part":0,"note":3,...}`
   (index-addressed) **ยังทำงานเหมือนเดิม** และยังใช้โดย Web editor ปัจจุบัน; การย้าย Web ไป
   stable-ID session เป็นงานถัดไป ไม่ใช่การลบของเดิม.
@@ -949,7 +1084,7 @@ Response: `{"error": {"code": "...", "message": "...", "details": {...}}, "revis
 - `ustx-codec` เป็น layer mapping JSON view แบบ lossy (`ustx-codec/src/lib.rs:43-86`) และ
   rebuild `UProject::create()` ใหม่ (`:151-213`) → **ห้ามใช้เป็นที่เก็บ ID** และห้ามถือเป็น
   canonical document; canonical ยังเป็น USTX ที่ domain serialize.
-- Sidecar **ต้องไม่เปลี่ยน bytes ของ `.ustx`**: ไฟล์ `.ustx` ที่ Lilt เขียนต้องไม่มี key ใหม่
+- Sidecar **ต้องไม่เปลี่ยน bytes ของ `.ustx`**: ไฟล์ `.ustx` ที่ Rusted UTAU เขียนต้องไม่มี key ใหม่
   เพิ่ม (พิสูจน์ด้วย test เทียบกับ USTX ที่ OpenUtau อ่านได้).
 - ห้ามลบ legacy API ก่อนที่ path ที่ migrate แล้วจะไม่พึ่งมัน (ดู §6.19 ขั้น 11).
 
@@ -1022,7 +1157,7 @@ stale revision, `note.added` แล้ว address ต่อได้, move แ�
 33. Capabilities: features/limits ที่ประกาศตรงกับพฤติกรรมจริง (เช่น ถ้าไม่ declare
     `partial_reads` ต้องไม่ตอบ 404 แบบงง แต่ต้องบอกใน capabilities).
 
-### 6.18 Remaining unresolved items (พร้อมหลักฐานที่ block)
+### 6.18 Implementation gaps and non-blocking follow-ups
 
 ข้อที่ **ปิดแล้ว** (2026-09-29) — ดูรายละเอียดที่อ้างถึง:
 
@@ -1037,13 +1172,13 @@ stale revision, `note.added` แล้ว address ต่อได้, move แ�
 4. ~~ผู้เขียน sidecar~~ — **ปิด.** เขียนผ่าน session v2 save path เท่านั้น; legacy `/project`
    ไม่เปลี่ยน semantics (§6.2.4).
 
-ยังไม่ freeze (block การออก CONTRACT-v2 แต่ไม่ block การ implement ต่อ):
+ข้อกำหนด logical ต่อไปนี้ปิดแล้ว; รายการที่ยังเหลือเป็น implementation/release gates เท่านั้น:
 
 5. **Command discriminators, result/change field names, route names และ status code สุดท้าย** —
-   ร่างและ implement ฝั่ง Rust แล้ว (`project-session::v2`) แต่ยังต้อง review กับ adapter
-   Flutter/Web ก่อน freeze. รวมถึงการคงชื่อ `group_failed` หรือยุบเข้า `invalid_group_state`.
-6. **Progress transport ของ native (poll vs SSE vs WebSocket)** — semantics freeze แล้ว
-   (tag ครบ, granularity = chunk) แต่กลไกยังเลือกไม่สุด ขึ้นกับฝั่ง axum.
+   logical DTO spellings ถูกกำหนดใน §6.20; adapter คง host-specific transport. Child failure
+   ใช้ `group_failed` และปิด/discard group; absent/closed group ใช้ `invalid_group_state`.
+6. **Progress transport** — **Decision 2026-09-30:** native polling เป็น baseline; SSE/WebSocket
+   เป็น optional. WASM session async render ประกาศ unavailable จนมี worker adapter.
 7. **Extra key `resolution: 1` ที่มีอยู่ในไฟล์เดิม (เขียนโดย Dart ที่ `app/lib/editor_ustx.dart:59`,
    พบใน 13 ไฟล์ `.ustx`)** — ตรวจแล้วว่า OpenUtau drop key นี้ และ Rust ไม่ serialize
    `resolution` (เป็น `const fn` ที่ `domain/src/project.rs` ไม่ใช่ field) จึงไม่กระทบ
@@ -1060,7 +1195,10 @@ stale revision, `note.added` แล้ว address ต่อได้, move แ�
 10. render cache เขียน `res-*.bin` แล้ว **ไม่มี eviction** (`render_service.rs:25,407-413`;
     ไม่มีตัวลบใน `clean-cache.sh`) — ความเสี่ยงเรื่องดิสก์โตบนอุปกรณ์.
 11. badapple native render **ไม่ scale ตาม threads** (`wasm-performance.md:99-102`) — ยังไม่มี
-    คำอธิบาย; กระทบ SLO ที่ยังไม่ควรสัญญา ไม่กระทบ semantics (§6.13 ข้อ 10).
+   คำอธิบาย; กระทบ SLO ที่ยังไม่ควรสัญญา ไม่กระทบ semantics (§6.13 ข้อ 10).
+12. **Command scope:** first required v2 scope รวม `part.*` และ `project.*`; logical schemas อยู่ใน
+   §6.4.4/§6.20. Planner ปัจจุบันยัง reject; implement และรัน adapter vectors ก่อนประกาศ
+   product readiness (T004).
 
 ### 6.19 Implementation plan (ลำดับที่แนะนำ)
 
@@ -1084,8 +1222,137 @@ stale revision, `note.added` แล้ว address ต่อได้, move แ�
 adapter (ขั้น 7) พร้อม; **ห้ามลบ legacy API ก่อนขั้น 11** และต้องมี test ที่พิสูจน์ว่าไม่มี
 caller เหลือ.
 
----
+### 6.20 Canonical JSON DTO catalogue (FROZEN)
 
-*Breaking changes ต่อ legacy endpoints ต้อง bump เป็น CONTRACT-v2 + แจ้งทั้งสองฝั่ง.
-Draft §6 นี้จะ freeze เป็น CONTRACT-v2 ได้หลัง conformance vectors (§6.17) ผ่านทั้ง
-native และ WASM adapter และรายการ §6.18 ถูกปิด.*
+All examples below are normative JSON shapes. Unknown fields in request objects are rejected
+with `validation_error`; response consumers ignore unknown additive fields. Enum values are
+closed within a schema version. A breaking field/type/meaning change increments the relevant
+schema version. Required command support is advertised per adapter only after its conformance
+group passes.
+
+#### Shared logical DTOs
+
+```json
+{"expected_revision":12,"command":{"type":"part.move","part_id":"uuid","position_ticks":960},"include_snapshot":false,"group_id":null}
+```
+
+`MutationRequest` is `{expected_revision:u64, command:Command, include_snapshot?:boolean=false,
+group_id?:EntityId|null}`. `Command` is a closed tagged object with discriminator `type`; its
+variants and required fields are the note/track/curve variants in §§6.4–6.6 and the project/part
+variants in §6.4.4. `EntityId` is an opaque lowercase UUID string per §6.2. `Tick` is an integer
+in the stated project-relative or part-relative domain; fractional values, NaN and infinity are
+invalid.
+
+The required note/track command field sets are:
+
+| `type` | Required fields besides `type` |
+|---|---|
+| `note.add` | `part_id`, `tone`, `position_ticks`, `duration_ticks`, optional `lyric` |
+| `note.remove` | `note_id` |
+| `note.set_lyric` | `note_id`, `lyric` |
+| `note.set_tone` | `note_id`, `tone` |
+| `note.move` | `note_id`, optional `delta_position_ticks` (default 0), optional `delta_tone` (default 0) |
+| `note.resize` | `note_id`, `delta_duration_ticks`, optional `from_start` (default false) |
+| `track.rename` | `track_id`, `name` |
+| `track.set_mute` / `track.set_solo` | `track_id`, matching boolean field `mute` / `solo` |
+| `track.set_volume_db` | `track_id`, `volume_db` |
+| `track.set_pan` | `track_id`, `pan` |
+| `curve.apply_stroke` | Exact object in §6.6.2 |
+
+Note add positions/durations are part-relative ticks; tone is an integer MIDI tone and duration
+must be positive. Delta fields are signed integers. Rename/name and lyric are strings; volume and
+pan are finite numbers validated to the domain range. All referenced IDs must resolve in the
+session and part/track kind constraints apply. Defaults are used only when a field is omitted;
+unknown fields are rejected. `note.add` returns the minted `note_id` in its change patch.
+
+```json
+{"revision":13,"command_name":"Move part","changed":true,"can_undo":true,"can_redo":false,"changes":[{"kind":"part.changed","authority":"patch","track_id":"uuid","part_id":"uuid","data":{"id":"uuid","kind":"voice","name":"Verse","comment":"","position_ticks":960,"duration_ticks":3840,"media_ref":null,"notes":[],"curves":[]}}]}
+```
+
+`MutationOutcome` is `{revision:u64, command_name:string, changed:boolean, can_undo:boolean,
+can_redo:boolean, changes:Change[], snapshot?:Snapshot}`. `Change` is `{kind, authority,
+track_id?, part_id?, note_id?, curve_id?, abbr?, start_tick?, end_tick?, data?, reason?}`.
+For `authority:"patch"`, `data` is the complete canonical entity/view defined in §6.4.3;
+for `invalidate`, `data` is omitted. Inapplicable fields are omitted, never null.
+
+`SessionError` is `{code:string, message:string, details?:object}`; `details` is omitted when
+empty. Codes are the set in §6.14. Rejected mutations leave document, revision and history
+unchanged. Native maps this logical error once to HTTP status/body; WASM returns the equivalent
+logical error directly.
+
+#### Canonical project and part views
+
+```json
+{"id":"uuid","name":"Untitled","comment":"","key":0,"tempos":[{"position_tick":0,"bpm":120.0}],"time_signatures":[{"bar_position":0,"numerator":4,"denominator":4}],"bpm":120.0,"time_signature":{"numerator":4,"denominator":4}}
+```
+
+`ProjectMetaView` fields are `id`, `name`, `comment`, `key`, sorted `tempos`, sorted
+`time_signatures`, and deprecated derived aliases `bpm` and `time_signature` for tick/bar zero.
+Tempo positions are nonnegative project ticks and BPM is finite and positive. Exactly one tempo
+entry at tick zero is required. Meter bar positions are nonnegative; numerator/denominator are
+positive integers and `1920*numerator/denominator` must be an exact positive integer within Tick
+range. Exactly one meter entry at bar zero is required. Setting at an existing position replaces
+it; removing position zero is invalid; removing a missing position is `not_found`. Key is integer
+0..11. Name is nonempty; comment may be empty.
+
+```json
+{"id":"uuid","kind":"wave","name":"Backing","comment":"","position_ticks":0,"duration_ticks":9600,"media_ref":"asset:drums.wav","notes":[],"curves":[]}
+```
+
+`PartView` fields are `id`, `kind`, `name`, `comment`, `position_ticks`, `duration_ticks`,
+`media_ref`, `notes`, `curves`. `kind` is `voice|wave`; `media_ref` is null for voice and required
+for wave. It is a nonempty opaque document-relative URI/string owned by the host asset store;
+absolute OS paths are forbidden. Hosts keep it stable when moving/saving a project. An unresolved
+reference yields `media_unavailable` when the asset is needed and is never silently rewritten.
+New parts have empty notes/curves. Name is nonempty; comment may be empty; position >= 0 and
+duration > 0. Resize that would exclude a note or curve point rejects atomically. Part ordering is
+by position, then stable ID.
+
+#### Part split boundary rule
+
+`part.split` accepts voice parts only and requires `0 < at_tick < duration_ticks`; a note whose
+half-open interval crosses the boundary rejects the command. Notes at or after the boundary move
+right and subtract `at_tick` from their relative positions. For each curve, sample its original
+linear curve at the boundary using domain half-to-even rounding and include that boundary point in
+both outputs (right-side tick zero). Existing points before the boundary remain left; points after
+move right and are rebased. A point exactly at the boundary is represented once in each output.
+Left curve IDs remain; right curves get fresh IDs. Other curve metadata is preserved. Undo
+restores the exact original points and IDs.
+
+#### Lifecycle, history, reads, and capabilities DTOs
+
+`CreateSessionRequest` is `{source:Source}` where `Source` is exactly one of
+`{type:"new", name?:string, bpm?:finite-positive-number}`,
+`{type:"stored_project", name:string}`, or
+`{type:"imported_ustx", name:string, ustx:string}`. Create/open returns
+`{session_id:string, revision:0, ids_stable:boolean, warnings:Warning[], snapshot:Snapshot,
+capabilities:Capabilities}`. `Warning` is `{code:string, count?:u64}`. Save request is
+`{name,expected_revision}` and returns `{saved:true,name,revision,sidecar_written:true}`. Save As
+adds `project_id` to that result. Portable export returns
+`{revision,ustx,sidecar_included:false}`. Close returns `{closed:true}`. Host storage identifiers
+are names or opaque media refs, never filesystem paths.
+
+Undo/redo request is `{expected_revision}` and returns `MutationOutcome`. Group begin request is
+`{expected_revision,name?:string}` and returns `{group_id,base_revision,revision}`; child
+mutations carry `group_id`; commit/cancel requests are `{expected_revision,group_id}` and return
+normal outcome. Failed child operations return `group_failed` and discard the group; absent or
+closed groups return `invalid_group_state`.
+
+Bounded read results are the envelopes in §6.10; each carries `revision` and relevant stable IDs.
+The shared logical capabilities descriptor is
+`{contract_version,command_schema_version,snapshot_schema_version,id_schema_version,features,
+limits:{max_command_bytes,max_stroke_points},render:{async_jobs,per_job_cancel,progress_transports}}`.
+Host extensions live under `host` and may report engines, idle TTL, import limits and transport
+methods. Native requires polling; SSE/WebSocket are optional. WASM reports async jobs and
+per-job cancel unavailable until its worker adapter implements them. A feature is listed only
+after its adapter passes that conformance group. Progress uses
+`{session_id,render_id,revision,done_chunks,total_chunks,elapsed_ms}`; completion is tagged with
+the same session/revision and an audio/artifact reference. A result for a revision other than the
+current committed revision is marked stale and cannot silently become current audio.
+
+This catalogue is the frozen logical baseline. Golden fixtures may add examples but may not
+redefine fields or behavior; changes follow the schema versioning rules above.
+
+---
+*The §6 logical standard is frozen. Adapter implementation and cross-host conformance remain
+tracked separately in T004/T011 and must pass before claiming v2 product readiness.*

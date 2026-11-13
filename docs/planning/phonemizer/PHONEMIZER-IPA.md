@@ -23,7 +23,7 @@
   vectors + threshold 1.0 — a→A, r→r3, R→None) + `CapabilityManager`
   (&dyn EngineCapabilities — fake engine ใน test)
 - **Task 5** `UniversalPhonemizer` — hint path byte-identical กับ EnglishCvvc;
-  unhinted: word dict (lilt_demo_g2p) → letter-split → IPA → adapter;
+  unhinted: word dict (rusted_utau_demo_g2p) → letter-split → IPA → adapter;
   kana → verbatim (VCV adapter งานถัดไป); qq → verbatim
 - **Task 6** `Engine::capabilities() -> &dyn EngineCapabilities` (ไม่ใช่
   concrete) + `PhonemizerKind::Universal` (default ใหม่; English/Japanese
@@ -41,7 +41,7 @@
 
 - `crates/phonemizer/src/english.rs` (418L): `EnglishCvvcPhonemizer::process` — hint → tokens → `pair()` map ตรงเป็น CV/CVVC aliases (เช่น "la[l A]" → [l, A] → pairs "l A")
 - `crates/phonemizer/src/japanese.rs` (345L): `JapaneseVcvPhonemizer` — VCV ตรง + translit fallback (`translit.rs` ja→en mora)
-- `crates/phonemizer/src/g2p.rs` (195L): `G2p` trait (is_valid_symbol/is_vowel/is_glide/query/unpack_hint) + `G2pFallbacks`; `lilt_dict.rs` (84L): `lilt_demo_g2p()` demo dictionary
+- `crates/phonemizer/src/g2p.rs` (195L): `G2p` trait (is_valid_symbol/is_vowel/is_glide/query/unpack_hint) + `G2pFallbacks`; `rusted_utau_dict.rs` (84L): `rusted_utau_demo_g2p()` demo dictionary
 - `crates/phonemizer/src/phonemizer.rs`: `Phonemizer` trait — `process(notes, singer) -> Vec<UPhoneme>`
 - `crates/voicebank/src/oto.rs`: `Oto` struct (alias/offset/consonant/cutoff/preutter/overlap) + `OtoSet`; `Voicebank::oto_map: HashMap<String, Oto>` (aliases ทั้งหมด — 2673 ตัวใน Teto English)
 - **จุดอ่อนปัจจุบัน:** phonemizer แต่ละตัว map ตรงเข้า bank aliases — bank ใหม่/ภาษาต้องเขียน phonemizer ใหม่; ไม่มี "ภาษากลาง"
@@ -71,7 +71,7 @@
 
 ### L1: IPA Layer (universal)
 เพิ่ม IPA dictionary + detect:
-- `g2p.rs`: `IpaDictionary` (ใหม่ — โครงสร้างเดียวกับ G2pDictionary): en ARPABET→IPA (เช่น "l"→/l/, "A"→/ɑ/, "aI"→/aɪ/) + ja mora→IPA (เช่น "ら"→/ɾa/) — เริ่มจาก subset ที่ Teto ใช้ (ดู lilt_dict + translit)
+- `g2p.rs`: `IpaDictionary` (ใหม่ — โครงสร้างเดียวกับ G2pDictionary): en ARPABET→IPA (เช่น "l"→/l/, "A"→/ɑ/, "aI"→/aɪ/) + ja mora→IPA (เช่น "ら"→/ɾa/) — เริ่มจาก subset ที่ Teto ใช้ (ดู rusted_utau_dict + translit)
 - `detect.rs` (ใหม่): detect ภาษา lyric — hiragana/katakana → ja, latin → en (ใช้ translit.rs logic ที่มี)
 - Output: `Vec<IpaToken>` — phoneme IPA + stress/type hints
 
@@ -102,9 +102,9 @@
 **Step 4:** PASS + `cargo test -p voicebank` ทั้งหมดผ่าน
 
 ### Task 2: IpaDictionary (en subset)
-**Files:** Modify `crates/phonemizer/src/g2p.rs` (หรือ Create `ipa_dict.rs`); Modify `lilt_dict.rs` (ขยาย); Test `crates/phonemizer/tests/ipa_test.rs`
+**Files:** Modify `crates/phonemizer/src/g2p.rs` (หรือ Create `ipa_dict.rs`); Modify `rusted_utau_dict.rs` (ขยาย); Test `crates/phonemizer/tests/ipa_test.rs`
 **Step 1:** test — `ipa("l") == /l/`, `ipa("A") == /ɑ/`, `ipa("aI") == /aɪ/`, `ipa("3") == /ə/`
-**Step 2:** FAIL → implement (HashMap ARPABET→IPA — subset จาก lilt_dict + Teto ใช้)
+**Step 2:** FAIL → implement (HashMap ARPABET→IPA — subset จาก rusted_utau_dict + Teto ใช้)
 **Step 3:** PASS
 
 ### Task 3: Detect ภาษา
@@ -151,7 +151,7 @@
 ## Files Likely to Change
 
 - Create: `crates/voicebank/src/manifest.rs`, `crates/phonemizer/src/detect.rs`, `crates/phonemizer/src/adapter.rs`, `crates/phonemizer/src/nearest.rs`, `crates/phonemizer/src/capability.rs` (+ `EngineCapabilities` trait — domain หรือ crate กลาง), `crates/phonemizer/src/ipa_dict.rs` (ถ้าแยก), tests
-- Modify: `crates/voicebank/src/lib.rs`, `crates/phonemizer/src/g2p.rs`, `crates/phonemizer/src/phonemizer.rs`, `crates/phonemizer/src/english.rs` (delegate), `crates/phonemizer/src/japanese.rs` (delegate), `crates/phonemizer/src/lilt_dict.rs`, `crates/worldline-plugin/src/capabilities.rs` (implement EngineCapabilities trait), `tools/synth-cli/src/engine.rs` (Engine::capabilities → `&dyn EngineCapabilities`), `tools/synth-cli/src/pipeline.rs` (PhonemizerKind::Universal), `tools/synth-server/src/render_service.rs` (ส่ง manifest)
+- Modify: `crates/voicebank/src/lib.rs`, `crates/phonemizer/src/g2p.rs`, `crates/phonemizer/src/phonemizer.rs`, `crates/phonemizer/src/english.rs` (delegate), `crates/phonemizer/src/japanese.rs` (delegate), `crates/phonemizer/src/rusted_utau_dict.rs`, `crates/worldline-plugin/src/capabilities.rs` (implement EngineCapabilities trait), `tools/synth-cli/src/engine.rs` (Engine::capabilities → `&dyn EngineCapabilities`), `tools/synth-cli/src/pipeline.rs` (PhonemizerKind::Universal), `tools/synth-server/src/render_service.rs` (ส่ง manifest)
 - Docs: `docs/architecture/` (feed-data-flow)
 
 ## Tests / Validation
@@ -172,4 +172,4 @@
 ## Open Questions
 
 1. VCV (Japanese) ต้องการ context (prev mora) — manifest เก็บแค่ pairs พอ หรือต้อง prev-alias map?
-2. เก็บ IPA dictionary ใน code (Rust) หรือไฟล์ data? — POC: code (เหมือน lilt_dict)
+2. เก็บ IPA dictionary ใน code (Rust) หรือไฟล์ data? — POC: code (เหมือน rusted_utau_dict)

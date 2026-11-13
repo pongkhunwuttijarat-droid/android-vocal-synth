@@ -2,6 +2,9 @@
 
 > Vision, Roadmap, Milestones, Sprints สำหรับ Android Voice Synth
 
+เอกสารนี้เก็บเป้าหมายและสถานะ milestone โดยรวม; สำหรับงานที่กำลังทำและข้อมูล
+ส่งต่อข้าม session/harness ให้ดู [Agent Task Board](../work/BOARD.md).
+
 ---
 
 ## Documents
@@ -10,6 +13,11 @@
 |---|---|
 | [Vision](vision/PRODUCT_VISION.md) | ทำไมต้องทำ, แนวทาง, target users |
 | [Roadmap](roadmap/ROADMAP.md) | MS1-MS4 + ลำดับ dependency |
+| [CONTRACT-v2 freeze proposal](contract-v2-freeze-proposal.md) | Draft blockers, adapter acceptance gates and decisions before freezing Project Session API |
+| [Contract v2 extension proposal (T014)](contract-v2-extension-t014.md) | Proposed structural track commands, per-note properties and bounded reads; §6 stays frozen, nothing here is implemented |
+| [CONTRACT-MK3 proposal](contract-mk3-proposal.md) | Single draft for progressive streaming, SoundCraft/RustySynth instruments, mixer inserts, legacy USTX MixFx, and `.rustx` interoperability; unapproved |
+| [High-frequency editing flow](high-frequency-editing-flow.md) | How curve/note previews become one Rust-authoritative mutation on pointer-up |
+| [T009 curve stroke spec](../work/tasks/T009-curve-stroke-streaming-simplification.md) | OpenUtau-compatible curve simplification, safe preview reduction and commit/test plan |
 | [Milestones](milestones/) | รายละเอียดแต่ละ milestone + sprints |
 
 ## Milestone Status

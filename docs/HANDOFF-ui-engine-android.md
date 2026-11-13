@@ -34,7 +34,7 @@ Server args: `--so <nativeLibDir>/libworldline.so --voicebanks <filesDir>/engine
 ### 2. MethodChannel (MainActivity.kt — already written)
 
 ```
-channel: com.lilt.lilt/engine
+channel: com.rustedutau.app/engine
   engineDir      → {dir, project, voicebanks} (device-side absolute paths)
   engineRunning  → bool
 ```
@@ -63,6 +63,6 @@ Bundled bank dir name is `teto-english` (not `library`) — `/render` must send
 ## Next integration step (whoever picks it up)
 
 1. Fix `piano_roll.dart` fields (UI session)
-2. `flutter run -d <device>` → app starts → EngineProcess spawns server (check logcat `LiltEngine`)
+2. `flutter run -d <device>` → app starts → EngineProcess spawns server (check logcat `RustedUtauEngine`)
 3. `adb forward tcp:18080 tcp:18080` (optional — in-app server binds 127.0.0.1)
 4. Tap Export → renders demo song on-device → SnackBar shows size/duration

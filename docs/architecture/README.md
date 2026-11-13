@@ -1,4 +1,4 @@
-# Lilt / Android Voice Synth — Architecture
+# Rusted UTAU / Android Voice Synth — Architecture
 
 > Conceptual architecture: Global Scheduler + Chunker · อัปเดต 2026-09-12
 
@@ -10,12 +10,13 @@
 สถานะ/รายละเอียดล่าสุด:
 
 - [Worldline Rust Port](worldline-rust-port.md) — pure-Rust `r1-rs`
+- [Known Limitations](known-limitations.md) — ทะเบียนข้อจำกัดที่รู้แล้วและตั้งใจไม่แก้ตอนนี้
 - [WASM Target](wasm-target.md) — engine บน browser
 - [Runtime Engine Plugins](runtime-engine-plugins.md) — native renderer matrix
 - [Current Roadmap](../planning/roadmap/ROADMAP.md) — สิ่งที่เสร็จและงานค้าง
 - [Engine-owned state policy and migration](engine-owned-state.md) — Rust authority และ Flutter migration gap
 
-> **นโยบาย 2026-09-29:** Rust เป็น source of truth ของ project/musical state ทุก host; frontend เป็น UI-only สำหรับ render snapshot, ส่ง commands และจัดการ ephemeral input/layout. Web ใช้ `engine-wasm` session อยู่แล้ว; Flutter ยังมี Dart-owned notes/curves และ USTX reconstruction ซึ่งต้องย้ายออก ดู policy/migration doc.
+> **นโยบาย 2026-09-29:** Rust เป็น source of truth ของ project/musical state ทุก host; frontend เป็น UI-only สำหรับ render snapshot, ส่ง commands และจัดการ ephemeral input/layout. `project-session` เป็น data holder กลางที่ `engine-wasm` และ native adapter ใช้ร่วมกัน; WASM ยังต้องเปิด stable-ID session surface ให้ browser Driver. Flutter เป็น host รองและ adapter ใน working tree ยังต้องตรวจยืนยัน ดู policy/migration doc.
 
 ---
 

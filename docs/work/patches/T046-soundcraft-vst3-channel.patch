@@ -1,0 +1,1138 @@
+diff --git a/crates/au-host/src/plugin.rs b/crates/au-host/src/plugin.rs
+index cc61fbf..7f8cbbe 100644
+--- a/crates/au-host/src/plugin.rs
++++ b/crates/au-host/src/plugin.rs
+@@ -1,7 +1,7 @@
+ //! `AuPlugin`: a loaded Audio Unit behind the safe `soundcraft_dsp::Plugin` trait.
+ 
+ use crate::ffi::Instance;
+-use soundcraft_dsp::{Plugin, PluginInfo, Transport};
++use soundcraft_dsp::{Plugin, PluginEventError, PluginInfo, Transport};
+ 
+ /// Most MIDI events queued between two blocks (extra events are dropped).
+ const EVENT_CAP: usize = 1024;
+@@ -74,6 +74,18 @@ impl AuPlugin {
+         let pos = self.events.iter().rposition(|q| q.time <= e.time).map_or(0, |i| i + 1);
+         self.events.insert(pos, e);
+     }
++
++    fn push_event_checked(&mut self, e: MidiEvent) -> Result<(), PluginEventError> {
++        if !self.takes_midi {
++            return Err(PluginEventError::UnsupportedMidiEvent);
++        }
++        if self.events.len() >= self.events.capacity() {
++            return Err(PluginEventError::EventQueueFull);
++        }
++        let pos = self.events.iter().rposition(|q| q.time <= e.time).map_or(0, |i| i + 1);
++        self.events.insert(pos, e);
++        Ok(())
++    }
+ }
+ 
+ impl Plugin for AuPlugin {
+@@ -237,6 +249,20 @@ impl Plugin for AuPlugin {
+         }
+     }
+ 
++    fn midi_event(&mut self, offset: usize, channel: u8, msg: [u8; 3]) -> Result<(), PluginEventError> {
++        if channel > 15 {
++            return Err(PluginEventError::InvalidChannel);
++        }
++        if msg[0] & 0x0F != channel {
++            return Err(PluginEventError::InvalidChannel);
++        }
++        if !(0xA0..=0xE0).contains(&(msg[0] & 0xF0)) {
++            return Err(PluginEventError::UnsupportedMidiEvent);
++        }
++        let time = u32::try_from(offset).map_err(|_| PluginEventError::OffsetOutOfRange)?;
++        self.push_event_checked(MidiEvent { time, status: msg[0], data1: msg[1] & 0x7F, data2: msg[2] & 0x7F })
++    }
++
+     fn all_notes_off(&mut self) {
+         for k in 0..128u8 {
+             if self.held.get(k as usize).copied().unwrap_or(false) {
+diff --git a/crates/clap-host/src/plugin.rs b/crates/clap-host/src/plugin.rs
+index 89f8dbf..e97e12b 100644
+--- a/crates/clap-host/src/plugin.rs
++++ b/crates/clap-host/src/plugin.rs
+@@ -2,7 +2,7 @@
+ 
+ use crate::ffi::{EVENT_CAP, Event, GuiLink, Instance, NotePort, PortBuffers};
+ use clap_sys::ext::note_ports::{CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI};
+-use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo, Transport};
++use soundcraft_dsp::{Plugin, PluginEditor, PluginEventError, PluginInfo, Transport};
+ use std::sync::Arc;
+ use std::sync::atomic::Ordering;
+ 
+@@ -88,6 +88,19 @@ impl ClapPlugin {
+         let pos = self.queue.iter().rposition(|q| q.time() <= e.time()).map_or(0, |i| i + 1);
+         self.queue.insert(pos, e);
+     }
++
++    fn push_midi_checked(&mut self, time: u32, data: [u8; 3]) -> Result<(), PluginEventError> {
++        if !self.midi_in {
++            return Err(PluginEventError::UnsupportedMidiEvent);
++        }
++        if self.queue.len() >= self.queue.capacity() {
++            return Err(PluginEventError::EventQueueFull);
++        }
++        let event = Event::Midi { time, data };
++        let pos = self.queue.iter().rposition(|q| q.time() <= time).map_or(0, |i| i + 1);
++        self.queue.insert(pos, event);
++        Ok(())
++    }
+ }
+ 
+ fn pick_main(ports: &[crate::ffi::PortInfo]) -> Option<usize> {
+@@ -265,6 +278,23 @@ impl Plugin for ClapPlugin {
+         }
+     }
+ 
++    fn midi_event(&mut self, offset: usize, channel: u8, msg: [u8; 3]) -> Result<(), PluginEventError> {
++        if channel > 15 {
++            return Err(PluginEventError::InvalidChannel);
++        }
++        if msg[0] & 0x0F != channel {
++            return Err(PluginEventError::InvalidChannel);
++        }
++        if !(0xA0..=0xE0).contains(&(msg[0] & 0xF0)) {
++            return Err(PluginEventError::UnsupportedMidiEvent);
++        }
++        let time = u32::try_from(offset).map_err(|_| PluginEventError::OffsetOutOfRange)?;
++        let mut data = msg;
++        data[1] &= 0x7F;
++        data[2] &= 0x7F;
++        self.push_midi_checked(time, data)
++    }
++
+     fn all_notes_off(&mut self) {
+         for k in 0..128u8 {
+             if self.held.get(k as usize).copied().unwrap_or(false) {
+diff --git a/crates/dsp/src/lib.rs b/crates/dsp/src/lib.rs
+index d31ddac..46bfe57 100644
+--- a/crates/dsp/src/lib.rs
++++ b/crates/dsp/src/lib.rs
+@@ -187,6 +187,27 @@ pub struct Transport {
+     pub bar: i64,
+ }
+ 
++/// A rejected request to schedule an instrument event.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum PluginEventError {
++    /// The plugin adapter cannot represent the requested nonzero MIDI channel.
++    UnsupportedChannel,
++    /// The plugin has no event input bus.
++    UnsupportedEventInput,
++    /// The channel is outside MIDI 1.0's 0–15 range.
++    InvalidChannel,
++    /// The note number is outside MIDI 1.0's 0–127 range.
++    InvalidNote,
++    /// The sample offset cannot be represented by the host event API.
++    OffsetOutOfRange,
++    /// The bounded pending-event queue has no free slot.
++    EventQueueFull,
++    /// The plugin adapter does not implement this MIDI message.
++    UnsupportedMidiEvent,
++    /// The plugin does not map this MIDI controller on the requested channel.
++    UnmappedMidiController,
++}
++
+ /// A realtime audio processor or instrument.
+ ///
+ /// Contract: `process` never allocates or panics. It processes `min(frames, io[c].len())` frames
+@@ -218,9 +239,39 @@ pub trait Plugin: Send {
+     /// Instruments: note events at sample offsets within the next block.
+     fn note_on(&mut self, _offset: usize, _note: u8, _velocity: u8) {}
+     fn note_off(&mut self, _offset: usize, _note: u8) {}
++    /// Instruments: zero-based MIDI-channel note events. Unsupported channel requests fail
++    /// explicitly instead of being silently collapsed to channel 0.
++    fn note_on_channel(&mut self, offset: usize, channel: u8, note: u8, velocity: u8) -> Result<(), PluginEventError> {
++        if channel > 15 {
++            return Err(PluginEventError::InvalidChannel);
++        }
++        if channel != 0 {
++            return Err(PluginEventError::UnsupportedChannel);
++        }
++        self.note_on(offset, note, velocity);
++        Ok(())
++    }
++    fn note_off_channel(&mut self, offset: usize, channel: u8, note: u8) -> Result<(), PluginEventError> {
++        if channel > 15 {
++            return Err(PluginEventError::InvalidChannel);
++        }
++        if channel != 0 {
++            return Err(PluginEventError::UnsupportedChannel);
++        }
++        self.note_off(offset, note);
++        Ok(())
++    }
+     /// Instruments: any other MIDI 1.0 channel message (control change, pitch bend, pressure,
+     /// program change) at a sample offset within the next block.
+     fn midi(&mut self, _offset: usize, _msg: [u8; 3]) {}
++    /// Typed MIDI event path used by hosts that must not silently lose controls. The default
++    /// rejects the event so an adapter must explicitly implement each message it advertises.
++    fn midi_event(&mut self, _offset: usize, channel: u8, _msg: [u8; 3]) -> Result<(), PluginEventError> {
++        if channel > 15 {
++            return Err(PluginEventError::InvalidChannel);
++        }
++        Err(PluginEventError::UnsupportedMidiEvent)
++    }
+     fn all_notes_off(&mut self) {}
+     /// Sample-playing instruments (the Sampler): the recorded audio to play, `None` to clear it.
+     /// `false` when the plugin does not play samples. Does not allocate; sounding voices stop.
+diff --git a/crates/dsp/src/plugins/synth.rs b/crates/dsp/src/plugins/synth.rs
+index 1e0b92a..ebdc373 100644
+--- a/crates/dsp/src/plugins/synth.rs
++++ b/crates/dsp/src/plugins/synth.rs
+@@ -4,7 +4,7 @@
+ use crate::osc::{Osc, Waveform};
+ use crate::params::{Params, choice, lin, log, param_plumbing};
+ use crate::util::{Smoother, frames_in, ms_to_samples, note_hz, sane_channels, sane_sr, sort_events};
+-use crate::{Category, ParamInfo, Plugin, PluginInfo, Unit, db_to_gain};
++use crate::{Category, ParamInfo, Plugin, PluginEventError, PluginInfo, Unit, db_to_gain};
+ 
+ pub(crate) const MAX_EVENTS: usize = 512;
+ 
+@@ -523,6 +523,25 @@ impl Plugin for SubtractiveSynth {
+         self.events.push(offset, kind);
+     }
+ 
++    fn midi_event(&mut self, offset: usize, channel: u8, msg: [u8; 3]) -> Result<(), PluginEventError> {
++        if channel > 15 {
++            return Err(PluginEventError::InvalidChannel);
++        }
++        if channel != 0 {
++            return Err(PluginEventError::UnsupportedChannel);
++        }
++        if msg[0] & 0x0F != channel {
++            return Err(PluginEventError::InvalidChannel);
++        }
++        match (msg[0] & 0xF0, msg[1] & 0x7F) {
++            (0xB0, 64 | 120 | 123 | 121) | (0xE0, _) => {
++                self.midi(offset, msg);
++                Ok(())
++            }
++            _ => Err(PluginEventError::UnsupportedMidiEvent),
++        }
++    }
++
+     fn all_notes_off(&mut self) {
+         self.events.push(0, EventKind::AllOff);
+     }
+diff --git a/crates/mix/src/lib.rs b/crates/mix/src/lib.rs
+index e8c4fba..41bb1d0 100644
+--- a/crates/mix/src/lib.rs
++++ b/crates/mix/src/lib.rs
+@@ -51,7 +51,7 @@
+ #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+ 
+ use soundcraft_dsp::pan::{PanLaw, SpeakerPos, SurroundParams, gains};
+-use soundcraft_dsp::{Plugin, SampleSource, Transport, db_to_gain};
++use soundcraft_dsp::{Plugin, PluginEventError, SampleSource, Transport, db_to_gain};
+ use soundcraft_midi::CtrlKind;
+ use soundcraft_model::{
+     AutoParam, BusId, ChannelFormat, Clip, ClipContent, Route, Session, SourceAudio, Speaker, SurroundPan, Track, TrackId, TrackKind,
+@@ -160,14 +160,17 @@ pub struct StripMeter {
+     pub plugin_failures: PluginFailures,
+ }
+ 
+-/// How often a strip's plugins were taken out of the signal path for putting out NaN or infinity.
+-/// Each stays out until the engine is next reset (playback starts or stops).
++/// Plugin failures observed on a strip. A plugin that rejects a scheduled event or produces
++/// non-finite audio is taken out of the signal path until the engine is next reset.
+ #[derive(Debug, Clone, Copy, Default, PartialEq)]
+ pub struct PluginFailures {
+     /// It only grows.
+     pub count: u32,
+     /// The slot of the latest: an insert index or [`INSTRUMENT_SLOT`].
+     pub last: usize,
++    /// Latest typed event rejection, if any. This lets the host report unsupported channels,
++    /// queue overflow and other scheduling failures instead of silently rendering a partial take.
++    pub event_error: Option<PluginEventError>,
+ }
+ 
+ impl PluginFailures {
+@@ -175,6 +178,11 @@ impl PluginFailures {
+         self.count = self.count.wrapping_add(1);
+         self.last = slot;
+     }
++
++    fn record_event(&mut self, slot: usize, error: PluginEventError) {
++        self.record(slot);
++        self.event_error = Some(error);
++    }
+ }
+ 
+ impl StripMeter {
+@@ -224,8 +232,8 @@ struct Strip {
+     instrument: Option<PluginSlot>,
+     /// The pool audio handed to the instrument with `set_sample` (sample-playing instruments).
+     sample: Option<Arc<SourceAudio>>,
+-    /// MIDI notes currently sounding on the instrument (pitch), for note-offs at stops/seek.
+-    held: Vec<u8>,
++    /// MIDI notes currently sounding on the instrument, keyed by channel and pitch.
++    held: Vec<(u8, u8)>,
+     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
+     chase: bool,
+     muted: bool,
+@@ -309,7 +317,7 @@ impl Strip {
+             plugins: Vec::new(),
+             instrument: None,
+             sample: None,
+-            held: Vec::new(),
++            held: Vec::with_capacity(16 * 128),
+             chase: true,
+             muted: false,
+             gr: 0.0,
+@@ -989,21 +997,33 @@ fn process_strip(
+                     apply_params(inst, ins, t, INSTRUMENT_SLOT, pos);
+                 }
+                 inst.plugin.set_transport(&transport);
+-                if std::mem::take(&mut strip.chase) {
+-                    chase_controllers(s, t, pos, inst);
+-                }
+-                schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+-                if strip.buf.len() >= 2 {
+-                    inst.plugin.process(&mut strip.buf, frames);
+-                } else if let Some(c0) = strip.buf.first_mut() {
+-                    // Mono MIDI track: render the instrument in stereo and fold.
+-                    let mut st = [std::mem::take(c0), std::mem::take(&mut strip.scratch)];
+-                    inst.plugin.process(&mut st, frames);
+-                    let [a, b] = st;
+-                    *c0 = a;
+-                    strip.scratch = b;
+-                    for (x, y) in c0.iter_mut().zip(strip.scratch.iter()).take(frames) {
+-                        *x = 0.5 * (*x + *y);
++                let schedule = if std::mem::take(&mut strip.chase) { chase_controllers(s, t, pos, inst) } else { Ok(()) }
++                    .and_then(|()| schedule_notes(s, t, pos, frames, inst, &mut strip.held));
++                match schedule {
++                    Ok(()) => {
++                        if strip.buf.len() >= 2 {
++                            inst.plugin.process(&mut strip.buf, frames);
++                        } else if let Some(c0) = strip.buf.first_mut() {
++                            // Mono MIDI track: render the instrument in stereo and fold.
++                            let mut st = [std::mem::take(c0), std::mem::take(&mut strip.scratch)];
++                            inst.plugin.process(&mut st, frames);
++                            let [a, b] = st;
++                            *c0 = a;
++                            strip.scratch = b;
++                            for (x, y) in c0.iter_mut().zip(strip.scratch.iter()).take(frames) {
++                                *x = 0.5 * (*x + *y);
++                            }
++                        }
++                    }
++                    Err(error) => {
++                        // Do not publish audio from a block whose event schedule was only
++                        // partially accepted. The typed reason remains available to the host.
++                        inst.failed = true;
++                        // Drop the partially queued schedule so it cannot become stale input if
++                        // the host later re-prepares this instance.
++                        inst.plugin.reset();
++                        strip.held.clear();
++                        strip.failures.record_event(INSTRUMENT_SLOT, error);
+                     }
+                 }
+                 if contain_failure(inst, &mut strip.buf, frames) {
+@@ -1470,7 +1490,14 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
+ }
+ 
+ /// Send note on/offs and controllers for MIDI clips overlapping the block.
+-fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut Vec<u8>) {
++fn schedule_notes(
++    s: &Session,
++    t: &Track,
++    pos: Samples,
++    frames: usize,
++    inst: &mut PluginSlot,
++    held: &mut Vec<(u8, u8)>,
++) -> Result<(), PluginEventError> {
+     let sr = s.sample_rate;
+     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
+     // the block looks that far back into the clips.
+@@ -1510,14 +1537,15 @@ fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mu
+                 continue;
+             }
+             if on >= pos && on < end {
+-                inst.plugin.note_on(usize::try_from(on - pos).unwrap_or(0), n.pitch, n.velocity);
+-                if !held.contains(&n.pitch) && held.len() < 128 {
+-                    held.push(n.pitch);
++                inst.plugin.note_on_channel(usize::try_from(on - pos).unwrap_or(0), n.channel, n.pitch, n.velocity)?;
++                let key = (n.channel, n.pitch);
++                if !held.contains(&key) && held.len() < 16 * 128 {
++                    held.push(key);
+                 }
+             }
+             if off >= pos && off < end {
+-                inst.plugin.note_off(usize::try_from(off - pos).unwrap_or(0), n.pitch);
+-                held.retain(|p| *p != n.pitch);
++                inst.plugin.note_off_channel(usize::try_from(off - pos).unwrap_or(0), n.channel, n.pitch)?;
++                held.retain(|key| *key != (n.channel, n.pitch));
+             }
+         }
+         let near = s.tempo.samples_to_ticks(pos, sr).saturating_sub(base).saturating_sub(1)
+@@ -1530,37 +1558,39 @@ fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mu
+             }
+             let at = s.tempo.tick_to_samples(base.saturating_add(tick), sr);
+             if at >= pos && at < end && at < clip.end() {
+-                inst.plugin.midi(usize::try_from(at - pos).unwrap_or(0), ctrl_message(c.kind, c.value, dp));
++                inst.plugin.midi_event(usize::try_from(at - pos).unwrap_or(0), c.channel, ctrl_message(c.kind, c.value, dp, c.channel))?;
+             }
+         }
+     }
++    Ok(())
+ }
+ 
+ /// A controller event as a MIDI 1.0 message on channel 1 (where the notes go), with `transpose`
+ /// applied to a poly-pressure key.
+-fn ctrl_message(kind: CtrlKind, value: i32, transpose: i64) -> [u8; 3] {
++fn ctrl_message(kind: CtrlKind, value: i32, transpose: i64, channel: u8) -> [u8; 3] {
+     let v7 = value.clamp(0, 127) as u8;
++    let channel = channel & 0x0F;
+     match kind {
+-        CtrlKind::Cc(n) => [0xB0, n & 0x7F, v7],
++        CtrlKind::Cc(n) => [0xB0 | channel, n & 0x7F, v7],
+         CtrlKind::PitchBend => {
+             let v = value.saturating_add(8192).clamp(0, 16383);
+-            [0xE0, (v & 0x7F) as u8, (v >> 7) as u8]
++            [0xE0 | channel, (v & 0x7F) as u8, (v >> 7) as u8]
+         }
+-        CtrlKind::ChannelPressure => [0xD0, v7, 0],
+-        CtrlKind::PolyPressure(k) => [0xA0, (i64::from(k) + transpose).clamp(0, 127) as u8, v7],
+-        CtrlKind::Program => [0xC0, v7, 0],
++        CtrlKind::ChannelPressure => [0xD0 | channel, v7, 0],
++        CtrlKind::PolyPressure(k) => [0xA0 | channel, (i64::from(k) + transpose).clamp(0, 127) as u8, v7],
++        CtrlKind::Program => [0xC0 | channel, v7, 0],
+     }
+ }
+ 
+ /// Before an instrument plays from `pos`: reset its controllers, then send each one the last value
+ /// it had on this track before `pos`.
+-fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot) {
+-    inst.plugin.midi(0, [0xB0, 121, 0]);
++fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot) -> Result<(), PluginEventError> {
+     let pos = pos.saturating_sub(midi_offset(s, t));
++    const CONTROLLERS: usize = PROGRAM + 1;
+     const BEND: usize = 128;
+     const PRESSURE: usize = 129;
+     const PROGRAM: usize = 130;
+-    let mut last = [(i64::MIN, 0i32); 131];
++    let mut last = [(i64::MIN, 0i32); 16 * CONTROLLERS];
+     let sr = s.sample_rate;
+     for clip in t.clips() {
+         let ClipContent::Midi { sequence } = &clip.content else { continue };
+@@ -1570,6 +1600,9 @@ fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot
+         let base = s.tempo.samples_to_ticks(clip.start, sr);
+         let until = pos.min(clip.end());
+         for c in sequence.ctrls.iter().filter(|c| c.tick >= 0) {
++            if c.channel > 15 {
++                return Err(PluginEventError::InvalidChannel);
++            }
+             let slot = match c.kind {
+                 CtrlKind::Cc(n) => usize::from(n & 0x7F),
+                 CtrlKind::PitchBend => BEND,
+@@ -1578,25 +1611,31 @@ fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot
+                 CtrlKind::PolyPressure(_) => continue,
+             };
+             let at = s.tempo.tick_to_samples(base.saturating_add(c.tick), sr);
+-            if at < until
+-                && let Some(l) = last.get_mut(slot)
+-                && at >= l.0
+-            {
+-                *l = (at, c.value);
++            if at < until {
++                let index = usize::from(c.channel) * CONTROLLERS + slot;
++                if let Some(l) = last.get_mut(index)
++                    && at >= l.0
++                {
++                    *l = (at, c.value);
++                }
+             }
+         }
+     }
+     for (slot, &(at, value)) in last.iter().enumerate() {
++        if at == i64::MIN {
++            continue;
++        }
++        let channel = u8::try_from(slot / CONTROLLERS).unwrap_or(0);
++        let control = slot % CONTROLLERS;
+         let kind = match slot {
+-            BEND => CtrlKind::PitchBend,
+-            PRESSURE => CtrlKind::ChannelPressure,
+-            PROGRAM => CtrlKind::Program,
+-            n => CtrlKind::Cc(u8::try_from(n).unwrap_or(0)),
++            _ if control == BEND => CtrlKind::PitchBend,
++            _ if control == PRESSURE => CtrlKind::ChannelPressure,
++            _ if control == PROGRAM => CtrlKind::Program,
++            _ => CtrlKind::Cc(u8::try_from(control).unwrap_or(0)),
+         };
+-        if at != i64::MIN {
+-            inst.plugin.midi(0, ctrl_message(kind, value, 0));
+-        }
++        inst.plugin.midi_event(0, channel, ctrl_message(kind, value, 0, channel))?;
+     }
++    Ok(())
+ }
+ 
+ /// Session audio shared with a sample-playing instrument.
+@@ -2573,6 +2612,7 @@ mod tests {
+     struct Ears {
+         inner: Box<dyn Plugin>,
+         heard: Arc<std::sync::Mutex<Vec<(usize, [u8; 3])>>>,
++        fail_midi: bool,
+     }
+ 
+     impl Plugin for Ears {
+@@ -2594,8 +2634,15 @@ mod tests {
+         fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+             self.inner.process(io, frames);
+         }
+-        fn midi(&mut self, offset: usize, msg: [u8; 3]) {
++        fn midi_event(&mut self, offset: usize, channel: u8, msg: [u8; 3]) -> Result<(), soundcraft_dsp::PluginEventError> {
++            if self.fail_midi {
++                return Err(soundcraft_dsp::PluginEventError::EventQueueFull);
++            }
++            if msg[0] & 0x0F != channel {
++                return Err(soundcraft_dsp::PluginEventError::InvalidChannel);
++            }
+             self.heard.lock().unwrap().push((offset, msg));
++            Ok(())
+         }
+     }
+ 
+@@ -2604,24 +2651,46 @@ mod tests {
+         let mut s = Session::default();
+         let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+         s.track_mut(t).unwrap().instrument = Some(Insert::new("clap:test.ears"));
+-        let cc = |tick, kind, value| soundcraft_midi::CtrlEvent { tick, channel: 0, kind, value };
+-        let ctrls = vec![cc(4, CtrlKind::Cc(64), 127), cc(960, CtrlKind::PitchBend, -8192), cc(1920, CtrlKind::Cc(64), 0)];
++        let cc = |tick, channel, kind, value| soundcraft_midi::CtrlEvent { tick, channel, kind, value };
++        let ctrls = vec![cc(4, 1, CtrlKind::Cc(64), 127), cc(960, 1, CtrlKind::PitchBend, -8192), cc(1920, 1, CtrlKind::Cc(64), 0)];
+         let seq = soundcraft_midi::Sequence { ctrls, ..Default::default() };
+         let cid = s.new_clip_id();
+         s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(cid, "m", 0, 48_000 * 4, seq));
+         let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+-        let ears = Ears { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard) };
++        let ears = Ears { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard), fail_midi: false };
+         let mut eng = MixEngine::new(48_000.0, 512);
+         eng.set_external_instances(true);
+         eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.ears".into(), ch: 2, plugin: Box::new(ears) }]);
+         render_block(&mut eng, &s, 0);
+-        assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (100, [0xB0, 64, 127])]);
++        assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(100, [0xB1, 64, 127])]);
+         render_block(&mut eng, &s, 36_000);
+-        assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 64, 127]), (0, [0xE0, 0, 0])]);
++        assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB1, 64, 127]), (0, [0xE1, 0, 0])]);
+         render_block(&mut eng, &s, 36_512);
+         assert!(heard.lock().unwrap().is_empty());
+     }
+ 
++    #[test]
++    fn rejected_midi_control_discards_the_instrument_block_and_reports_reason() {
++        let mut s = Session::default();
++        let track = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
++        s.track_mut(track).unwrap().instrument = Some(Insert::new("clap:test.ears"));
++        let sequence = soundcraft_midi::Sequence {
++            ctrls: vec![soundcraft_midi::CtrlEvent { tick: 0, channel: 2, kind: CtrlKind::Program, value: 7 }],
++            ..Default::default()
++        };
++        let clip = s.new_clip_id();
++        s.track_mut(track).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(clip, "program", 0, 48_000, sequence));
++        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
++        let plugin = Ears { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard), fail_midi: true };
++        let mut engine = MixEngine::new(48_000.0, 512);
++        engine.set_external_instances(true);
++        engine.adopt(vec![PreparedInstance { track, slot: INSTRUMENT_SLOT, id: "clap:test.ears".into(), ch: 2, plugin: Box::new(plugin) }]);
++
++        assert_eq!(render_block(&mut engine, &s, 0), 0.0);
++        assert!(heard.lock().unwrap().is_empty());
++        assert_eq!(engine.meters[&track].plugin_failures.event_error, Some(PluginEventError::EventQueueFull));
++    }
++
+     struct Keys {
+         inner: Box<dyn Plugin>,
+         heard: Arc<std::sync::Mutex<Vec<(u8, u8)>>>,
+@@ -2671,6 +2740,83 @@ mod tests {
+         assert_eq!(*heard.lock().unwrap(), vec![(72, 80)]);
+     }
+ 
++    struct ChannelEvents {
++        inner: Box<dyn Plugin>,
++        heard: Arc<std::sync::Mutex<Vec<(bool, usize, u8, u8)>>>,
++    }
++
++    impl Plugin for ChannelEvents {
++        fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
++            self.inner.info()
++        }
++        fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
++            self.inner.prepare(sr, mb, ch);
++        }
++        fn reset(&mut self) {
++            self.inner.reset();
++        }
++        fn set_param(&mut self, id: &str, v: f32) -> bool {
++            self.inner.set_param(id, v)
++        }
++        fn param(&self, id: &str) -> Option<f32> {
++            self.inner.param(id)
++        }
++        fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
++            self.inner.process(io, frames);
++        }
++        fn note_on_channel(&mut self, offset: usize, channel: u8, note: u8, _velocity: u8) -> Result<(), soundcraft_dsp::PluginEventError> {
++            self.heard.lock().unwrap().push((true, offset, channel, note));
++            Ok(())
++        }
++        fn note_off_channel(&mut self, offset: usize, channel: u8, note: u8) -> Result<(), soundcraft_dsp::PluginEventError> {
++            self.heard.lock().unwrap().push((false, offset, channel, note));
++            Ok(())
++        }
++    }
++
++    #[test]
++    fn midi_clip_note_events_keep_their_channel_and_block_offset() {
++        let mut s = Session::default();
++        let track = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
++        s.track_mut(track).unwrap().instrument = Some(Insert::new("clap:test.channels"));
++        let mut sequence = soundcraft_midi::Sequence::default();
++        sequence.notes.push(soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 5, start: 0, length: 1 });
++        let clip = s.new_clip_id();
++        s.track_mut(track).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(clip, "multi", 0, 48_000, sequence));
++
++        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
++        let plugin = ChannelEvents { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard) };
++        let mut engine = MixEngine::new(48_000.0, 512);
++        engine.set_external_instances(true);
++        engine.adopt(vec![PreparedInstance { track, slot: INSTRUMENT_SLOT, id: "clap:test.channels".into(), ch: 2, plugin: Box::new(plugin) }]);
++
++        render_block(&mut engine, &s, 0);
++
++        assert_eq!(*heard.lock().unwrap(), vec![(true, 0, 5, 60), (false, 25, 5, 60)]);
++        assert_eq!(engine.meters[&track].plugin_failures.event_error, None);
++    }
++
++    #[test]
++    fn unsupported_midi_channel_is_reported_and_instrument_block_is_rejected() {
++        let mut s = Session::default();
++        let track = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
++        s.track_mut(track).unwrap().instrument = Some(Insert::new("clap:test.keys"));
++        let mut sequence = soundcraft_midi::Sequence::default();
++        sequence.notes.push(soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 3, start: 0, length: 10 });
++        let clip = s.new_clip_id();
++        s.track_mut(track).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(clip, "unsupported", 0, 48_000, sequence));
++
++        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
++        let plugin = Keys { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard) };
++        let mut engine = MixEngine::new(48_000.0, 512);
++        engine.set_external_instances(true);
++        engine.adopt(vec![PreparedInstance { track, slot: INSTRUMENT_SLOT, id: "clap:test.keys".into(), ch: 2, plugin: Box::new(plugin) }]);
++
++        assert_eq!(render_block(&mut engine, &s, 0), 0.0);
++        assert!(heard.lock().unwrap().is_empty());
++        assert_eq!(engine.meters[&track].plugin_failures.event_error, Some(PluginEventError::UnsupportedChannel));
++    }
++
+     fn render_block(eng: &mut MixEngine, s: &Session, pos: i64) -> f32 {
+         let mut out = vec![vec![0.0f32; 512]; 2];
+         eng.render(s, pos, 512, &mut out);
+@@ -2757,7 +2903,7 @@ mod tests {
+         eng.adopt(nan(a, 2, 1));
+         let only_b = render_block(&mut eng, &s, 512);
+         assert!(only_b > 0.3 && (only_b - both / 2.0).abs() < 1e-6, "{only_b} vs {both}");
+-        assert_eq!(eng.meters[&a].plugin_failures, PluginFailures { count: 1, last: 2 });
++        assert_eq!(eng.meters[&a].plugin_failures, PluginFailures { count: 1, last: 2, event_error: None });
+         assert_eq!(eng.meters[&b].plugin_failures, PluginFailures::default());
+         assert_eq!(render_block(&mut eng, &s, 1024), both);
+         eng.reset();
+@@ -2776,13 +2922,13 @@ mod tests {
+         eng.adopt(nan(synth, INSTRUMENT_SLOT, 2));
+         let only_b = render_block(&mut eng, &s, 0);
+         assert!(only_b > 0.3, "{only_b}");
+-        assert_eq!(eng.meters[&synth].plugin_failures, PluginFailures { count: 1, last: INSTRUMENT_SLOT });
++        assert_eq!(eng.meters[&synth].plugin_failures, PluginFailures { count: 1, last: INSTRUMENT_SLOT, event_error: None });
+         assert_eq!(eng.meters[&b].plugin_failures, PluginFailures::default());
+         let m = s.add_track(TrackKind::Master, ChannelFormat::Stereo, None);
+         s.track_mut(m).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.nan"));
+         eng.adopt(nan(m, 0, 2));
+         assert_eq!(render_block(&mut eng, &s, 512), 0.0);
+-        assert_eq!(eng.meters[&m].plugin_failures, PluginFailures { count: 1, last: 0 });
++        assert_eq!(eng.meters[&m].plugin_failures, PluginFailures { count: 1, last: 0, event_error: None });
+         assert_eq!(render_block(&mut eng, &s, 1024), only_b);
+     }
+ 
+diff --git a/crates/vst3-host/src/ffi.rs b/crates/vst3-host/src/ffi.rs
+index d1ddea2..2959852 100644
+--- a/crates/vst3-host/src/ffi.rs
++++ b/crates/vst3-host/src/ffi.rs
+@@ -85,6 +85,7 @@ fn ok(r: sb::tresult) -> bool {
+ /// VST3's numbers for the MIDI controllers that aren't CCs.
+ pub(crate) const AFTERTOUCH: usize = sv::ControllerNumbers_::kAfterTouch as usize;
+ pub(crate) const PITCH_BEND: usize = sv::ControllerNumbers_::kPitchBend as usize;
++pub(crate) const PROGRAM_CHANGE: usize = sv::ControllerNumbers_::kCtrlProgramChange as usize;
+ 
+ // ---- loaded binaries -----------------------------------------------------------------------
+ 
+@@ -963,9 +964,9 @@ impl IBStreamTrait for MemoryStream {
+ /// A host → plugin note event, safe to build anywhere; converted inside `process`.
+ #[derive(Debug, Clone, Copy, PartialEq)]
+ pub(crate) enum NoteEvent {
+-    On { time: u32, key: u8, velocity: f32 },
+-    Off { time: u32, key: u8 },
+-    Pressure { time: u32, key: u8, pressure: f32 },
++    On { time: u32, channel: u8, key: u8, velocity: f32 },
++    Off { time: u32, channel: u8, key: u8 },
++    Pressure { time: u32, channel: u8, key: u8, pressure: f32 },
+ }
+ 
+ impl NoteEvent {
+@@ -987,17 +988,18 @@ impl NoteEvent {
+         e.sampleOffset = i32::try_from(self.time().saturating_sub(offset)).unwrap_or(0);
+         e.flags = sv::Event_::EventFlags_::kIsLive as u16;
+         match self {
+-            NoteEvent::On { key, velocity, .. } => {
++            NoteEvent::On { channel, key, velocity, .. } => {
+                 e.r#type = sv::Event_::EventTypes_::kNoteOnEvent as u16;
+-                e.__field0.noteOn = sv::NoteOnEvent { channel: 0, pitch: i16::from(key), tuning: 0.0, velocity, length: 0, noteId: -1 };
++                e.__field0.noteOn =
++                    sv::NoteOnEvent { channel: i16::from(channel), pitch: i16::from(key), tuning: 0.0, velocity, length: 0, noteId: -1 };
+             }
+-            NoteEvent::Off { key, .. } => {
++            NoteEvent::Off { channel, key, .. } => {
+                 e.r#type = sv::Event_::EventTypes_::kNoteOffEvent as u16;
+-                e.__field0.noteOff = sv::NoteOffEvent { channel: 0, pitch: i16::from(key), velocity: 0.0, noteId: -1, tuning: 0.0 };
++                e.__field0.noteOff = sv::NoteOffEvent { channel: i16::from(channel), pitch: i16::from(key), velocity: 0.0, noteId: -1, tuning: 0.0 };
+             }
+-            NoteEvent::Pressure { key, pressure, .. } => {
++            NoteEvent::Pressure { channel, key, pressure, .. } => {
+                 e.r#type = sv::Event_::EventTypes_::kPolyPressureEvent as u16;
+-                e.__field0.polyPressure = sv::PolyPressureEvent { channel: 0, pitch: i16::from(key), pressure, noteId: -1 };
++                e.__field0.polyPressure = sv::PolyPressureEvent { channel: i16::from(channel), pitch: i16::from(key), pressure, noteId: -1 };
+             }
+         }
+         e
+@@ -1258,16 +1260,19 @@ impl Instance {
+         v.is_finite().then(|| v.clamp(0.0, 1.0))
+     }
+ 
+-    /// The parameter each MIDI controller drives on channel 1 (`IMidiMapping`), indexed by VST3's
+-    /// controller numbers: CCs 0–127, then [`AFTERTOUCH`] and [`PITCH_BEND`]. Main thread only.
+-    pub fn midi_mapping(&self) -> Vec<Option<u32>> {
++    /// The parameter each MIDI controller drives on a channel (`IMidiMapping`), indexed by
++    /// VST3's controller numbers. Main thread only.
++    pub fn midi_mapping(&self, channel: u8) -> Vec<Option<u32>> {
++        if channel > 15 {
++            return Vec::new();
++        }
+         let Some(m) = self.controller.as_ref().and_then(|c| c.cast::<sv::IMidiMapping>()) else { return Vec::new() };
+-        (0..=PITCH_BEND)
++        (0..=PROGRAM_CHANGE)
+             .map(|n| {
+                 let mut id: sv::ParamID = 0;
+                 let n = i16::try_from(n).unwrap_or(0);
+                 // SAFETY: valid mapping interface on the main thread; `id` is a local.
+-                ok(unsafe { m.getMidiControllerAssignment(0, 0, n, &mut id) }).then_some(id)
++                ok(unsafe { m.getMidiControllerAssignment(0, i16::from(channel), n, &mut id) }).then_some(id)
+             })
+             .collect()
+     }
+@@ -2195,6 +2200,29 @@ mod tests {
+         write_c16("x", &mut []);
+     }
+ 
++    #[test]
++    fn note_event_conversion_preserves_each_midi_channel() {
++        let el = EventList::new(3);
++        let mut events = [
++            NoteEvent::On { time: 2, channel: 15, key: 60, velocity: 0.75 }.to_raw(0),
++            NoteEvent::Off { time: 3, channel: 15, key: 60 }.to_raw(0),
++            NoteEvent::Pressure { time: 4, channel: 15, key: 60, pressure: 0.5 }.to_raw(0),
++        ];
++        // SAFETY: all event pointers reference valid, initialized local values.
++        unsafe {
++            for event in &mut events {
++                assert_eq!(el.addEvent(event), sb::kResultOk);
++            }
++            let mut out: sv::Event = std::mem::zeroed();
++            assert_eq!(el.getEvent(0, &mut out), sb::kResultOk);
++            assert_eq!(out.__field0.noteOn.channel, 15);
++            assert_eq!(el.getEvent(1, &mut out), sb::kResultOk);
++            assert_eq!(out.__field0.noteOff.channel, 15);
++            assert_eq!(el.getEvent(2, &mut out), sb::kResultOk);
++            assert_eq!(out.__field0.polyPressure.channel, 15);
++        }
++    }
++
+     #[test]
+     fn host_objects_behave() {
+         let pc = ParamChanges::new(2);
+@@ -2215,7 +2243,7 @@ mod tests {
+             assert_ne!(q.getPoint(0, std::ptr::null_mut(), &mut v), sb::kResultOk);
+         }
+         let el = EventList::new(1);
+-        let mut e = NoteEvent::On { time: 5, key: 60, velocity: 1.0 }.to_raw(2);
++        let mut e = NoteEvent::On { time: 5, channel: 7, key: 60, velocity: 1.0 }.to_raw(2);
+         // SAFETY: as above.
+         unsafe {
+             assert_eq!(el.addEvent(&mut e), sb::kResultOk);
+@@ -2225,6 +2253,7 @@ mod tests {
+             assert_eq!(el.getEvent(0, &mut out), sb::kResultOk);
+             assert_eq!(out.sampleOffset, 3);
+             assert_eq!(out.__field0.noteOn.pitch, 60);
++            assert_eq!(out.__field0.noteOn.channel, 7);
+             assert_ne!(el.getEvent(1, &mut out), sb::kResultOk);
+         }
+         let s = MemoryStream { inner: Mutex::new((Vec::new(), 0)) };
+diff --git a/crates/vst3-host/src/plugin.rs b/crates/vst3-host/src/plugin.rs
+index 2975465..9125896 100644
+--- a/crates/vst3-host/src/plugin.rs
++++ b/crates/vst3-host/src/plugin.rs
+@@ -1,7 +1,7 @@
+ //! `Vst3Plugin`: a loaded VST3 instance behind the safe `soundcraft_dsp::Plugin` trait.
+ 
+-use crate::ffi::{AFTERTOUCH, BusBuffers, EVENT_CAP, EditorLink, HostContext, Instance, NoteEvent, PARAM_QUEUE_CAP, PITCH_BEND};
+-use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo, Transport, Unit};
++use crate::ffi::{AFTERTOUCH, BusBuffers, EVENT_CAP, EditorLink, HostContext, Instance, NoteEvent, PARAM_QUEUE_CAP, PITCH_BEND, PROGRAM_CHANGE};
++use soundcraft_dsp::{Plugin, PluginEditor, PluginEventError, PluginInfo, Transport, Unit};
+ use std::sync::Arc;
+ use std::sync::atomic::{AtomicU64, Ordering};
+ use vst3::ComWrapper;
+@@ -41,8 +41,8 @@ pub struct Vst3Plugin {
+     unsynced: Arc<[AtomicU64]>,
+     /// Pending notes, kept sorted by time. Never grows past `EVENT_CAP`.
+     notes: Vec<NoteEvent>,
+-    /// The parameter each MIDI controller drives (see `Instance::midi_mapping`).
+-    midi_map: Vec<Option<u32>>,
++    /// The parameter each MIDI controller drives, indexed by channel then VST3 controller number.
++    midi_map: [[Option<u32>; PROGRAM_CHANGE + 1]; 16],
+     /// Controller points for the next block: (time, param id, normalized value). Bounded.
+     controls: Vec<(u32, u32, f64)>,
+     inputs: BusBuffers,
+@@ -50,7 +50,7 @@ pub struct Vst3Plugin {
+     has_input: bool,
+     has_output: bool,
+     event_input: bool,
+-    held: [bool; 128],
++    held: [[bool; 128]; 16],
+     channels: usize,
+     max_block: usize,
+     latency: usize,
+@@ -89,14 +89,14 @@ impl Vst3Plugin {
+             pending: Vec::with_capacity(ids.len().min(PARAM_QUEUE_CAP)),
+             unsynced: ids.iter().map(|_| AtomicU64::new(SYNCED)).collect(),
+             notes: Vec::with_capacity(EVENT_CAP),
+-            midi_map: Vec::new(),
++            midi_map: [[None; PROGRAM_CHANGE + 1]; 16],
+             controls: Vec::with_capacity(EVENT_CAP),
+             inputs: BusBuffers::new(&[], 0),
+             outputs: BusBuffers::new(&[], 0),
+             has_input: false,
+             has_output: false,
+             event_input: false,
+-            held: [false; 128],
++            held: [[false; 128]; 16],
+             channels: 2,
+             max_block: 0,
+             latency: 0,
+@@ -114,6 +114,11 @@ impl Vst3Plugin {
+             })
+             .collect();
+         p.values = values;
++        for channel in 0..16u8 {
++            for (controller, id) in p.inst.midi_mapping(channel).into_iter().enumerate().take(PROGRAM_CHANGE + 1) {
++                p.midi_map[usize::from(channel)][controller] = id;
++            }
++        }
+         p
+     }
+ 
+@@ -165,14 +170,23 @@ impl Vst3Plugin {
+         }
+     }
+ 
+-    /// Inserts keeping the queue time-sorted; drops the event when the queue is full (never
+-    /// allocates on the audio thread).
+-    fn push_note(&mut self, e: NoteEvent) {
++    /// Inserts keeping the queue time-sorted without growing the queue on the audio thread.
++    fn push_note(&mut self, e: NoteEvent) -> Result<(), PluginEventError> {
+         if self.notes.len() >= self.notes.capacity() {
+-            return;
++            return Err(PluginEventError::EventQueueFull);
+         }
+         let pos = self.notes.iter().rposition(|q| q.time() <= e.time()).map_or(0, |i| i + 1);
+         self.notes.insert(pos, e);
++        Ok(())
++    }
++
++    fn push_control(&mut self, time: u32, id: u32, value: f64) -> Result<(), PluginEventError> {
++        if self.controls.len() >= self.controls.capacity() {
++            return Err(PluginEventError::EventQueueFull);
++        }
++        let pos = self.controls.iter().rposition(|q| q.0 <= time).map_or(0, |i| i + 1);
++        self.controls.insert(pos, (time, id, value));
++        Ok(())
+     }
+ }
+ 
+@@ -196,7 +210,6 @@ impl Plugin for Vst3Plugin {
+                 self.max_block = mb;
+                 self.latency = self.inst.latency() as usize;
+                 self.tail = self.inst.tail() as usize;
+-                self.midi_map = self.inst.midi_mapping();
+             }
+             Err(e) => {
+                 log::warn!("{}: {e}", self.info.id);
+@@ -215,7 +228,7 @@ impl Plugin for Vst3Plugin {
+     fn reset(&mut self) {
+         self.notes.clear();
+         self.controls.clear();
+-        self.held = [false; 128];
++        self.held = [[false; 128]; 16];
+     }
+ 
+     fn set_param(&mut self, id: &str, value: f32) -> bool {
+@@ -330,51 +343,85 @@ impl Plugin for Vst3Plugin {
+     }
+ 
+     fn note_on(&mut self, offset: usize, note: u8, velocity: u8) {
+-        if note > 127 || !self.event_input {
+-            return;
++        let _ = self.note_on_channel(offset, 0, note, velocity);
++    }
++
++    fn note_on_channel(&mut self, offset: usize, channel: u8, note: u8, velocity: u8) -> Result<(), PluginEventError> {
++        if channel > 15 {
++            return Err(PluginEventError::InvalidChannel);
++        }
++        if note > 127 {
++            return Err(PluginEventError::InvalidNote);
+         }
+-        let time = u32::try_from(offset).unwrap_or(u32::MAX);
+-        self.push_note(NoteEvent::On { time, key: note, velocity: f32::from(velocity.min(127)) / 127.0 });
+-        if let Some(h) = self.held.get_mut(note as usize) {
++        if !self.event_input {
++            return Err(PluginEventError::UnsupportedEventInput);
++        }
++        let time = u32::try_from(offset).map_err(|_| PluginEventError::OffsetOutOfRange)?;
++        self.push_note(NoteEvent::On { time, channel, key: note, velocity: f32::from(velocity.min(127)) / 127.0 })?;
++        if let Some(h) = self.held.get_mut(usize::from(channel)).and_then(|notes| notes.get_mut(usize::from(note))) {
+             *h = true;
+         }
++        Ok(())
+     }
+ 
+     fn note_off(&mut self, offset: usize, note: u8) {
+-        if note > 127 || !self.event_input {
+-            return;
++        let _ = self.note_off_channel(offset, 0, note);
++    }
++
++    fn note_off_channel(&mut self, offset: usize, channel: u8, note: u8) -> Result<(), PluginEventError> {
++        if channel > 15 {
++            return Err(PluginEventError::InvalidChannel);
++        }
++        if note > 127 {
++            return Err(PluginEventError::InvalidNote);
++        }
++        if !self.event_input {
++            return Err(PluginEventError::UnsupportedEventInput);
+         }
+-        let time = u32::try_from(offset).unwrap_or(u32::MAX);
+-        self.push_note(NoteEvent::Off { time, key: note });
+-        if let Some(h) = self.held.get_mut(note as usize) {
++        let time = u32::try_from(offset).map_err(|_| PluginEventError::OffsetOutOfRange)?;
++        self.push_note(NoteEvent::Off { time, channel, key: note })?;
++        if let Some(h) = self.held.get_mut(usize::from(channel)).and_then(|notes| notes.get_mut(usize::from(note))) {
+             *h = false;
+         }
++        Ok(())
+     }
+ 
+     fn midi(&mut self, offset: usize, msg: [u8; 3]) {
+-        let time = u32::try_from(offset).unwrap_or(u32::MAX);
++        let _ = self.midi_event(offset, msg[0] & 0x0F, msg);
++    }
++
++    fn midi_event(&mut self, offset: usize, channel: u8, msg: [u8; 3]) -> Result<(), PluginEventError> {
++        if channel > 15 {
++            return Err(PluginEventError::InvalidChannel);
++        }
++        if msg[0] & 0x0F != channel {
++            return Err(PluginEventError::InvalidChannel);
++        }
++        let time = u32::try_from(offset).map_err(|_| PluginEventError::OffsetOutOfRange)?;
+         let [_, d1, d2] = msg.map(|b| b & 0x7F);
+-        let (ctrl, value) = match msg[0] & 0xF0 {
++        let (controller, value) = match msg[0] & 0xF0 {
++            0xA0 => {
++                if !self.event_input {
++                    return Err(PluginEventError::UnsupportedEventInput);
++                }
++                return self.push_note(NoteEvent::Pressure { time, channel, key: d1, pressure: f32::from(d2) / 127.0 });
++            }
+             0xB0 => (usize::from(d1), f64::from(d2) / 127.0),
++            0xC0 => (PROGRAM_CHANGE, f64::from(d1) / 127.0),
+             0xD0 => (AFTERTOUCH, f64::from(d1) / 127.0),
+             0xE0 => (PITCH_BEND, f64::from(u16::from(d2) << 7 | u16::from(d1)) / 16383.0),
+-            0xA0 if self.event_input => {
+-                self.push_note(NoteEvent::Pressure { time, key: d1, pressure: f32::from(d2) / 127.0 });
+-                return;
+-            }
+-            _ => return,
++            _ => return Err(PluginEventError::UnsupportedMidiEvent),
+         };
+-        if let Some(&Some(id)) = self.midi_map.get(ctrl)
+-            && self.controls.len() < self.controls.capacity()
+-        {
+-            self.controls.push((time, id, value));
+-        }
++        let id = self.midi_map[usize::from(channel)].get(controller).copied().flatten().ok_or(PluginEventError::UnmappedMidiController)?;
++        self.push_control(time, id, value)
+     }
+ 
+     fn all_notes_off(&mut self) {
+-        for k in 0..128u8 {
+-            if self.held.get(k as usize).copied().unwrap_or(false) {
+-                self.note_off(0, k);
++        for channel in 0..16u8 {
++            for k in 0..128u8 {
++                if self.held.get(usize::from(channel)).and_then(|notes| notes.get(usize::from(k))).copied().unwrap_or(false) {
++                    let _ = self.note_off_channel(0, channel, k);
++                }
+             }
+         }
+     }
+diff --git a/crates/vst3-host/tests/fixture/src/lib.rs b/crates/vst3-host/tests/fixture/src/lib.rs
+index 935d4c6..da3b19f 100644
+--- a/crates/vst3-host/tests/fixture/src/lib.rs
++++ b/crates/vst3-host/tests/fixture/src/lib.rs
+@@ -9,8 +9,9 @@
+ //!   320×240, no real drawing) supporting NSView/HWND/X11.
+ //! - "Fixture Synth" (`Instrument|Synth`): a single-component instrument (the component is also
+ //!   its edit controller). No audio input, one stereo output, one event input; every output
+-//!   sample is the velocity of the held note (sample-accurate), 0 when none. Poly pressure, and
+-//!   MIDI CC 7 through `IMidiMapping` (hidden parameter 1), set it to their value too.
++//!   sample is the held note velocity scaled by (MIDI channel + 1), 0 when none. This deliberately
++//!   makes channel preservation observable. Poly pressure, and MIDI CC 7 through `IMidiMapping`
++//!   (hidden parameter 1), set it to their value too.
+ //!
+ //! The module checks the host's module lifecycle the way real plugins depend on it (see "module
+ //! lifecycle" below) and aborts the process when it is broken.
+@@ -414,6 +415,7 @@ impl IEditControllerTrait for GainController {
+ 
+ struct Synth {
+     level: AtomicU32,
++    active_channel: AtomicU32,
+     _live: Live,
+ }
+ 
+@@ -426,7 +428,7 @@ const VOLUME_PARAM: ParamID = 1;
+ 
+ impl IMidiMappingTrait for Synth {
+     unsafe fn getMidiControllerAssignment(&self, bus: i32, channel: i16, ctrl: CtrlNumber, id: *mut ParamID) -> tresult {
+-        if bus == 0 && channel == 0 && ctrl == 7 {
++        if bus == 0 && (channel == 0 || channel == 7) && ctrl == 7 {
+             unsafe { *id = VOLUME_PARAM };
+             kResultOk
+         } else {
+@@ -552,9 +554,15 @@ impl IAudioProcessorTrait for Synth {
+         for (i, o) in out.iter_mut().enumerate() {
+             for e in events.iter().filter(|e| e.sampleOffset as usize == i) {
+                 if e.r#type == Event_::EventTypes_::kNoteOnEvent as u16 {
+-                    level = unsafe { e.__field0.noteOn.velocity };
++                    let note = unsafe { e.__field0.noteOn };
++                    level = note.velocity * (f32::from(note.channel) + 1.0);
++                    self.active_channel.store(note.channel as u32, Ordering::Relaxed);
+                 } else if e.r#type == Event_::EventTypes_::kNoteOffEvent as u16 {
+-                    level = 0.0;
++                    let note = unsafe { e.__field0.noteOff };
++                    if self.active_channel.load(Ordering::Relaxed) == note.channel as u32 {
++                        level = 0.0;
++                        self.active_channel.store(u32::MAX, Ordering::Relaxed);
++                    }
+                 } else if e.r#type == Event_::EventTypes_::kPolyPressureEvent as u16 {
+                     level = unsafe { e.__field0.polyPressure.pressure };
+                 }
+@@ -674,7 +682,8 @@ impl IPluginFactoryTrait for Factory {
+             })
+             .to_com_ptr::<FUnknown>()
+         } else if cid == SYNTH_CID {
+-            ComWrapper::new(Synth { level: AtomicU32::new(0), _live: Live::new(&OBJECTS) }).to_com_ptr::<FUnknown>()
++            ComWrapper::new(Synth { level: AtomicU32::new(0), active_channel: AtomicU32::new(u32::MAX), _live: Live::new(&OBJECTS) })
++                .to_com_ptr::<FUnknown>()
+         } else {
+             None
+         };
+diff --git a/crates/vst3-host/tests/fixture_e2e.rs b/crates/vst3-host/tests/fixture_e2e.rs
+index 5efd33c..ffe992b 100644
+--- a/crates/vst3-host/tests/fixture_e2e.rs
++++ b/crates/vst3-host/tests/fixture_e2e.rs
+@@ -144,6 +144,69 @@ fn synth_plays_notes_at_their_offsets() {
+     assert!(mono[0].iter().all(|&x| (x - 1.0).abs() < 1e-6), "the note is still held");
+ }
+ 
++#[test]
++fn synth_preserves_nonzero_midi_channels() {
++    let id = id_of("Fixture Synth");
++    let mut p = soundcraft_vst3_host::create(&id).unwrap();
++    p.prepare(48_000.0, 64, 2);
++    p.note_on_channel(12, 7, 60, 64).unwrap();
++    p.note_off_channel(48, 7, 60).unwrap();
++    let mut io = vec![vec![0.0f32; 64], vec![0.0f32; 64]];
++    p.process(&mut io, 64);
++    let expected = (64.0 / 127.0) * 8.0;
++    assert!(io[0][11].abs() < 1e-6);
++    assert!((io[0][12] - expected).abs() < 1e-6, "channel 7 was lost: {} != {expected}", io[0][12]);
++    assert!(io[0][12..48].iter().all(|&x| (x - expected).abs() < 1e-6));
++    assert!(io[0][48..].iter().all(|&x| x.abs() < 1e-6));
++    assert_eq!(io[0], io[1]);
++}
++
++#[test]
++fn mapped_controller_uses_its_midi_channel_and_rejects_silent_drops() {
++    use soundcraft_dsp::PluginEventError;
++
++    let id = id_of("Fixture Synth");
++    let mut p = soundcraft_vst3_host::create(&id).unwrap();
++    p.prepare(48_000.0, 64, 2);
++    p.midi_event(12, 7, [0xB7, 7, 96]).unwrap();
++    assert_eq!(p.midi_event(13, 7, [0xB7, 1, 127]), Err(PluginEventError::UnmappedMidiController), "unmapped CC must be explicit");
++    assert_eq!(p.midi_event(13, 7, [0xC7, 3, 0]), Err(PluginEventError::UnmappedMidiController), "unsupported program mapping must be explicit");
++    assert_eq!(p.midi_event(13, 6, [0xB7, 7, 96]), Err(PluginEventError::InvalidChannel), "message status and logical channel must agree");
++    assert_eq!(p.midi_event(usize::MAX, 7, [0xB7, 7, 96]), Err(PluginEventError::OffsetOutOfRange));
++    let mut io = vec![vec![0.0f32; 64], vec![0.0f32; 64]];
++    p.process(&mut io, 64);
++    assert!((io[0][11]).abs() < 1e-6);
++    assert!((io[0][12] - 96.0 / 127.0).abs() < 1e-6);
++
++    let mut full = soundcraft_vst3_host::create(&id).unwrap();
++    full.prepare(48_000.0, 64, 2);
++    for offset in 0..1024 {
++        full.midi_event(offset, 7, [0xB7, 7, 64]).unwrap();
++    }
++    assert_eq!(full.midi_event(1024, 7, [0xB7, 7, 64]), Err(PluginEventError::EventQueueFull));
++}
++
++#[test]
++fn note_event_rejections_are_typed_and_queue_is_bounded() {
++    use soundcraft_dsp::PluginEventError;
++
++    let synth_id = id_of("Fixture Synth");
++    let mut synth = soundcraft_vst3_host::create(&synth_id).unwrap();
++    synth.prepare(48_000.0, 64, 2);
++    assert_eq!(synth.note_on_channel(0, 16, 60, 100), Err(PluginEventError::InvalidChannel));
++    assert_eq!(synth.note_on_channel(0, 0, 128, 100), Err(PluginEventError::InvalidNote));
++    assert_eq!(synth.note_off_channel(usize::MAX, 0, 60), Err(PluginEventError::OffsetOutOfRange));
++    for offset in 0..1024 {
++        synth.note_on_channel(offset, 0, 60, 100).unwrap();
++    }
++    assert_eq!(synth.note_off_channel(1024, 0, 60), Err(PluginEventError::EventQueueFull));
++
++    let gain_id = id_of("Fixture Gain");
++    let mut gain = soundcraft_vst3_host::create(&gain_id).unwrap();
++    gain.prepare(48_000.0, 64, 2);
++    assert_eq!(gain.note_on_channel(0, 0, 60, 100), Err(PluginEventError::UnsupportedEventInput));
++}
++
+ #[test]
+ fn many_instances_create_and_drop_cleanly() {
+     let (g, s) = (id_of("Fixture Gain"), id_of("Fixture Synth"));

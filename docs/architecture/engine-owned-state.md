@@ -29,33 +29,32 @@ Ephemeral presentation and input state may remain in the host: selection/hover/f
 
 ### Browser
 
-The current browser `Driver` wraps `engine-wasm`; project load, command application, undo/redo, note/curve snapshots and YAML serialization are Rust-owned. The browser `PianoRoll` keeps interaction state (selection, viewport, active tool, pointer state) and emits commands. This is the intended pattern. OPFS is a host storage adapter that writes the Rust-produced YAML.
+The current browser `Driver` wraps `engine-wasm`; project load, command application, undo/redo, note/curve snapshots and YAML serialization are Rust-owned. The WASM `Engine` now holds the shared `project-session::Session`, so its document, identity table, revision and undo history use the same Rust data holder as native. The old browser command facade remains index-addressed for compatibility; stable-ID v2 commands and durable identity sidecars still need to be exposed to the browser. The browser `PianoRoll` keeps interaction state (selection, viewport, active tool, pointer state) and emits commands. OPFS is a host storage adapter that writes Rust-produced YAML and still needs to preserve the session identity sidecar.
 
 ### Flutter / Android
 
-Flutter is **not yet UI-only**. In `app/lib/screens/editor_screen.dart`, `_editedNotes` and `_editedCurves` are mutable authoritative Dart maps; `_editableTracks` merges them into sample tracks; `_buildCurrentUstx()` builds render input in Dart; note/curve callbacks mutate those maps; `_saveProject()` stores a Flutter-created `ProjectDoc`. The screen also owns demo track definitions and project metadata. `app/lib/widgets/piano_roll.dart` mutates its own `_notes` and `_curvePoints` and implements musical edit algorithms. These are migration targets. Selection, tool, viewport, focus and in-progress gestures remain legitimate UI state.
+Flutter is a secondary host in the current product direction. Its project session adapter is being migrated in the working tree; the editor screen now opens a native Rust session, dispatches note/curve commands, and saves/renders through that session. Flutter analysis and host-level tests remain unverified, so it is not yet accepted as UI-only. Any remaining local PianoRoll algorithms and the Dart store/USTX helpers are migration targets only where the Flutter host is still expected to ship.
 
 `app/lib/editor_ustx.dart` also contains Dart USTX building and hand-written parsing. The Rust codec is used elsewhere, but the Flutter editor still supplies its own document data and editing semantics. `Note`/`Track`/`PitchPoint`/`ProjectDoc` Dart classes may temporarily remain only as transport/view DTOs or disposable caches; they cannot be authoritative.
 
-The native `synth-server` currently has stateless project codec save/load endpoints and render-by-path. That is insufficient for authoritative edits with command history or render-from-current-session.
+The native `synth-server` keeps legacy stateless codec routes and adds v2 session routes backed by the shared `Session`. Native/server is the primary target for T001; its session lifecycle, command, bounded-read, save, and render paths are being checked against the frozen portions of CONTRACT-v1 §6. A session phonemize route was removed because it is not part of that contract; adding it requires an explicit contract update.
 
 ## Migration architecture and sequence
 
 ### Shared Rust boundary
 
-Extract the platform-neutral `ProjectDoc`/command protocol/view generation currently in `native/crates/engine-wasm/src/project.rs` into a small `project-session` crate. Keep dependencies narrow: `domain`, `commands`, `serde_json`, and `serde_yaml`; no `wasm-bindgen`, renderer, worker, filesystem, or HTTP dependency. It owns UProject, undo/redo, atomic command application, canonical YAML, and read-only snapshots. `engine-wasm` becomes a host adapter which depends on/re-exports this crate. The native server uses the same session semantics and keeps HTTP/session locking and filesystem persistence in its adapter.
+The platform-neutral `ProjectDoc` and `Session` now live in `native/crates/project-session`, without `wasm-bindgen`, renderer, worker, filesystem, or HTTP dependencies. `engine-wasm` and the native server use this shared crate. The WASM `Engine` was moved from holding `ProjectDoc` directly to holding `Session`; its old index-command facade adapts into that session for compatibility. The remaining cross-host gap is the browser adapter's migration from index commands/YAML-only OPFS persistence to stable-ID session commands and sidecar persistence.
 
-The extracted first-slice command API still uses part/note/track indices and does not yet implement stable IDs. Introduce stable project/track/part/note identifiers before Flutter relies on them across mutations; indices can remain an explicitly temporary in-session adapter only. Grouped operations currently apply child commands as they arrive; if a child fails, the host must issue `group_cancel` to roll back the in-progress gesture. Per-command failures are atomic; an open multi-command group is not automatically rolled back.
+The older browser `Driver` still uses part/note/track indices; the WASM `Engine` now also exposes stable-ID session commands, groups, history, bounded reads and sidecar operations over the shared `Session`. New integrations should use that API. Legacy grouped gestures preserve CONTRACT-v1 §6.8.3 immediate-apply and undo-stack cancellation behavior; isolated tentative transactions are a separate v2 group API. Migrating the browser `Driver` and OPFS flow to the new API remains follow-up work.
 
 ### Phases
 
-1. **Session contract:** define stable identifiers, command schema (including curve editing), snapshot schema, session lifecycle, error semantics and grouping. Preserve existing Web API compatibility.
-2. **Shared Rust crate:** extract ProjectDoc without changing semantics; move/adapt applicable `engine-wasm` tests to the shared crate and keep wasm facade tests.
-3. **Native bridge/server:** add versioned session create/load/snapshot/command/group/undo/redo/save APIs. Render an immutable snapshot from that same session rather than independently reloading a stale path. Ensure simultaneous sessions are isolated.
-4. **Flutter notes migration:** replace `_editedNotes`, `_editableTracks` and local note mutation with engine commands + returned snapshots. Convert Flutter PianoRoll gestures to intent dispatch; group drag into a single undo step. Wire toolbar undo/redo to the Rust session.
-5. **Flutter curves migration:** add Rust curve commands and snapshots, then remove `_editedCurves` and `_pencilWrite` as authoritative mutation. Keep curve drawing gesture coordinates in UI.
-6. **Save/open/render migration:** make open/load, autosave, Save As, export and render consume the same engine-owned session. Remove Dart `buildUstx`/`parseUstx` and duplicate project conversion paths once no caller needs them.
-7. **Remaining feature parity:** move project/track/part metadata, mixer settings and any musical/render-affecting state under the same contract. Keep presentation-only dock layout in frontend.
+1. **Session contract and shared crate:** stable IDs, curve commands, groups, revisions, canonical document and views are implemented in `project-session`.
+2. **Native/server adapter (primary):** keep HTTP lifecycle, locking and file I/O in `synth-server`; verify routes, commands, error envelopes, revision rules, persistence and render against frozen CONTRACT-v1 §6 semantics.
+3. **Cross-host parity:** run shared command vectors through native and WASM adapters and verify serialization/sidecar identity across reopen.
+4. **WASM adapter follow-up:** expose shared session snapshots, stable-ID commands, revisions, groups, history and sidecar operations through `engine-wasm`; migrate the browser `Driver` and OPFS adapter when Web is again in scope.
+5. **Flutter adapter follow-up:** continue the Flutter session bridge only if Flutter remains a shipping target; validate and remove Dart-owned conversion/storage paths before calling that host UI-only.
+6. **Remaining project state:** move any project-affecting mixer or metadata state into the same contract; keep presentation-only dock layout in the frontends.
 
 ## Acceptance criteria for calling a frontend UI-only
 
@@ -72,7 +71,7 @@ Repository-root [`AGENTS.md`](../../AGENTS.md) makes this rule mandatory. Any ex
 
 ## Shared host API draft
 
-A first logical API draft for native HTTP, WASM direct calls, and future JNI adapters is in [CONTRACT-v1.md §6](../CONTRACT-v1.md#6-project-session-api-draft-v1--implementation-ready-partially-implemented). It is intentionally not frozen. Identity, the sidecar table and the per-change revision rules are implemented in `project-session`; stable-ID commands, group transactions, bounded reads and the HTTP routes are not. All transports should reuse `project-session` semantics; only transport/session-lifecycle/storage adapters differ. Review stable IDs, session lifetime, group transactions, curves and async render progress before bumping/finalizing the contract.
+The shared logical API for native HTTP, WASM direct calls and future JNI adapters is in [CONTRACT-v1.md §6](../CONTRACT-v1.md#6-project-session-api-draft-v1--implementation-ready-partially-implemented). Follow the sections marked frozen; other draft sections remain subject to the contract's review process. `project-session` implements stable IDs, revision rules, groups, curve commands and read models. Native/server is the primary integration target. WASM now exposes the shared session operations, while the browser `Driver` still needs to migrate from its compatibility facade. All transports reuse `project-session` semantics; only transport, session lifecycle and storage adapters differ.
 
 ## References
 

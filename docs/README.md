@@ -2,6 +2,10 @@
 
 > เอกสารทั้งหมดของโปรเจกต์
 
+เริ่มรับช่วงงาน agent ที่ [Task Board](work/BOARD.md); อ่านก่อนเริ่มงานหรือรับช่วง
+จาก harness อื่น. Board ใช้ติดตาม execution ล่าสุด ส่วน planning ด้านล่างเก็บ
+vision, roadmap และ milestone.
+
 ---
 
 ## Planning
@@ -18,11 +22,12 @@
 - [Web Render Backend](planning/web-render-backend.md) — แผนแยก renderer ให้ต่อได้ทั้ง wasm และ server (ยังไม่เริ่ม)
 - [Engine vs OpenUtau Performance](planning/engine-vs-openutau-performance.md) — เทียบ wall/CPU/RSS + thread scaling (2026-09-29) และบั๊ก partial-render ของ golden harness
 
-## Architecture (design เสร็จแล้ว)
+## Architecture
 
 - [Architecture Overview](architecture/README.md) — ระบบหลัก
-- [Engine-owned State Policy](architecture/engine-owned-state.md) — ขอบเขตความรับผิดชอบ Rust engine/UI และแผนย้าย state จาก Flutter
-- [Shared Project Session API Draft](CONTRACT-v1.md#6-project-session-api-draft-v1--implementation-ready-partially-implemented) — logical contract ร่วม Native/Flutter/Web/WASM (identity/sidecar/revision implement แล้ว; routes/commands ยังไม่)
+- [Known Limitations](architecture/known-limitations.md) — ทะเบียนข้อจำกัดที่รู้แล้ว พร้อมเหตุผลและวิธีตรวจ (ONNX บน wasm, audio track, capability reporting, …)
+- [Engine-owned State Policy](architecture/engine-owned-state.md) — Rust session เป็น data holder กลางและขอบเขตของ host adapters
+- [Shared Project Session API Draft](CONTRACT-v1.md#6-project-session-api-draft-v1--implementation-ready-partially-implemented) — logical contract ร่วม Native/Flutter/Web/WASM (core session implement แล้ว; adapter parity และ WASM stable-ID surface ยังทำต่อ)
 - [Engine](architecture/engine.md) — core domain
 - [Renderer](architecture/renderer.md) — plugin renderers
 - [Runtime](architecture/runtime.md) — orchestration

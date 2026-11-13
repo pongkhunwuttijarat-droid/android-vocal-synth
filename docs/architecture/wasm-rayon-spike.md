@@ -3,7 +3,7 @@
 > วัดเมื่อ 2026-09-11 · Chromium 152.0.7977.82 headless · AMD Ryzen 5 8600G (12 threads, `navigator.hardwareConcurrency = 12`)
 > nightly `1.100.0-nightly (67eda617e 2026-09-10)` + `rust-src` · stable `1.97.1` (baseline)
 > โปรเจกต์: `test/golden/scale-demo-app.ustx` (14.50s audio, 4 chunks) + voicebank จริง `test/golden/teto-english/library` (558 wav + 558 frq, 86.9 MiB)
-> โค้ดทดลองอยู่ **นอก repo** ที่ `~/lilt-rayon-spike/` — ไม่ได้แก้ `native/` เลย
+> โค้ดทดลองอยู่ **นอก repo** ที่ `~/rusted-utau-rayon-spike/` — ไม่ได้แก้ `native/` เลย
 
 ---
 
@@ -306,8 +306,8 @@ chromium-browser --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usa
   --user-data-dir="$(mktemp -d)" "http://127.0.0.1:PORT/bench.html?threads=4"
 ```
 
-วัดซ้ำ: `~/lilt-rayon-spike/web/run.sh <pkg-dir> <threads> <fixture> <label>`
-(harness เต็มอยู่ที่ `~/lilt-rayon-spike/web/` — `serve.py`, `bench.html`, `run.sh`, `order.html`)
+วัดซ้ำ: `~/rusted-utau-rayon-spike/web/run.sh <pkg-dir> <threads> <fixture> <label>`
+(harness เต็มอยู่ที่ `~/rusted-utau-rayon-spike/web/` — `serve.py`, `bench.html`, `run.sh`, `order.html`)
 
 > **หมายเหตุการวัด:** การโหลด voicebank 558 ไฟล์ใช้เวลา ~25 s (1,116 HTTP request เรียงกันผ่าน Python server)
 > ตัวเลข render ทั้งหมด **ไม่รวม** เวลาโหลด — จับเวลาครอบ `plan_project` + render + mix เท่านั้น
@@ -374,6 +374,6 @@ chromium-browser --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usa
 
 | | |
 |---|---|
-| โค้ดทดลอง | `~/lilt-rayon-spike/` (นอก repo — `native/`, `native-st/` baseline, `web/` harness, `pkg-mt/`, `pkg-base/`) |
+| โค้ดทดลอง | `~/rusted-utau-rayon-spike/` (นอก repo — `native/`, `native-st/` baseline, `web/` harness, `pkg-mt/`, `pkg-base/`) |
 | แก้ใน repo | **ไม่มี** — `native/` ไม่ถูกแตะ (`parallel_safe()` ยังเป็น `false`, ไม่มี `wasm-bindgen-rayon` ใน `Cargo.toml`) |
 | ไฟล์เดียวที่เพิ่มใน repo | `docs/architecture/wasm-rayon-spike.md` (เอกสารนี้) |

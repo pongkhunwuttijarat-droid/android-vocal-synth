@@ -3,7 +3,7 @@
 > สถานะ: **Implementation in progress — editor render ผ่าน RenderPool แล้ว** · อัปเดต 2026-09-23
 > ต่อจาก: [wasm-target.md](../architecture/wasm-target.md) · [wasm-parallel.md](../architecture/wasm-parallel.md) · [web-static-feasibility.md](web-static-feasibility.md)
 
-UI production ตัวแรกของ Lilt บน browser — tablet-first, landscape, ปากกาเป็น input
+UI production ตัวแรกของ Rusted UTAU บน browser — tablet-first, landscape, ปากกาเป็น input
 หลัก. `engine-wasm` render bit-identical กับ native แล้ว และ fan chunk ออก Web Worker
 ได้ — ตอนนี้มี UI vertical slice แล้ว; งานที่เหลือคือเชื่อม production rendering,
 persistence และ feature breadth ตามเฟสด้านล่าง
@@ -14,7 +14,7 @@ persistence และ feature breadth ตามเฟสด้านล่าง
 
 ## 1. Scope & goals
 
-**Lilt Web = editor เต็มตัวบน tablet** — เปิด URL แล้วแก้เพลง, กด play ได้ยินเสียง,
+**Rusted UTAU Web = editor เต็มตัวบน tablet** — เปิด URL แล้วแก้เพลง, กด play ได้ยินเสียง,
 export WAV ด้วย engine ตัวเดียวกับ native เป๊ะ โดยไม่มี server / `.so` / dlopen
 
 ลำดับความสำคัญ: (1) **แก้ note ได้จริงด้วยปากกา** — draw/move/resize/erase/split/
